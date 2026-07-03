@@ -181,23 +181,39 @@ def park(kl: Klippy, hw: Hardware):
 
 
 class Screen:
-    """Progress on the printer display (KlipperScreen, LCD, web header) via M117."""
+    """Progress to the display via M117 (display_status -> KlipperScreen / LCD / web
+    header) and to the console via M118 (Mainsail / Fluidd / KlipperScreen console).
+
+    The display is only written when display_status exists; the console is attempted
+    regardless and self-disables if the printer has no [respond]. Either channel
+    disables itself on error so a missing one never stops a run.
+    """
 
     INTERVAL_SEC = 5.0
 
-    def __init__(self, kl: Klippy, enabled: bool):
+    def __init__(self, kl: Klippy, display: bool):
         self.kl = kl
-        self.enabled = enabled
+        self.display = display
+        self.console = True
         self.last = 0.0
 
     def update(self, text: str, force: bool = False):
-        if not self.enabled or (not force and time.monotonic() - self.last < self.INTERVAL_SEC):
+        if not (self.display or self.console):
+            return
+        if not force and time.monotonic() - self.last < self.INTERVAL_SEC:
             return
         self.last = time.monotonic()
+        if self.display:
+            self.display = self._send('M117 %s' % text)
+        if self.console:
+            self.console = self._send('M118 %s' % text)
+
+    def _send(self, command: str) -> bool:
         try:
-            self.kl.gcode('M117 %s' % text)
+            self.kl.gcode(command)
+            return True
         except KlippyError:
-            self.enabled = False
+            return False
 
 
 def eta_text(seconds: float) -> str:

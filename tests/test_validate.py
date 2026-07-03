@@ -54,7 +54,7 @@ def test_validate_top_remeasures_finalists(tmp_path, monkeypatch, capsys):
 
     monkeypatch.setattr(collect_module, 'run_measurement', fake_measurement)
     ok, failed = validate_top(kl, make_hw(kl), ds, make_args(validate=2), [58], 70.0, 1000,
-                              set(), lambda: None, Screen(kl, enabled=False))
+                              set(), lambda: None, Screen(kl, display=False))
 
     # 2 finalists (toff 5 and 6) x 2 extra iterations x 2 directions; they stay on
     # top after validation, so the round loop converges without touching anyone else
@@ -83,7 +83,7 @@ def test_validate_top_skips_done_ids(tmp_path, monkeypatch):
     best = tmc.Chopper(0, 5, 4, 4)
     done = {measurement_id(best, 58, i, d) for i in (1, 2) for d in (1, -1)}
     ok, _ = validate_top(kl, make_hw(kl), ds, make_args(validate=1), [58], 70.0, 1000,
-                         done, lambda: None, Screen(kl, enabled=False))
+                         done, lambda: None, Screen(kl, display=False))
     assert ok == 0 and calls == []
 
 
@@ -124,7 +124,7 @@ def test_validate_recommends_consistent_combo_not_lucky_seed(tmp_path, monkeypat
     monkeypatch.setattr(collect_module, 'run_measurement', validation_fake(true))
 
     validate_top(kl, make_hw(kl), ds, make_args(validate=2), [58], 70.0, 1000,
-                 set(), lambda d, t: None, Screen(kl, enabled=False))
+                 set(), lambda d, t: None, Screen(kl, display=False))
     snippet = capsys.readouterr().out.split('Recommended for printer.cfg:')[1]
     assert 'driver_TOFF: 4' in snippet
 
@@ -140,7 +140,7 @@ def test_validate_recommends_only_from_validated_set(tmp_path, monkeypatch):
     monkeypatch.setattr(collect_module, 'run_measurement', validation_fake(true))
 
     validate_top(kl, make_hw(kl), ds, make_args(validate=2), [58], 70.0, 1000,
-                 set(), lambda d, t: None, Screen(kl, enabled=False))
+                 set(), lambda d, t: None, Screen(kl, display=False))
 
     from chopper_autotune.analyze import aggregate, rank
     ranked = rank(aggregate(ds, False, 0.1), tmc.DRIVERS['2209'], 0.25)

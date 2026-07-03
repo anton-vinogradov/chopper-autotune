@@ -64,23 +64,25 @@ def test_display_detected_from_live_objects_not_config():
                                       objects=['toolhead', 'display_status']), 'x').display is True
 
 
-def test_screen_throttles_and_forces():
+def test_screen_sends_display_and_console_throttled():
     kl = FakeKlippy()
-    screen = Screen(kl, enabled=True)
+    screen = Screen(kl, display=True)
     screen.update('one')
-    screen.update('two')
+    screen.update('two')                      # throttled away
     screen.update('three', force=True)
-    assert kl.scripts == ['M117 one', 'M117 three']
+    assert kl.scripts == ['M117 one', 'M118 one', 'M117 three', 'M118 three']
 
 
-def test_screen_disabled_and_error_paths():
+def test_screen_console_only_without_display():
     kl = FakeKlippy()
-    Screen(kl, enabled=False).update('nope', force=True)
-    assert kl.scripts == []
+    Screen(kl, display=False).update('go', force=True)
+    assert kl.scripts == ['M118 go']
 
-    broken = Screen(FakeKlippy(fail=True), enabled=True)
+
+def test_screen_channels_self_disable_on_error():
+    broken = Screen(FakeKlippy(fail=True), display=True)
     broken.update('boom', force=True)
-    assert broken.enabled is False
+    assert broken.display is False and broken.console is False
 
 
 def make_running_dataset(tmp_path, n=20):
