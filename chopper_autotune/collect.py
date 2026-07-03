@@ -104,14 +104,18 @@ def detect_hardware(kl: Klippy, axis: str) -> Hardware:
 
 
 def build_plan(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range, hend: Range,
-               tpfd: Optional[Range], speeds: 'list[int]') -> 'list[tuple[tmc.Chopper, int]]':
+               tpfd: Optional[Range], speeds: 'list[int]',
+               skip_audible: bool = False) -> 'list[tuple[tmc.Chopper, int]]':
     tpfd_values = list(tpfd.values()) if tpfd is not None and driver.has_tpfd else [None]
     plan = []
     for t, o, hs, he, tp in itertools.product(tbl.values(), toff.values(), hstrt.values(),
                                               hend.values(), tpfd_values):
         combo = tmc.Chopper(t, o, hs, he, tp)
-        if tmc.validate(combo) is None:
-            plan.extend((combo, speed) for speed in speeds)
+        if tmc.validate(combo) is not None:
+            continue
+        if skip_audible and tmc.is_audible(combo, driver):
+            continue
+        plan.extend((combo, speed) for speed in speeds)
     return plan
 
 
@@ -317,6 +321,9 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
     def evaluate(combo: tmc.Chopper) -> float:
         if combo in cache:
             return cache[combo]
+        if args.skip_audible and tmc.is_audible(combo, hw.driver):
+            cache[combo] = float('inf')
+            return cache[combo]
         measure_candidate(combo, args.iterations)
         score = (penalized_score(combo, history[combo], hw.driver, args.audible_weight)
                  if history[combo] else float('inf'))
@@ -382,9 +389,11 @@ def collect(kl: Klippy, args) -> int:
     per_move = args.measure_time + 2 * max(speeds) / accel + overhead
     plan = []
     if args.search == 'grid':
-        plan = build_plan(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd, speeds)
+        plan = build_plan(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd, speeds,
+                          args.skip_audible)
         if not plan:
-            raise SystemExit('empty plan: all combinations rejected by datasheet constraints')
+            raise SystemExit('empty plan: all combinations rejected by datasheet constraints'
+                             + (' or audible' if args.skip_audible else ''))
         n_moves = len(plan) * args.iterations * 2
         eta = n_moves * per_move
         print('Plan: %d combinations x %d speeds -> %d moves of %.1fmm, capture %s, ETA %dh %02dm'
