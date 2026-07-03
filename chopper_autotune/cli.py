@@ -3,15 +3,13 @@ from __future__ import annotations
 
 import argparse
 import re
+import signal
 import sys
 
 from .collect import Range
 
-_STORE_TRUE = {'--no-raw', '--dry-run', '--yes', '--csv', '--skip-audible', '--recompute',
-               '--no-html', '--apply', '--save'}
 
-
-def _gcode_args(argv: 'list[str]') -> 'list[str]':
+def _gcode_args(argv: 'list[str]', boolean_flags: 'frozenset[str]') -> 'list[str]':
     """Translate Klipper-style KEY=VALUE params (as passed by RUN_SHELL_COMMAND) into CLI flags."""
     out = []
     for arg in argv:
@@ -20,7 +18,7 @@ def _gcode_args(argv: 'list[str]') -> 'list[str]':
             out.append(arg)
             continue
         flag = '--' + match.group(1).lower().replace('_', '-')
-        if flag in _STORE_TRUE:
+        if flag in boolean_flags:
             if match.group(2).lower() in ('1', 'true', 'yes'):
                 out.append(flag)
         else:
@@ -28,7 +26,28 @@ def _gcode_args(argv: 'list[str]') -> 'list[str]':
     return out
 
 
-def main(argv=None) -> int:
+def boolean_flags(parser: argparse.ArgumentParser) -> 'frozenset[str]':
+    """All store_true option strings across subcommands, so KEY=1 macro params map to flags."""
+    flags = set()
+    subactions = [action for action in parser._actions
+                  if isinstance(action, argparse._SubParsersAction)]
+    for subparser in subactions[0].choices.values():
+        for action in subparser._actions:
+            if isinstance(action, argparse._StoreTrueAction):
+                flags.update(action.option_strings)
+    return frozenset(flags)
+
+
+def install_sigterm_handler():
+    """gcode_shell_command timeouts and service restarts send SIGTERM: turn it into
+    SystemExit so the finally blocks restore registers, spreadCycle and homing."""
+    try:
+        signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(143))
+    except ValueError:
+        pass
+
+
+def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog='chopper-autotune',
                                      description='Measurement-driven tuning of TMC chopper registers for Klipper')
     sub = parser.add_subparsers(dest='command', required=True)
@@ -110,6 +129,8 @@ def main(argv=None) -> int:
 
     t = sub.add_parser('status', help='progress of the most recent (or given) dataset')
     t.add_argument('dataset', nargs='?', default=None)
+    t.add_argument('--dataset', dest='dataset_opt', default=None,
+                   help='same as the positional argument, for DATASET= macro params')
     t.add_argument('--total', type=int, default=None, help='planned moves, for ETA of pre-ranges datasets')
 
     m = sub.add_parser('compare', help='agreement between two datasets: winners, rank correlation, top overlap')
@@ -121,6 +142,8 @@ def main(argv=None) -> int:
     a = sub.add_parser('analyze', help='rank configurations from a dataset, report, optionally apply')
     a.add_argument('dataset', nargs='?', default=None,
                    help='dataset directory, default: the latest collected one')
+    a.add_argument('--dataset', dest='dataset_opt', default=None,
+                   help='same as the positional argument, for DATASET= macro params')
     a.add_argument('--top', type=int, default=15, help='rows in the console table')
     a.add_argument('--audible-weight', type=float, default=0.25,
                    help='score penalty for chopper frequency in the audible range')
@@ -132,10 +155,20 @@ def main(argv=None) -> int:
     a.add_argument('--save', action='store_true',
                    help='persist the best config into the Klipper config file and restart Klipper')
     a.add_argument('--url', default='http://127.0.0.1:7125')
+    return parser
 
+
+def main(argv=None) -> int:
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(line_buffering=True)
-    args = parser.parse_args(_gcode_args(sys.argv[1:] if argv is None else argv))
+    install_sigterm_handler()
+
+    parser = build_parser()
+    args = parser.parse_args(_gcode_args(sys.argv[1:] if argv is None else argv,
+                                         boolean_flags(parser)))
+    if getattr(args, 'dataset_opt', None):
+        args.dataset = args.dataset_opt
+
     if args.command == 'tune':
         from .tune import run_tune
         return run_tune(args)

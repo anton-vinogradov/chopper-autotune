@@ -10,7 +10,8 @@ from pathlib import Path
 from . import __version__
 from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen,
                       default_dataset_root, detect_hardware, enter_spreadcycle,
-                      exit_spreadcycle, measure_baseline, measure_move, now, park, travel_for)
+                      exit_spreadcycle, make_parker, measure_baseline, measure_move, now, park,
+                      travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, find_socket
 
@@ -172,6 +173,7 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
     started = time.time()
     failed = 0
     screen = Screen(kl, hw.display)
+    before_move = make_parker(kl, hw)
     try:
         measure_baseline(hw, ds, args, done)
         for index, (speed, cruise) in enumerate(plan, 1):
@@ -185,7 +187,8 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
                     record = {'id': mid, 'kind': 'speed', 'source': args.source, 'speed': speed,
                               'cruise': round(cruise, 3), 'direction': direction,
                               'iteration': iteration, 'ts': now()}
-                    measure_move(hw, ds, args, record, speed, cruise, travel, direction, accel)
+                    measure_move(hw, ds, args, record, speed, cruise, travel, direction, accel,
+                                 before_move)
                     if record['status'] == 'ok':
                         magnitudes.append(record['score']['median_magnitude'])
                     else:

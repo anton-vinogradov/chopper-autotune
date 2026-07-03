@@ -1,8 +1,6 @@
 import argparse
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from chopper_autotune import tmc
 from chopper_autotune.analyze import newest_dataset, run_status
 from chopper_autotune.collect import Screen, detect_hardware
@@ -102,8 +100,8 @@ def test_status_reports_pace_and_eta(tmp_path, capsys):
     out = capsys.readouterr().out
     assert 'Measurements: 20 ok, 0 failed' in out
     assert 'Pace: 2.0 s/move' in out
-    # 2 toff x 13 hend (hstrt=4 limits hend to 0..12) = 26 combos -> 52 planned moves
-    assert 'Progress: 20/52 (38%)' in out
+    # 2 toff x 15 hend (hstrt=4 limits raw hend to 0..14) = 30 combos -> 60 planned moves
+    assert 'Progress: 20/60 (33%)' in out
 
 
 def test_status_pace_ignores_old_pause(tmp_path, capsys):

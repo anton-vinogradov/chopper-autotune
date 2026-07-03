@@ -39,7 +39,7 @@ The accelerometer cannot hear the chopper (ADXL345 samples at 3.2 kHz), but the 
 
 Also datasheet-driven:
 
-- search space constraints (`HSTRT`+`HEND` ≤ 16, `TOFF` = 0 forbidden, `TOFF` = 1 blank-time restrictions) — pruned before any motion;
+- search space constraints (effective `HSTRT`+`HEND` ≤ 16 per datasheet, `TOFF` = 0 forbidden, `TOFF` = 1 blank-time restrictions) — pruned before any motion;
 - per-driver capability matrix: `TPFD` enters the grid only on TMC2240/5160, clock frequencies match the Klipper driver code;
 - when `stealthchop_threshold` is configured, spreadCycle is forced for the duration of the test and restored afterwards — chopper registers only act in spreadCycle, stealthChop would measure noise;
 - planned: StallGuard readout as a torque-margin proxy to auto-tune motor current.

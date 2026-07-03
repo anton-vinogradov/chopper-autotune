@@ -54,8 +54,9 @@ def validate(c: Chopper) -> Optional[str]:
         return 'hstrt out of range 0..7'
     if not 0 <= c.hend <= 15:
         return 'hend out of range 0..15'
-    if c.hstrt + c.hend > 16:
-        return 'hstrt + hend must be <= 16'
+    # datasheet limit is on effective values: (hstrt+1) + (hend-3) <= 16
+    if c.hstrt + c.hend > 18:
+        return 'effective hstrt + hend must be <= 16 (raw sum <= 18)'
     if c.toff == 1 and c.tbl < 2:
         return 'toff=1 requires tbl >= 2 (datasheet blank time restriction)'
     if c.tpfd is not None and not 0 <= c.tpfd <= 15:

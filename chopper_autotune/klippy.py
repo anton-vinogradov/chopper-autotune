@@ -34,7 +34,7 @@ class Klippy:
     sample buffer.
     """
 
-    def __init__(self, path: str, timeout: float = 600.0, buffer_sec: float = 120.0):
+    def __init__(self, path: str, timeout: float = 600.0, buffer_sec: float = 15.0):
         self.path = path
         self.timeout = timeout
         self.buffer_sec = buffer_sec
@@ -67,31 +67,38 @@ class Klippy:
             self.sock.close()
 
     def _read_loop(self):
+        """A dead reader must always flip _closed, or every request would hang a full timeout."""
         buffer = b''
-        while True:
-            try:
-                chunk = self.sock.recv(65536)
-            except OSError:
-                break
-            if not chunk:
-                break
-            buffer += chunk
-            *messages, buffer = buffer.split(SEPARATOR)
-            for raw in messages:
-                self._dispatch(json.loads(raw))
-        with self._wakeup:
-            self._closed = True
-            self._wakeup.notify_all()
+        try:
+            while True:
+                try:
+                    chunk = self.sock.recv(65536)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                buffer += chunk
+                *messages, buffer = buffer.split(SEPARATOR)
+                for raw in messages:
+                    try:
+                        self._dispatch(json.loads(raw))
+                    except Exception as e:
+                        print('klippy: ignoring malformed message (%s)' % e)
+        finally:
+            with self._wakeup:
+                self._closed = True
+                self._wakeup.notify_all()
 
     def _dispatch(self, message: dict):
         if message.get('key') == ACCEL_KEY:
-            params = message['params']
+            data = message['params'].get('data')
             with self._wakeup:
-                self.overflows += params.get('overflows', 0)
-                self._samples.extend(params['data'])
-                horizon = self._samples[-1][0] - self.buffer_sec
-                while self._samples and self._samples[0][0] < horizon:
-                    self._samples.popleft()
+                self.overflows += message['params'].get('overflows', 0)
+                if data:
+                    self._samples.extend(data)
+                    horizon = self._samples[-1][0] - self.buffer_sec
+                    while self._samples and self._samples[0][0] < horizon:
+                        self._samples.popleft()
                 self._wakeup.notify_all()
         elif 'id' in message:
             with self._wakeup:
@@ -141,8 +148,17 @@ class Klippy:
                      {'sensor': sensor, 'response_template': {'key': ACCEL_KEY}})
 
     def samples_between(self, start: float, end: float) -> 'list[list[float]]':
+        """Walk from the tail: the window of interest is always recent, the buffer is sorted."""
+        out = []
         with self._lock:
-            return [s for s in self._samples if start <= s[0] <= end]
+            for sample in reversed(self._samples):
+                if sample[0] > end:
+                    continue
+                if sample[0] < start:
+                    break
+                out.append(sample)
+        out.reverse()
+        return out
 
     def wait_for_sample(self, t: float, timeout: float = 5.0):
         """Batches are flushed with a delay; wait until the stream catches up with print time t."""

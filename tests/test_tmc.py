@@ -17,6 +17,14 @@ def test_validate_accepts_valid_combos():
     assert tmc.validate(tmc.Chopper(0, 8, 1, 15, tpfd=0)) is None
 
 
+def test_validate_hysteresis_limit_is_on_effective_values():
+    # datasheet: (hstrt+1) + (hend-3) <= 16, i.e. raw sums 17 and 18 are legal
+    assert tmc.validate(tmc.Chopper(0, 3, 7, 10)) is None
+    assert tmc.validate(tmc.Chopper(0, 3, 7, 11)) is None
+    assert tmc.validate(tmc.Chopper(0, 3, 7, 12)) is not None
+    assert tmc.validate(tmc.Chopper(0, 3, 4, 15)) is not None
+
+
 def test_chopper_freq_estimate():
     driver = tmc.DRIVERS['2209']
     assert tmc.chopper_freq_hz(tmc.Chopper(0, 8, 0, 0), driver) == pytest.approx(12e6 / (2 * (16 + 12 + 256)))

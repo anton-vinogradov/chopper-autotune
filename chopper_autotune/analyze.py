@@ -14,14 +14,15 @@ from .dataset import Dataset, RESULTS_HOME
 from .moonraker import Moonraker
 
 
+def dataset_dirs(bases=(RESULTS_HOME / 'datasets', Path('datasets'))) -> 'list[Path]':
+    return [path for base in bases if base.is_dir() for path in sorted(base.iterdir())
+            if (path / 'manifest.json').is_file()]
+
+
 def latest_dataset(bases=(RESULTS_HOME / 'datasets', Path('datasets'))) -> str:
-    for base in bases:
-        if not base.is_dir():
-            continue
-        for path in sorted(base.iterdir(), reverse=True):
-            if (path / 'manifest.json').is_file() \
-                    and Dataset(path).manifest().get('mode') != 'find-speed':
-                return str(path)
+    for path in reversed(dataset_dirs(bases)):
+        if Dataset(path).manifest().get('mode') != 'find-speed':
+            return str(path)
     raise SystemExit('no chopper datasets found, pass the dataset directory explicitly')
 
 
@@ -53,10 +54,11 @@ def aggregate(ds: Dataset, recompute: bool, trim_fraction: float) -> 'list[dict]
 
 
 def rank(aggregates: 'list[dict]', driver: tmc.Driver, audible_weight: float) -> 'list[dict]':
+    from .search import penalized_score
     for a in aggregates:
         a['chopper_freq_hz'] = tmc.chopper_freq_hz(a['chopper'], driver)
         a['audible'] = tmc.is_audible(a['chopper'], driver)
-        a['score'] = a['magnitude'] * (1 + audible_weight if a['audible'] else 1)
+        a['score'] = penalized_score(a['chopper'], [a['magnitude']], driver, audible_weight)
     aggregates.sort(key=lambda a: a['score'])
     return aggregates
 
@@ -189,16 +191,21 @@ def updated_config(text: str, section: str, fields: dict) -> str:
     return ''.join(lines[:start + 1] + inserted + body + lines[end:])
 
 
+BACKUP_SUFFIX = '.chopper-backup.cfg'
+
+
 def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]'):
     """Persist winners into the Klipper config through the Moonraker files API.
 
-    All edits are applied in memory first, each touched file is backed up once,
-    then everything is uploaded and Klipper restarted a single time — so saving
-    several axes in one go cannot leave the config half-written.
+    All edits are applied in memory first, then every touched file is backed up,
+    then the edits are uploaded and Klipper restarted once. A failure mid-upload
+    can leave files from different items out of sync, but the originals are
+    already backed up by that point.
     """
     if mk.is_printing():
         raise SystemExit('printer is busy printing, not touching the config')
-    files = {name: mk.download_config(name) for name in mk.list_config_files()}
+    files = {name: mk.download_config(name) for name in mk.list_config_files()
+             if not name.endswith(BACKUP_SUFFIX)}
     originals = dict(files)
     edited = []
     for manifest, combo in items:
@@ -216,25 +223,36 @@ def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]'):
             edited.append(name)
 
     for name in edited:
-        mk.upload_config(name.rsplit('.', 1)[0] + '.chopper-backup.cfg', originals[name])
+        mk.upload_config(name.rsplit('.', 1)[0] + BACKUP_SUFFIX, originals[name])
+    for name in edited:
         mk.upload_config(name, files[name])
     mk.gcode('RESTART')
-    print('\nSaved to %s (backups: *.chopper-backup.cfg), Klipper is restarting '
-          'with the new registers' % ', '.join(edited))
+    print('\nSaved to %s (backups: *%s), Klipper is restarting with the new registers'
+          % (', '.join(edited), BACKUP_SUFFIX))
 
 
 def spearman(xs: 'list[float]', ys: 'list[float]') -> float:
     def ranks(values):
         order = sorted(range(len(values)), key=values.__getitem__)
         result = [0.0] * len(values)
-        for position, index in enumerate(order):
-            result[index] = float(position)
+        i = 0
+        while i < len(order):
+            j = i
+            while j + 1 < len(order) and values[order[j + 1]] == values[order[i]]:
+                j += 1
+            for k in range(i, j + 1):
+                result[order[k]] = (i + j) / 2
+            i = j + 1
         return result
 
+    # Pearson over the ranks: exact also in the presence of ties
     rx, ry = ranks(xs), ranks(ys)
     n = len(xs)
-    d2 = sum((a - b) ** 2 for a, b in zip(rx, ry))
-    return 1 - 6 * d2 / (n * (n * n - 1))
+    mx, my = sum(rx) / n, sum(ry) / n
+    cov = sum((a - mx) * (b - my) for a, b in zip(rx, ry))
+    vx = sum((a - mx) ** 2 for a in rx)
+    vy = sum((b - my) ** 2 for b in ry)
+    return cov / (vx * vy) ** 0.5 if vx and vy else 0.0
 
 
 def run_compare(args) -> int:
@@ -275,7 +293,7 @@ def run_compare(args) -> int:
 
 def newest_dataset(bases=(RESULTS_HOME / 'datasets', Path('datasets'))) -> Path:
     """Most recently written dataset of any kind, for progress reporting."""
-    candidates = [path for base in bases if base.is_dir() for path in base.iterdir()
+    candidates = [path for path in dataset_dirs(bases)
                   if (path / 'measurements.jsonl').is_file()]
     if not candidates:
         raise SystemExit('no datasets found')
@@ -310,7 +328,7 @@ def run_status(args) -> int:
 
     total = args.total
     if not total and manifest.get('search') == 'grid' and 'ranges' in manifest:
-        from .collect import Range, build_plan
+        from .collect import Range, VALIDATE_EXTRA_ITERATIONS, build_plan
         ranges = manifest['ranges']
         plan = build_plan(tmc.DRIVERS[manifest['driver']],
                           Range(*ranges['tbl']), Range(*ranges['toff']),
@@ -318,12 +336,14 @@ def run_status(args) -> int:
                           Range(*ranges['tpfd']) if ranges.get('tpfd') else None,
                           manifest.get('speeds', [0]),
                           manifest.get('skip_audible', False))
-        total = len(plan) * manifest.get('iterations', 1) * 2
+        total = (len(plan) * manifest.get('iterations', 1) * 2
+                 + manifest.get('validate', 0) * VALIDATE_EXTRA_ITERATIONS
+                 * len(manifest.get('speeds', [0])) * 2)
     if total and rate:
+        from .collect import eta_text
         remaining = max(0, total - len(moves))
-        print('Progress: %d/%d (%.0f%%), ETA %dh %02dm'
-              % (len(moves), total, 100 * len(moves) / total,
-                 remaining / rate // 3600, remaining / rate % 3600 // 60))
+        print('Progress: %d/%d (%.0f%%), ETA %s'
+              % (len(moves), total, 100 * len(moves) / total, eta_text(remaining / rate)))
     return 0
 
 
