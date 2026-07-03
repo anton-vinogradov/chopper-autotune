@@ -52,3 +52,36 @@ class Moonraker:
 
     def set_tmc_fields(self, stepper: str, fields: dict):
         self.gcode(tmc.set_fields_script(stepper, fields))
+
+    def is_printing(self) -> bool:
+        result = self._request('GET', '/printer/objects/query', {'print_stats': 'state'})
+        return result['status'].get('print_stats', {}).get('state') == 'printing'
+
+    def list_config_files(self) -> 'list[str]':
+        result = self._request('GET', '/server/files/list', {'root': 'config'})
+        return [item['path'] for item in result if item['path'].endswith('.cfg')]
+
+    def download_config(self, name: str) -> str:
+        req = urllib.request.Request('%s/server/files/config/%s' % (self.url, urllib.parse.quote(name)))
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                return resp.read().decode()
+        except (urllib.error.HTTPError, OSError) as e:
+            raise MoonrakerError('cannot download %s: %s' % (name, e)) from e
+
+    def upload_config(self, name: str, content: str):
+        boundary = '----chopper-autotune-boundary'
+        body = ''.join([
+            '--%s\r\nContent-Disposition: form-data; name="root"\r\n\r\nconfig\r\n' % boundary,
+            '--%s\r\nContent-Disposition: form-data; name="file"; filename="%s"\r\n'
+            'Content-Type: text/plain\r\n\r\n%s\r\n' % (boundary, name, content),
+            '--%s--\r\n' % boundary,
+        ]).encode()
+        req = urllib.request.Request(
+            self.url + '/server/files/upload', data=body, method='POST',
+            headers={'Content-Type': 'multipart/form-data; boundary=%s' % boundary})
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                resp.read()
+        except (urllib.error.HTTPError, OSError) as e:
+            raise MoonrakerError('cannot upload %s: %s' % (name, e)) from e

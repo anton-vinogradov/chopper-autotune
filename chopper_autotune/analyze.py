@@ -4,6 +4,7 @@ Works offline on a collected dataset; the printer is only needed for --apply.
 """
 from __future__ import annotations
 
+import re
 import statistics
 from collections import defaultdict
 from pathlib import Path
@@ -165,6 +166,57 @@ def write_report(ranked: 'list[dict]', driver: tmc.Driver, title: str, path: str
         f.write('\n'.join(parts))
 
 
+def updated_config(text: str, section: str, fields: dict) -> str:
+    """Rewrite the driver_* options of one config section, keeping everything else intact.
+
+    Existing active lines for the given fields are dropped (commented ones are left
+    as history), the new values are inserted right under the section header.
+    """
+    lines = text.splitlines(keepends=True)
+    header = re.compile(r'^\[%s\]\s*(?:[#;].*)?$' % re.escape(section))
+    starts = [i for i, line in enumerate(lines) if header.match(line.strip('\r\n'))]
+    if not starts:
+        raise SystemExit('section [%s] not found' % section)
+    if len(starts) > 1:
+        raise SystemExit('section [%s] found %d times' % (section, len(starts)))
+
+    start = starts[0]
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith('[')),
+               len(lines))
+    drop = re.compile(r'^\s*driver_(%s)\s*[:=]' % '|'.join(fields), re.IGNORECASE)
+    body = [line for line in lines[start + 1:end] if not drop.match(line)]
+    inserted = ['driver_%s: %d\n' % (name.upper(), value) for name, value in fields.items()]
+    return ''.join(lines[:start + 1] + inserted + body + lines[end:])
+
+
+def run_save(mk, manifest: dict, combo: tmc.Chopper):
+    """Persist the winner into the Klipper config through the Moonraker files API."""
+    if mk.is_printing():
+        raise SystemExit('printer is busy printing, not touching the config')
+    section = 'tmc%s %s' % (manifest['driver'], manifest['stepper'])
+    matches = []
+    for name in mk.list_config_files():
+        content = mk.download_config(name)
+        try:
+            changed = updated_config(content, section, combo.fields())
+        except SystemExit:
+            continue
+        matches.append((name, content, changed))
+    if not matches:
+        raise SystemExit('section [%s] not found in any config file' % section)
+    if len(matches) > 1:
+        raise SystemExit('section [%s] found in several files: %s'
+                         % (section, ', '.join(name for name, _, _ in matches)))
+
+    name, original, changed = matches[0]
+    backup = name.rsplit('.', 1)[0] + '.chopper-backup.cfg'
+    mk.upload_config(backup, original)
+    mk.upload_config(name, changed)
+    mk.gcode('RESTART')
+    print('\nSaved to %s (backup: %s), Klipper is restarting with the new registers'
+          % (name, backup))
+
+
 def spearman(xs: 'list[float]', ys: 'list[float]') -> float:
     def ranks(values):
         order = sorted(range(len(values)), key=values.__getitem__)
@@ -291,7 +343,9 @@ def run_analyze(args) -> int:
     best = ranked[0]
     print('\nRecommended for printer.cfg:\n')
     print(tmc.cfg_snippet(driver, manifest['stepper'], best['chopper']))
-    if args.apply:
+    if args.apply and not args.save:
         Moonraker(args.url).set_tmc_fields(manifest['stepper'], best['chopper'].fields())
-        print('\nApplied via SET_TMC_FIELD (runtime only, edit printer.cfg to persist)')
+        print('\nApplied via SET_TMC_FIELD (runtime only, use SAVE=1 to persist)')
+    if args.save:
+        run_save(Moonraker(args.url), manifest, best['chopper'])
     return 0
