@@ -6,16 +6,26 @@
 
 [![tests](https://github.com/anton-vinogradov/chopper-autotune/actions/workflows/ci.yml/badge.svg)](https://github.com/anton-vinogradov/chopper-autotune/actions/workflows/ci.yml)
 
-> **Status: working skeleton.** `collect` and `analyze` are implemented (full-grid sweep first, smart search next), not yet validated on real hardware.
+> **Status: v0.1.0, hardware-validated.** The full pipeline runs on a real printer (CoreXY, TMC2209, ADXL345); broader driver and printer coverage is still early.
 
 ## Contents
 
+- [Why](#why)
 - [The problem](#the-problem)
 - [The approach](#the-approach) · [how it works](#how-it-works-today) · [datasheet-driven scoring](#datasheet-driven-scoring-not-just-measurement)
 - [Two runs by design](#two-runs-by-design)
 - [Usage](#usage) · [one command](#the-simple-way--one-command) · [step by step](#the-manual-way--step-by-step) · [command reference](#command-reference)
 - [Stack](#stack) · [Prerequisites](#prerequisites) · [Roadmap](#roadmap)
 - [Prior art](#prior-art--credits) · [Datasheets](#datasheets) · [License](#license)
+
+## Why
+
+- **One command.** `CHOPPER_TUNE SAVE=1` finds each axis's resonance speed, searches the register space and writes the winner into `printer.cfg` in ~20 minutes — no graphs to read, no numbers to copy.
+- **Measured on *your* hardware, not guessed.** Every candidate is scored from real toolhead-accelerometer data on your motors, belts and supply voltage — not computed from a database.
+- **A real number.** On the reference printer (CoreXY, TMC2209): **−51% vibration** on the X axis in **8 minutes** versus Klipper defaults, at the resonance speed.
+- **What tuning spreadCycle is for.** Lower vibration and audible noise, cooler motors, a bit more torque headroom — the margin the one-size-fits-all datasheet defaults leave on the table.
+- **Won't trade silence for a whine.** The chopper frequency is derived from the registers, so configs that would slip into the audible band are penalised automatically.
+- **Built for a real printer.** Resumable runs, live progress on the KlipperScreen, a config backup before anything is written, and a `--csv` fallback if streaming misbehaves.
 
 ## The problem
 
