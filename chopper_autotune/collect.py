@@ -24,6 +24,9 @@ from .metrics import parse_accel_csv, vibration_score, window
 CSV_WAIT_SEC = 30.0
 MOVE_MARGIN = 0.4
 MIN_STEADY_SAMPLES = 32
+PARK_INTERVAL_MOVES = 400
+OVERHEAD_STREAM_SEC = 0.3
+OVERHEAD_CSV_SEC = 3.0
 
 
 @dataclass(frozen=True)
@@ -157,6 +160,10 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 
+def park(kl: Klippy, hw: Hardware):
+    kl.gcode('G28 X Y\nG0 X%.1f Y%.1f F6000\nM400\nM18' % hw.center)
+
+
 def capture_stream(hw: Hardware, script: str, duration: float) -> 'tuple[float, np.ndarray]':
     hw.kl.gcode('M400')
     hw.kl.gcode(script + '\nM400')
@@ -276,7 +283,7 @@ def collect(kl: Klippy, args) -> int:
                          % (travel, limit, MOVE_MARGIN * 100, hw.axis_span))
 
     n_moves = len(plan) * args.iterations * 2
-    overhead = 3.0 if args.csv else 1.5
+    overhead = OVERHEAD_CSV_SEC if args.csv else OVERHEAD_STREAM_SEC
     eta = n_moves * (args.measure_time + 2 * max(speeds) / accel + overhead)
     print('Plan: %d combinations x %d speeds -> %d moves of %.1fmm, capture %s, ETA %dh %02dm'
           % (len(plan) // len(speeds), len(speeds), n_moves, travel, args.source,
@@ -317,9 +324,9 @@ def collect(kl: Klippy, args) -> int:
         print('Resuming %s: %d measurements already present' % (root, len(done)))
 
     print('Preparing: home XY, park at center, disable motors')
-    kl.gcode('G28 X Y\nG0 X%.1f Y%.1f F6000\nM400\nM18' % hw.center)
+    park(kl, hw)
     started = time.time()
-    ok = failed = 0
+    ok = failed = moves_since_park = 0
     try:
         measure_baseline(hw, ds, args, done)
         for index, (combo, speed) in enumerate(plan, 1):
@@ -327,10 +334,15 @@ def collect(kl: Klippy, args) -> int:
                        if measurement_id(combo, speed, i, d) not in done]
             if not pending:
                 continue
+            if moves_since_park >= PARK_INTERVAL_MOVES:
+                print('Re-homing to reset accumulated drift')
+                park(kl, hw)
+                moves_since_park = 0
             kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
             magnitudes = []
             for iteration, direction in pending:
                 record = run_measurement(hw, ds, args, combo, speed, iteration, direction, travel, accel)
+                moves_since_park += 1
                 if record['status'] == 'ok':
                     ok += 1
                     magnitudes.append(record['score']['median_magnitude'])

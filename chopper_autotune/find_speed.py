@@ -8,8 +8,8 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
-from .collect import (MOVE_MARGIN, default_dataset_root, detect_hardware, measure_baseline,
-                      measure_move, now, travel_for)
+from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, default_dataset_root,
+                      detect_hardware, measure_baseline, measure_move, now, park, travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, find_socket
 
@@ -126,7 +126,7 @@ def scan(kl: Klippy, args) -> int:
               % (plan[-1][0], MIN_CRUISE_SEC, limit))
 
     n_moves = len(plan) * args.iterations * 2
-    overhead = 3.0 if args.csv else 1.5
+    overhead = OVERHEAD_CSV_SEC if args.csv else OVERHEAD_STREAM_SEC
     eta = sum(2 * (cruise + 2 * speed / accel + overhead) * args.iterations for speed, cruise in plan)
     print('Plan: %d speeds (%d..%d step %d) -> %d moves, capture %s, ETA %dm %02ds'
           % (len(plan), plan[0][0], plan[-1][0], args.step, n_moves, args.source,
@@ -165,7 +165,7 @@ def scan(kl: Klippy, args) -> int:
         print('Resuming %s: %d measurements already present' % (root, len(done)))
 
     print('Preparing: home XY, park at center, disable motors')
-    kl.gcode('G28 X Y\nG0 X%.1f Y%.1f F6000\nM400\nM18' % hw.center)
+    park(kl, hw)
     started = time.time()
     failed = 0
     try:
