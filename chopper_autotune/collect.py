@@ -196,25 +196,21 @@ def measure_baseline(hw: Hardware, ds: Dataset, args, done: set):
     print('Baseline noise: median magnitude %.1f' % record['score']['median_magnitude'])
 
 
-def run_measurement(hw: Hardware, ds: Dataset, args, combo: tmc.Chopper, speed: int,
-                    iteration: int, direction: int, travel: float, accel: float) -> dict:
-    mid = measurement_id(combo, speed, iteration, direction)
-    record = {'id': mid, 'kind': 'move', 'source': args.source, **combo.fields(),
-              'speed': speed, 'direction': direction, 'iteration': iteration, 'ts': now()}
+def measure_move(hw: Hardware, ds: Dataset, args, record: dict, speed: float, cruise: float,
+                 travel: float, direction: int, accel: float) -> dict:
+    """One FORCE_MOVE with capture and scoring; cruise is the steady-window duration."""
     move = 'FORCE_MOVE STEPPER=%s DISTANCE=%.3f VELOCITY=%.1f ACCEL=%.0f' \
            % (hw.stepper, travel * direction, speed, accel)
     for attempt in (1, 2):
         try:
             if args.csv:
-                data = capture_csv(hw, mid, move)
+                data = capture_csv(hw, record['id'], move)
                 record['score'] = vibration_score(data, args.trim)
-                if not args.no_raw:
-                    record['raw'] = ds.store_raw_samples(mid, data)
             else:
                 overflows = hw.kl.overflows
-                duration = 2 * speed / accel + args.measure_time
+                duration = travel / speed + speed / accel
                 t_end, data = capture_stream(hw, move, duration)
-                steady = steady_window(t_end, speed, accel, args.measure_time, args.trim)
+                steady = steady_window(t_end, speed, accel, cruise, args.trim)
                 sliced = window(data, *steady)
                 if len(sliced) < MIN_STEADY_SAMPLES:
                     raise ValueError('only %d samples in the steady window' % len(sliced))
@@ -223,17 +219,25 @@ def run_measurement(hw: Hardware, ds: Dataset, args, combo: tmc.Chopper, speed: 
                 lost = hw.kl.overflows - overflows
                 if lost:
                     record['score']['overflows'] = lost
-                if not args.no_raw:
-                    record['raw'] = ds.store_raw_samples(mid, data)
+            if not args.no_raw:
+                record['raw'] = ds.store_raw_samples(record['id'], data)
             record['status'] = 'ok'
             break
         except (KlippyError, TimeoutError, ValueError, OSError) as e:
             if attempt == 2:
                 record['status'] = 'failed'
                 record['error'] = str(e)
-                print('  %s failed: %s' % (mid, e))
+                print('  %s failed: %s' % (record['id'], e))
     ds.append(record)
     return record
+
+
+def run_measurement(hw: Hardware, ds: Dataset, args, combo: tmc.Chopper, speed: int,
+                    iteration: int, direction: int, travel: float, accel: float) -> dict:
+    record = {'id': measurement_id(combo, speed, iteration, direction), 'kind': 'move',
+              'source': args.source, **combo.fields(), 'speed': speed,
+              'direction': direction, 'iteration': iteration, 'ts': now()}
+    return measure_move(hw, ds, args, record, speed, args.measure_time, travel, direction, accel)
 
 
 def run_collect(args) -> int:
