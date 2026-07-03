@@ -51,10 +51,16 @@ def demo(kl: Klippy, args) -> int:
     if args.speed is not None:
         speed = args.speed.lo
     else:
-        from .find_speed import scan
-        code, speed = scan(kl, _scan_args(args))
-        if speed is None:
-            raise SystemExit('no clear resonance speed found; pass SPEED=')
+        speed = known_speed(args.axis)
+        if speed is not None:
+            print('Using resonance speed %d mm/s from the last %s run (pass SPEED= to override)'
+                  % (speed, args.axis))
+        else:
+            print('No previous run to reuse a speed from; scanning for resonance first')
+            from .find_speed import scan
+            _, speed = scan(kl, _scan_args(args))
+            if speed is None:
+                raise SystemExit('no clear resonance speed found; pass SPEED=')
 
     accel = args.accel or hw.max_accel / 10
     cruise = args.measure_time
@@ -146,6 +152,20 @@ def _showcase(kl, hw, args, ds, configs, speed, travel, accel, before_move, scre
             screen.update(summary, force=True)
             print('   => %s' % summary)
     return results
+
+
+def known_speed(axis: str) -> 'int | None':
+    """Resonance speed of the most recent run on this axis, so the show can start
+    immediately instead of re-scanning for ~2.5 minutes."""
+    from .analyze import dataset_dirs
+    for path in reversed(dataset_dirs()):
+        manifest = Dataset(path).manifest()
+        if manifest.get('axis') != axis:
+            continue
+        speed = manifest.get('speed') or (manifest.get('speeds') or [None])[0]
+        if speed:
+            return int(speed)
+    return None
 
 
 def _scan_args(args):

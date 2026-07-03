@@ -81,3 +81,18 @@ def test_showcase_alternates_and_announces(monkeypatch, capsys):
 
 def statistics_mean(xs):
     return sum(xs) / len(xs)
+
+
+def test_known_speed_reuses_latest_axis_run(tmp_path, monkeypatch):
+    from chopper_autotune.dataset import Dataset
+    from chopper_autotune.demo import known_speed
+
+    Dataset.create(tmp_path / '01_x', {'axis': 'x', 'speed': 58})
+    Dataset.create(tmp_path / '02_y', {'axis': 'y', 'speeds': [34]})
+    Dataset.create(tmp_path / '03_x', {'axis': 'x', 'speed': 60})
+    monkeypatch.setattr('chopper_autotune.analyze.dataset_dirs',
+                        lambda: sorted((tmp_path).iterdir()))
+
+    assert known_speed('x') == 60          # most recent x run
+    assert known_speed('y') == 34
+    assert known_speed('z') is None
