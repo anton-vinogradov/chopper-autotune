@@ -86,7 +86,7 @@ Python 3.9+ on the printer host. The klippy API socket for orchestration and sam
 - [x] Chopper-frequency model and audible-range penalty (first-order)
 - [x] Web-console macros (`CHOPPER_COLLECT`/`CHOPPER_ANALYZE`), installer, Moonraker update_manager
 - [x] Streaming capture with exact cruise-phase slicing (`--csv` fallback)
-- [ ] Hardware validation on a real printer
+- [x] Hardware validation on a real printer (CoreXY, TMC2209, ADXL345: streaming and CSV paths agree)
 - [ ] Automatic resonance speed detection
 - [ ] Forcing spreadCycle on stealthChop-default drivers during the test
 - [ ] Smart search in `collect` (coordinate descent per AN-001, Optuna, early abort of bad candidates) with successive halving
