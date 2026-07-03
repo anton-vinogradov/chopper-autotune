@@ -45,6 +45,10 @@ def main(argv=None) -> int:
     c.add_argument('--hstrt', type=Range.parse, default=Range(0, 7), help='hysteresis start range, default 0:7')
     c.add_argument('--hend', type=Range.parse, default=Range(0, 15), help='hysteresis end range, default 0:15')
     c.add_argument('--tpfd', type=Range.parse, default=None, help='TPFD range (TMC2240/5160 only)')
+    c.add_argument('--search', choices=('grid', 'descent'), default='grid',
+                   help='grid = full sweep; descent = coordinate descent per AN-001, minutes instead of hours')
+    c.add_argument('--audible-weight', type=float, default=0.25,
+                   help='descent objective penalty for audible chopper frequency')
     c.add_argument('--iterations', type=int, default=1, help='repeats per combination, default 1')
     c.add_argument('--measure-time', type=float, default=1.25, help='cruise time per move in seconds')
     c.add_argument('--accel', type=float, default=None, help='acceleration, default printer max_accel / 10')
@@ -76,6 +80,10 @@ def main(argv=None) -> int:
     f.add_argument('--dry-run', action='store_true')
     f.add_argument('-y', '--yes', action='store_true')
 
+    s = sub.add_parser('simulate', help='replay the descent strategy against a recorded grid dataset')
+    s.add_argument('dataset')
+    s.add_argument('--audible-weight', type=float, default=0.25)
+
     a = sub.add_parser('analyze', help='rank configurations from a dataset, report, optionally apply')
     a.add_argument('dataset', nargs='?', default=None,
                    help='dataset directory, default: the latest collected one')
@@ -89,6 +97,8 @@ def main(argv=None) -> int:
     a.add_argument('--apply', action='store_true', help='apply the best config via SET_TMC_FIELD')
     a.add_argument('--url', default='http://127.0.0.1:7125')
 
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(line_buffering=True)
     args = parser.parse_args(_gcode_args(sys.argv[1:] if argv is None else argv))
     if args.command == 'collect':
         from .collect import run_collect
@@ -96,5 +106,8 @@ def main(argv=None) -> int:
     if args.command == 'find-speed':
         from .find_speed import run_find_speed
         return run_find_speed(args)
+    if args.command == 'simulate':
+        from .search import run_simulate
+        return run_simulate(args)
     from .analyze import run_analyze
     return run_analyze(args)

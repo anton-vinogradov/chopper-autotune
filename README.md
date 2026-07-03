@@ -27,7 +27,7 @@ Close the loop on real hardware: *apply registers → move the axis → measure 
 4. Every measurement is appended to an on-disk dataset immediately; an interrupted run resumes from where it stopped.
 5. **`analyze`** aggregates the dataset (median across directions/iterations/speeds), penalizes configurations whose chopper frequency falls into the audible range, prints a ranking table, writes an interactive plotly report and a ready-to-paste `printer.cfg` snippet; `--apply` sets the winner live without restarting Klipper.
 
-Current limitation: the register search is a plain grid sweep — smart strategies (coordinate descent, Optuna, early abort) are next on the roadmap.
+Besides the default full-grid sweep, `--search descent` (`SEARCH=descent`) runs a coordinate descent in the AN-001 tuning order — `TBL`+`TOFF` jointly, then `HSTRT`, `HEND`, then `TPFD` — evaluating a few percent of the grid (minutes instead of hours), re-measuring the top candidates before recommending. The objective includes the audible-chopper penalty, so the descent does not trade a barely lower vibration for a 15 kHz whine. Any recorded grid dataset doubles as an offline benchmark: `simulate <dataset>` replays the descent against it and reports the gap to the true optimum.
 
 ### Datasheet-driven scoring, not just measurement
 
@@ -61,7 +61,8 @@ Then from the web console (Mainsail/Fluidd):
 ```
 CHOPPER_FIND_SPEED                   ; 1. locate the resonance speeds of the axis
 CHOPPER_COLLECT SPEED=55 DRY_RUN=1   ; check the plan and ETA without moving anything
-CHOPPER_COLLECT SPEED=55             ; 2. sweep the grid at the resonance speed (long)
+CHOPPER_COLLECT SPEED=55             ; 2. sweep the full grid at the resonance speed (hours)
+CHOPPER_COLLECT SPEED=55 SEARCH=descent  ; ...or coordinate descent (minutes)
 CHOPPER_ANALYZE                      ; 3. rank the latest dataset, write the report
 CHOPPER_ANALYZE APPLY=1              ; apply the winner live via SET_TMC_FIELD
 ```
@@ -91,7 +92,8 @@ Python 3.9+ on the printer host. The klippy API socket for orchestration and sam
 - [x] Hardware validation on a real printer (CoreXY, TMC2209, ADXL345: streaming and CSV paths agree)
 - [x] Automatic resonance speed detection (`find-speed`, prominence-based peak picking)
 - [ ] Forcing spreadCycle on stealthChop-default drivers during the test
-- [ ] Smart search in `collect` (coordinate descent per AN-001, Optuna, early abort of bad candidates) with successive halving
+- [x] Coordinate-descent search (`--search descent`: AN-001 order, audible-penalty objective, top-3 re-measurement, offline `simulate` replay)
+- [ ] Optuna/TPE strategy, early abort of bad candidates mid-move
 - [ ] Validation phase (re-measure top candidates before recommending)
 - [ ] StallGuard-based current tuning
 
