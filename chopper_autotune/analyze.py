@@ -165,6 +165,56 @@ def write_report(ranked: 'list[dict]', driver: tmc.Driver, title: str, path: str
         f.write('\n'.join(parts))
 
 
+def spearman(xs: 'list[float]', ys: 'list[float]') -> float:
+    def ranks(values):
+        order = sorted(range(len(values)), key=values.__getitem__)
+        result = [0.0] * len(values)
+        for position, index in enumerate(order):
+            result[index] = float(position)
+        return result
+
+    rx, ry = ranks(xs), ranks(ys)
+    n = len(xs)
+    d2 = sum((a - b) ** 2 for a, b in zip(rx, ry))
+    return 1 - 6 * d2 / (n * (n * n - 1))
+
+
+def run_compare(args) -> int:
+    """Agreement between two datasets: winners, rank correlation, top overlap."""
+    sides = []
+    for path in (args.dataset_a, args.dataset_b):
+        ds = Dataset.open(path)
+        driver = tmc.DRIVERS[ds.manifest()['driver']]
+        aggregates = aggregate(ds, False, 0.25)
+        if not aggregates:
+            raise SystemExit('no successful measurements in %s' % path)
+        winner = rank(aggregates, driver, args.audible_weight)[0]
+        sides.append({'path': path, 'winner': winner,
+                      'magnitudes': {a['chopper']: a['magnitude'] for a in aggregates}})
+
+    for tag, side in zip('AB', sides):
+        print('%s: %s (%d combos)  winner %s -> %.1f'
+              % (tag, side['path'], len(side['magnitudes']),
+                 side['winner']['chopper'].label(), side['winner']['magnitude']))
+
+    a, b = sides[0]['magnitudes'], sides[1]['magnitudes']
+    common = sorted(set(a) & set(b), key=a.get)
+    print('Common combos: %d' % len(common))
+    if len(common) < 3:
+        print('Too few common combos for correlation')
+        return 0
+
+    top = min(args.top, len(common))
+    top_a = set(sorted(common, key=a.get)[:top])
+    top_b = set(sorted(common, key=b.get)[:top])
+    print('Spearman rank correlation: %.3f'
+          % spearman([a[c] for c in common], [b[c] for c in common]))
+    print('Top-%d overlap: %d/%d' % (top, len(top_a & top_b), top))
+    print('Median magnitude scale B/A: %.2f'
+          % statistics.median(b[c] / a[c] for c in common))
+    return 0
+
+
 def run_analyze(args) -> int:
     dataset = args.dataset or latest_dataset()
     ds = Dataset.open(dataset)

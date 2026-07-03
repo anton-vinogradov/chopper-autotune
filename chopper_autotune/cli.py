@@ -7,7 +7,8 @@ import sys
 
 from .collect import Range
 
-_STORE_TRUE = {'--no-raw', '--dry-run', '--yes', '--csv', '--recompute', '--no-html', '--apply'}
+_STORE_TRUE = {'--no-raw', '--dry-run', '--yes', '--csv', '--skip-audible', '--recompute',
+               '--no-html', '--apply'}
 
 
 def _gcode_args(argv: 'list[str]') -> 'list[str]':
@@ -53,6 +54,8 @@ def main(argv=None) -> int:
                    help='start the descent from the best config of a previous dataset '
                         '(fast second axis: every candidate is still measured on this one)')
     c.add_argument('--iterations', type=int, default=1, help='repeats per combination, default 1')
+    c.add_argument('--skip-audible', action='store_true',
+                   help='exclude combinations with an audible chopper frequency instead of just penalizing them')
     c.add_argument('--measure-time', type=float, default=1.25, help='cruise time per move in seconds')
     c.add_argument('--accel', type=float, default=None, help='acceleration, default printer max_accel / 10')
     c.add_argument('--trim', type=float, default=None,
@@ -87,6 +90,12 @@ def main(argv=None) -> int:
     s.add_argument('dataset')
     s.add_argument('--audible-weight', type=float, default=0.25)
 
+    m = sub.add_parser('compare', help='agreement between two datasets: winners, rank correlation, top overlap')
+    m.add_argument('dataset_a')
+    m.add_argument('dataset_b')
+    m.add_argument('--top', type=int, default=10)
+    m.add_argument('--audible-weight', type=float, default=0.25)
+
     a = sub.add_parser('analyze', help='rank configurations from a dataset, report, optionally apply')
     a.add_argument('dataset', nargs='?', default=None,
                    help='dataset directory, default: the latest collected one')
@@ -112,5 +121,8 @@ def main(argv=None) -> int:
     if args.command == 'simulate':
         from .search import run_simulate
         return run_simulate(args)
+    if args.command == 'compare':
+        from .analyze import run_compare
+        return run_compare(args)
     from .analyze import run_analyze
     return run_analyze(args)
