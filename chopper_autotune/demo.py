@@ -62,8 +62,9 @@ def demo(kl: Klippy, args) -> int:
     if travel > hw.axis_span * MOVE_MARGIN:
         raise SystemExit('travel too long for the axis; lower MEASURE_TIME or raise ACCEL')
 
-    print('Demo on %s at %d mm/s: defaults %s vs tuned %s'
-          % (hw.stepper, speed, default.label(), tuned.label()))
+    mode = 'live showcase, %d rounds' % args.rounds if args.live else 'measure %d each' % args.iterations
+    print('Demo on %s at %d mm/s (%s): defaults %s vs tuned %s'
+          % (hw.stepper, speed, mode, default.label(), tuned.label()))
     if args.dry_run:
         return 0
 
@@ -81,15 +82,19 @@ def demo(kl: Klippy, args) -> int:
     results = {name: [] for name, _ in configs}
     try:
         measure_baseline(hw, ds, args, set())
-        for iteration in range(args.iterations):
-            for name, combo in configs:
-                kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
-                for direction in (1, -1):
-                    record = run_measurement(hw, ds, args, combo, speed, iteration, direction,
-                                             travel, accel, before_move)
-                    if record['status'] == 'ok':
-                        results[name].append(record['score']['median_magnitude'])
-                screen.update('Chopper demo %s %d/%d' % (name, iteration + 1, args.iterations))
+        if args.live:
+            results = _showcase(kl, hw, args, ds, configs, speed, travel, accel,
+                                before_move, screen)
+        else:
+            for iteration in range(args.iterations):
+                for name, combo in configs:
+                    kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
+                    for direction in (1, -1):
+                        record = run_measurement(hw, ds, args, combo, speed, iteration, direction,
+                                                 travel, accel, before_move)
+                        if record['status'] == 'ok':
+                            results[name].append(record['score']['median_magnitude'])
+                    screen.update('Chopper demo %s %d/%d' % (name, iteration + 1, args.iterations))
     finally:
         kl.gcode(tmc.set_fields_script(hw.stepper, tuned.fields()))
         exit_spreadcycle(kl, hw)
@@ -108,6 +113,34 @@ def demo(kl: Klippy, args) -> int:
         print('  %.2fx quieter above the %.0f noise floor' % ((d - noise) / (t - noise), noise))
     screen.update('Chopper demo: %.1fx quieter' % (d / t), force=True)
     return 0
+
+
+def _showcase(kl, hw, args, ds, configs, speed, travel, accel, before_move, screen):
+    """Play defaults and tuned alternately, announcing each so a listener can hear
+    the difference change in real time; return the per-config magnitudes."""
+    labels = {'default': 'BEFORE  defaults', 'tuned': 'AFTER   tuned'}
+    results = {name: [] for name, _ in configs}
+    it = 0
+    for r in range(1, args.rounds + 1):
+        for name, combo in configs:
+            kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
+            screen.update('Round %d/%d  %s' % (r, args.rounds, labels[name]), force=True)
+            print('\n>> round %d/%d  %s  (%s) — listen' % (r, args.rounds, labels[name],
+                                                           combo.label()))
+            mags = []
+            for _ in range(args.repeats):
+                for direction in (1, -1):
+                    record = run_measurement(hw, ds, args, combo, speed, it, direction,
+                                             travel, accel, before_move)
+                    it += 1
+                    if record['status'] == 'ok':
+                        mags.append(record['score']['median_magnitude'])
+            if mags:
+                results[name].extend(mags)
+                avg = statistics.mean(mags)
+                screen.update('%s ~%.0f' % (labels[name], avg), force=True)
+                print('   %s ~%.0f' % (labels[name], avg))
+    return results
 
 
 def _scan_args(args):
