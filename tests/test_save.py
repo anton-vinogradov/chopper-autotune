@@ -82,11 +82,29 @@ def test_run_save_refuses_when_printing():
     assert mk.uploads == []
 
 
-def test_run_save_refuses_ambiguous_sections():
-    files = {'printer.cfg': CFG, 'extra.cfg': '[tmc2209 stepper_x]\nrun_current: 1\n'}
+def test_run_save_refuses_genuinely_ambiguous_sections():
+    # both files are actually loaded (printer.cfg includes extra.cfg) and both carry
+    # the section -> genuine ambiguity, refuse
+    files = {'printer.cfg': '[include extra.cfg]\n' + CFG,
+             'extra.cfg': '[tmc2209 stepper_x]\nrun_current: 1\n'}
     mk = FakeMoonraker(files)
     with pytest.raises(SystemExit, match='several files'):
         run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))])
+
+
+def test_run_save_ignores_unincluded_dated_backups():
+    # Mainsail/SAVE_CONFIG leftovers carry the same section but are not [include]d;
+    # they must not block or receive the save
+    files = {'printer.cfg': CFG,
+             'mainsail.cfg': '[respond]\n',
+             'printer-20250922_211125.cfg': CFG,
+             'printer-20260307_201242.cfg': CFG}
+    mk = FakeMoonraker(files)
+    run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))])
+    assert mk.uploads == ['printer.chopper-backup.cfg', 'printer.cfg']
+    assert 'driver_TOFF: 8' in mk.files['printer.cfg']
+    # the dated backups are untouched
+    assert mk.files['printer-20250922_211125.cfg'] == CFG
 
 
 def test_run_save_ignores_its_own_backups():
@@ -100,7 +118,7 @@ def test_run_save_ignores_its_own_backups():
 
 
 def test_run_save_uploads_all_backups_before_edits():
-    files = {'printer.cfg': CFG,
+    files = {'printer.cfg': '[include extra.cfg]\n' + CFG,
              'extra.cfg': '[tmc2209 stepper_z]\nuart_pin: PC10\ndriver_TOFF: 4\n'}
     mk = FakeMoonraker(files)
     run_save(mk, [

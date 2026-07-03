@@ -195,6 +195,31 @@ def updated_config(text: str, section: str, fields: dict) -> str:
 
 
 BACKUP_SUFFIX = '.chopper-backup.cfg'
+INCLUDE_RE = re.compile(r'^\[include\s+(.+?)\]\s*$', re.MULTILINE)
+
+
+def active_config_files(mk, root: str = 'printer.cfg') -> 'dict[str, str]':
+    """Only the configs Klipper actually loads: root plus its transitive [include]s.
+
+    Dated backups (printer-YYYYMMDD.cfg) and SAVE_CONFIG leftovers sit in the same
+    directory and carry the same sections, but are not included anywhere — resolving
+    the include closure keeps the search on the live config only.
+    """
+    import posixpath
+    from fnmatch import fnmatch
+    all_files = mk.list_config_files()
+    active, stack = {}, [root]
+    while stack:
+        name = stack.pop()
+        if name in active or name not in all_files:
+            continue
+        content = mk.download_config(name)
+        active[name] = content
+        base = posixpath.dirname(name)
+        for pattern in INCLUDE_RE.findall(content):
+            full = posixpath.normpath(posixpath.join(base, pattern.strip()))
+            stack += [f for f in all_files if fnmatch(f, full)]
+    return active
 
 
 def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]'):
@@ -207,8 +232,10 @@ def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]'):
     """
     if mk.is_printing():
         raise SystemExit('printer is busy printing, not touching the config')
-    files = {name: mk.download_config(name) for name in mk.list_config_files()
+    files = {name: content for name, content in active_config_files(mk).items()
              if not name.endswith(BACKUP_SUFFIX)}
+    if not files:
+        raise SystemExit('could not read printer.cfg via Moonraker')
     originals = dict(files)
     edited = []
     for manifest, combo in items:
