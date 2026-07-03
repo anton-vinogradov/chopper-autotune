@@ -103,7 +103,7 @@ CHOPPER_ANALYZE APPLY=1              ; apply the winner live via SET_TMC_FIELD
 CHOPPER_ANALYZE SAVE=1               ; persist it into the config and restart Klipper
 ```
 
-The same over SSH: `chopper-autotune tune|collect|analyze|…`. Every macro parameter maps 1:1 to a CLI flag (`MEASURE_TIME=1.5` → `--measure-time 1.5`); boolean flags take `1`/`0`. Progress is mirrored to the printer display (KlipperScreen / LCD / web header) via `M117`, with the final recommendation left on screen.
+The same over SSH: `chopper-autotune tune|collect|analyze|…`. Every macro parameter maps 1:1 to a CLI flag (`MEASURE_TIME=1.5` → `--measure-time 1.5`); boolean flags take `1`/`0`. Progress is reported two ways: `M117` sets `display_status.message` (the Mainsail/Fluidd header, LCDs, and the KlipperScreen status line), and `M118` echoes each update to the console (Mainsail/Fluidd/KlipperScreen console) — so it's visible however the run was launched. Each channel self-disables if the printer lacks it. The final recommendation stays in the display message.
 
 ![Tuning progress on the KlipperScreen display](docs/klipperscreen.svg)
 
