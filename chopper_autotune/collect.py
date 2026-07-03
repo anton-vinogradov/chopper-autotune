@@ -312,8 +312,8 @@ def collect(kl: Klippy, args) -> int:
     if done:
         print('Resuming %s: %d measurements already present' % (root, len(done)))
 
-    print('Preparing: home, park at center, disable motors')
-    kl.gcode('G28\nG0 X%.1f Y%.1f F6000\nM400\nM18' % hw.center)
+    print('Preparing: home XY, park at center, disable motors')
+    kl.gcode('G28 X Y\nG0 X%.1f Y%.1f F6000\nM400\nM18' % hw.center)
     started = time.time()
     ok = failed = 0
     try:
@@ -339,7 +339,7 @@ def collect(kl: Klippy, args) -> int:
         print('Restoring baseline registers, homing')
         if hw.baseline:
             kl.gcode(tmc.set_fields_script(hw.stepper, hw.baseline))
-        kl.gcode('G28')
+        kl.gcode('G28 X Y')
 
     print('Done in %dm: %d ok, %d failed -> %s' % ((time.time() - started) // 60, ok, failed, root))
     print('Next: chopper-autotune analyze %s' % root)
