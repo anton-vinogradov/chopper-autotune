@@ -417,12 +417,13 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
 def run_collect(args) -> int:
     kl = Klippy(find_socket(args.socket)).connect()
     try:
-        return collect(kl, args)
+        code, _ = collect(kl, args)
+        return code
     finally:
         kl.close()
 
 
-def collect(kl: Klippy, args) -> int:
+def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
     args.source = 'csv' if args.csv else 'stream'
     if args.trim is None:
         args.trim = 0.25 if args.csv else 0.1
@@ -470,10 +471,10 @@ def collect(kl: Klippy, args) -> int:
               'capture %s, ETA under %dh %02dm'
               % (budget, n_moves, travel, args.source, eta // 3600, eta % 3600 // 60))
     if args.dry_run:
-        return 0
+        return 0, None
     if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):
         print('Aborted')
-        return 1
+        return 1, None
 
     if not args.csv:
         kl.subscribe_accel(hw.accel_chip)
@@ -533,4 +534,4 @@ def collect(kl: Klippy, args) -> int:
 
     print('Done in %dm: %d ok, %d failed -> %s' % ((time.time() - started) // 60, ok, failed, root))
     print('Next: chopper-autotune analyze %s' % root)
-    return 0 if failed == 0 else 2
+    return (0 if failed == 0 else 2), str(root)

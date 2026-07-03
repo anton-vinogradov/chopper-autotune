@@ -189,32 +189,38 @@ def updated_config(text: str, section: str, fields: dict) -> str:
     return ''.join(lines[:start + 1] + inserted + body + lines[end:])
 
 
-def run_save(mk, manifest: dict, combo: tmc.Chopper):
-    """Persist the winner into the Klipper config through the Moonraker files API."""
+def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]'):
+    """Persist winners into the Klipper config through the Moonraker files API.
+
+    All edits are applied in memory first, each touched file is backed up once,
+    then everything is uploaded and Klipper restarted a single time — so saving
+    several axes in one go cannot leave the config half-written.
+    """
     if mk.is_printing():
         raise SystemExit('printer is busy printing, not touching the config')
-    section = 'tmc%s %s' % (manifest['driver'], manifest['stepper'])
-    matches = []
-    for name in mk.list_config_files():
-        content = mk.download_config(name)
-        try:
-            changed = updated_config(content, section, combo.fields())
-        except SystemExit:
-            continue
-        matches.append((name, content, changed))
-    if not matches:
-        raise SystemExit('section [%s] not found in any config file' % section)
-    if len(matches) > 1:
-        raise SystemExit('section [%s] found in several files: %s'
-                         % (section, ', '.join(name for name, _, _ in matches)))
+    files = {name: mk.download_config(name) for name in mk.list_config_files()}
+    originals = dict(files)
+    edited = []
+    for manifest, combo in items:
+        section = 'tmc%s %s' % (manifest['driver'], manifest['stepper'])
+        matches = [name for name in files
+                   if re.search(r'^\[%s\]' % re.escape(section), files[name], re.MULTILINE)]
+        if not matches:
+            raise SystemExit('section [%s] not found in any config file' % section)
+        if len(matches) > 1:
+            raise SystemExit('section [%s] found in several files: %s'
+                             % (section, ', '.join(matches)))
+        name = matches[0]
+        files[name] = updated_config(files[name], section, combo.fields())
+        if name not in edited:
+            edited.append(name)
 
-    name, original, changed = matches[0]
-    backup = name.rsplit('.', 1)[0] + '.chopper-backup.cfg'
-    mk.upload_config(backup, original)
-    mk.upload_config(name, changed)
+    for name in edited:
+        mk.upload_config(name.rsplit('.', 1)[0] + '.chopper-backup.cfg', originals[name])
+        mk.upload_config(name, files[name])
     mk.gcode('RESTART')
-    print('\nSaved to %s (backup: %s), Klipper is restarting with the new registers'
-          % (name, backup))
+    print('\nSaved to %s (backups: *.chopper-backup.cfg), Klipper is restarting '
+          'with the new registers' % ', '.join(edited))
 
 
 def spearman(xs: 'list[float]', ys: 'list[float]') -> float:
@@ -347,5 +353,5 @@ def run_analyze(args) -> int:
         Moonraker(args.url).set_tmc_fields(manifest['stepper'], best['chopper'].fields())
         print('\nApplied via SET_TMC_FIELD (runtime only, use SAVE=1 to persist)')
     if args.save:
-        run_save(Moonraker(args.url), manifest, best['chopper'])
+        run_save(Moonraker(args.url), [(manifest, best['chopper'])])
     return 0

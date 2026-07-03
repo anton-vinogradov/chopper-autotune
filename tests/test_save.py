@@ -66,7 +66,7 @@ class FakeMoonraker:
 
 def test_run_save_backs_up_edits_and_restarts(capsys):
     mk = FakeMoonraker({'printer.cfg': CFG, 'mainsail.cfg': '[respond]\n'})
-    run_save(mk, {'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))
+    run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))])
 
     assert mk.uploads == ['printer.chopper-backup.cfg', 'printer.cfg']
     assert mk.files['printer.chopper-backup.cfg'] == CFG
@@ -78,7 +78,7 @@ def test_run_save_backs_up_edits_and_restarts(capsys):
 def test_run_save_refuses_when_printing():
     mk = FakeMoonraker({'printer.cfg': CFG}, printing=True)
     with pytest.raises(SystemExit, match='busy printing'):
-        run_save(mk, {'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))
+        run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))])
     assert mk.uploads == []
 
 
@@ -86,4 +86,4 @@ def test_run_save_refuses_ambiguous_sections():
     files = {'printer.cfg': CFG, 'extra.cfg': '[tmc2209 stepper_x]\nrun_current: 1\n'}
     mk = FakeMoonraker(files)
     with pytest.raises(SystemExit, match='several files'):
-        run_save(mk, {'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))
+        run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))])
