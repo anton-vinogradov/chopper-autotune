@@ -6,8 +6,9 @@ import pytest
 from chopper_autotune import tmc
 from chopper_autotune.collect import Range
 from chopper_autotune.dataset import Dataset
-from chopper_autotune.search import (coordinate_descent, dataset_history, descent_budget,
-                                     penalized_score, run_simulate, seed_start)
+from chopper_autotune.search import (_spanning_starts, coordinate_descent, dataset_history,
+                                     descent_budget, multi_start_descent, penalized_score,
+                                     run_simulate, seed_start)
 
 DRIVER = tmc.DRIVERS['2209']
 RANGES = {'tbl': Range(0, 3), 'toff': Range(1, 8), 'hstrt': Range(0, 7), 'hend': Range(0, 15)}
@@ -115,6 +116,43 @@ def test_seed_start_empty_dataset(tmp_path):
     ds = Dataset.create(tmp_path / 'empty', {})
     with pytest.raises(SystemExit):
         seed_start(ds, DRIVER, 0.25)
+
+
+def nonseparable(combo):
+    """Two valleys interacting on (toff, hend): a shallow one at toff8/low-hend that a
+    low-hend start descends into, and a deeper global one at toff2/high-hend that is
+    invisible until hend is high — the exact blind spot the reference grid exposed."""
+    base = 10 * abs(combo.hstrt - 4) + 20 * combo.tbl
+    at_low = 100 * abs(combo.toff - 8) + 8 * combo.hend
+    at_high = 100 * abs(combo.toff - 2) + 8 * (15 - combo.hend) - 40
+    return 1000 + base + min(at_low, at_high)
+
+
+def test_multi_start_escapes_the_toff_hend_blind_spot():
+    ranges = {'tbl': Range(0, 0), 'toff': Range(1, 8), 'hstrt': Range(0, 7), 'hend': Range(0, 15)}
+    baseline = tmc.Chopper(0, 3, 4, 0)
+    cache = {}
+    def cached(combo):
+        if combo not in cache:
+            cache[combo] = nonseparable(combo)
+        return cache[combo]
+
+    single = coordinate_descent(DRIVER, ranges['tbl'], ranges['toff'], ranges['hstrt'],
+                                ranges['hend'], None, baseline, cached)
+    multi = multi_start_descent(DRIVER, ranges['tbl'], ranges['toff'], ranges['hstrt'],
+                                ranges['hend'], None, baseline, cached)
+
+    assert single.toff == 8 and single.hend == 0        # stuck in the shallow valley
+    assert multi == tmc.Chopper(0, 2, 4, 14)            # deep global one (hend 15 breaks 18-limit)
+    assert nonseparable(multi) < nonseparable(single)
+
+
+def test_spanning_starts_valid_and_spread():
+    # tbl 2:3 keeps toff=1 valid so all three toff levels survive
+    starts = _spanning_starts(Range(2, 3), Range(1, 8), Range(0, 7), Range(0, 15))
+    assert all(tmc.validate(c) is None for c in starts)
+    assert {c.toff for c in starts} == {1, 4, 8}
+    assert {c.hend for c in starts} == {0, 7, 15}
 
 
 def test_dataset_history_groups_directions(tmp_path):

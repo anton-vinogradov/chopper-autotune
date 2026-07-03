@@ -439,7 +439,7 @@ def validate_top(kl: Klippy, hw: Hardware, ds: Dataset, args, speeds: 'list[int]
 def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None',
                 speeds: 'list[int]', travel: float, accel: float, done: set,
                 before_move, screen: Screen) -> 'tuple[int, int]':
-    from .search import coordinate_descent, dataset_history, penalized_score, seed_start
+    from .search import dataset_history, multi_start_descent, penalized_score, seed_start
 
     stats = {'ok': 0, 'failed': 0}
     history = dataset_history(ds)
@@ -483,8 +483,8 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
     if tmc.validate(start) is not None:
         start = tmc.Chopper(2, 3, 5, 0, hw.baseline.get('tpfd'))
 
-    best = coordinate_descent(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd,
-                              start, evaluate)
+    best = multi_start_descent(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd,
+                               start, evaluate)
     finalists = sorted((c for c in cache if cache[c] != float('inf')), key=cache.get)[:args.validate]
     print('Descent best %s; validating top %d with extra runs' % (best.label(), len(finalists)))
     for combo in finalists:
@@ -546,8 +546,8 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
         from .search import descent_budget
         budget = descent_budget(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd)
         n_moves = budget * len(speeds) * args.iterations * 2 + validation_moves
-        print('Plan: coordinate descent, up to %d candidates -> up to %d moves of %.1fmm, '
-              'capture %s, ETA under %s'
+        print('Plan: multi-start coordinate descent, up to %d candidates -> up to %d moves '
+              'of %.1fmm, capture %s, ETA under %s'
               % (budget, n_moves, travel, args.source, eta_text(n_moves * per_move)))
     if args.dry_run:
         return 0, None

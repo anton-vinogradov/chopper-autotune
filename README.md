@@ -50,7 +50,7 @@ Close the loop on real hardware: *apply registers → move the axis → measure 
 4. Every measurement is appended to an on-disk dataset immediately; an interrupted run resumes from where it stopped.
 5. **`analyze`** aggregates the dataset (mean across directions/iterations/speeds — the fwd/rev difference is real, so a config must be quiet *both* ways to win), penalizes configurations whose chopper frequency falls into the audible range, prints a ranking table, writes an interactive plotly report and a ready-to-paste `printer.cfg` snippet; `--apply` sets the winner live without restarting Klipper.
 
-Besides the default full-grid sweep, `--search descent` (`SEARCH=descent`) runs a coordinate descent in the AN-001 tuning order — `TBL`+`TOFF` jointly, then `HSTRT`, `HEND`, then `TPFD` — evaluating a few percent of the grid (minutes instead of hours), re-measuring the top candidates before recommending. The objective includes the audible-chopper penalty, so the descent does not trade a barely lower vibration for a 15 kHz whine. For the second axis, `SEED_FROM=<dataset>` starts the descent from the winner of the first one — the seed only positions the search, every candidate is still measured on the target axis, so belt tension and mechanics differences are accounted for; a good seed converges in a couple of minutes, a bad one just costs the usual descent time. Any recorded grid dataset doubles as an offline benchmark: `simulate <dataset>` replays the descent against it and reports the gap to the true optimum.
+Besides the default full-grid sweep, `--search descent` (`SEARCH=descent`) runs a **multi-start** coordinate descent in the AN-001 tuning order — `TBL`+`TOFF` jointly, then `HSTRT`, `HEND`, then `TPFD` — evaluating a few percent of the grid (minutes instead of hours), re-measuring the top candidates before recommending. Several seeds spread across the `TOFF`×`HEND` plane keep the greedy search from getting trapped: phase A sweeps `TOFF` at a fixed `HEND`, so a single low-`HEND` start hides the low-`TOFF`/high-`HEND` valley — starting from a few `HEND` levels lets some run find it. The objective includes the audible-chopper penalty, so the descent does not trade a barely lower vibration for a 15 kHz whine. For the second axis, `SEED_FROM=<dataset>` starts the descent from the winner of the first one — the seed only positions the search, every candidate is still measured on the target axis, so belt tension and mechanics differences are accounted for; a good seed converges in a couple of minutes, a bad one just costs the usual descent time. Any recorded grid dataset doubles as an offline benchmark: `simulate <dataset>` replays the descent against it and reports the gap to the true optimum.
 
 ### Datasheet-driven scoring, not just measurement
 
@@ -95,7 +95,7 @@ That is the whole workflow: the tool finds the resonance speed of each axis, run
 CHOPPER_FIND_SPEED                   ; 1. locate the resonance speeds of the axis
 CHOPPER_COLLECT SPEED=55 DRY_RUN=1   ; check the plan and ETA without moving anything
 CHOPPER_COLLECT SPEED=55             ; 2. sweep the full grid at the resonance speed (hours)
-CHOPPER_COLLECT SPEED=55 SEARCH=descent  ; ...or coordinate descent (minutes)
+CHOPPER_COLLECT SPEED=55 SEARCH=descent  ; ...or multi-start descent (minutes)
 CHOPPER_COLLECT AXIS=Y SPEED=52 SEARCH=descent SEED_FROM=<X dataset>  ; fast second axis
 CHOPPER_STATUS                       ; progress and ETA of the running collection
 CHOPPER_ANALYZE                      ; 3. rank the latest dataset, write the report
@@ -140,7 +140,7 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 |---|---|---|
 | `SPEED` | required | resonance speed, mm/s (or a `lo:hi` range) |
 | `AXIS` | `X` | axis to tune |
-| `SEARCH` | `grid` | `grid` = full sweep (hours), `descent` = coordinate descent (minutes) |
+| `SEARCH` | `grid` | `grid` = full sweep (hours), `descent` = multi-start coordinate descent (minutes) |
 | `TBL` / `TOFF` / `HSTRT` / `HEND` | `0:3` / `1:8` / `0:7` / `0:15` | register ranges (`lo:hi` or a single value) |
 | `TPFD` | off | TPFD range, TMC2240/5160 only |
 | `SEED_FROM` | — | start the descent from another dataset's winner (fast second axis) |
@@ -199,7 +199,7 @@ Python 3.9+ on the printer host. The klippy API socket for orchestration and sam
 - [x] Automatic resonance speed detection (`find-speed`, prominence-based peak picking)
 - [x] Forcing spreadCycle during the test when `stealthchop_threshold` is configured; `CHOPPER_STATUS` progress/ETA
 - [x] One-command `CHOPPER_TUNE` pipeline (speed scan → descent per axis → batched `SAVE=1`)
-- [x] Coordinate-descent search (`--search descent`: AN-001 order, audible-penalty objective, top-3 re-measurement, offline `simulate` replay)
+- [x] Multi-start coordinate-descent search (`--search descent`: AN-001 order, TOFF×HEND-spread seeds to escape the non-separable blind spot, audible-penalty objective, offline `simulate` replay)
 - [ ] Optuna/TPE strategy, early abort of bad candidates mid-move
 - [x] Validation phase: top candidates re-measured with extra runs before recommending (grid and descent)
 - [ ] StallGuard-based current tuning
