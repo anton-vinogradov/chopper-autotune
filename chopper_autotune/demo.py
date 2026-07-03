@@ -51,10 +51,16 @@ def demo(kl: Klippy, args) -> int:
     if args.speed is not None:
         speed = args.speed.lo
     else:
-        from .find_speed import scan
-        code, speed = scan(kl, _scan_args(args))
-        if speed is None:
-            raise SystemExit('no clear resonance speed found; pass SPEED=')
+        speed = known_speed(args.axis)
+        if speed is not None:
+            print('Using resonance speed %d mm/s from the last %s run (pass SPEED= to override)'
+                  % (speed, args.axis))
+        else:
+            print('No previous run to reuse a speed from; scanning for resonance first')
+            from .find_speed import scan
+            _, speed = scan(kl, _scan_args(args))
+            if speed is None:
+                raise SystemExit('no clear resonance speed found; pass SPEED=')
 
     accel = args.accel or hw.max_accel / 10
     cruise = args.measure_time
@@ -146,6 +152,22 @@ def _showcase(kl, hw, args, ds, configs, speed, travel, accel, before_move, scre
             screen.update(summary, force=True)
             print('   => %s' % summary)
     return results
+
+
+def known_speed(axis: str) -> 'int | None':
+    """Resonance speed the axis was tuned at, from the most recent collect/descent run,
+    so the show starts immediately instead of re-scanning for ~2.5 minutes. Only tuning
+    datasets (a 'search' mode, single speed) are trusted — find-speed carries the whole
+    scan range and demo datasets only echo whatever speed they were told."""
+    from .analyze import dataset_dirs
+    for path in reversed(dataset_dirs()):
+        manifest = Dataset(path).manifest()
+        if manifest.get('axis') != axis or 'search' not in manifest:
+            continue
+        speeds = manifest.get('speeds') or []
+        if len(speeds) == 1:
+            return int(speeds[0])
+    return None
 
 
 def _scan_args(args):
