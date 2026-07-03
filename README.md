@@ -8,6 +8,15 @@
 
 > **Status: working skeleton.** `collect` and `analyze` are implemented (full-grid sweep first, smart search next), not yet validated on real hardware.
 
+## Contents
+
+- [The problem](#the-problem)
+- [The approach](#the-approach) · [how it works](#how-it-works-today) · [datasheet-driven scoring](#datasheet-driven-scoring-not-just-measurement)
+- [Two runs by design](#two-runs-by-design)
+- [Usage](#usage) · [one command](#the-simple-way--one-command) · [step by step](#the-manual-way--step-by-step) · [command reference](#command-reference)
+- [Stack](#stack) · [Prerequisites](#prerequisites) · [Roadmap](#roadmap)
+- [Prior art](#prior-art--credits) · [Datasheets](#datasheets) · [License](#license)
+
 ## The problem
 
 Chopper register values (`TBL`, `TOFF`, `HSTRT`, `HEND`, `TPFD`) dramatically affect stepper motor behavior: up to ~30% torque difference, up to 10x vibration difference, plus audible noise. The optimal values depend on the specific motor, driver, supply voltage and mechanics — datasheet defaults are a compromise.
