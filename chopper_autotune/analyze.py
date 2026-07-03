@@ -72,23 +72,97 @@ def print_table(ranked: 'list[dict]', top: int):
                  a['chopper_freq_hz'] / 1000, 'audible!' if a['audible'] else ''))
 
 
-def write_report(ranked: 'list[dict]', title: str, path: str):
+def tbl_toff_matrix(ranked: 'list[dict]', driver: tmc.Driver):
+    """Median magnitude per (tbl, toff) cell, with the analytic chopper frequency."""
+    tbls = sorted({a['chopper'].tbl for a in ranked})
+    toffs = sorted({a['chopper'].toff for a in ranked})
+    groups = defaultdict(list)
+    for a in ranked:
+        groups[(a['chopper'].tbl, a['chopper'].toff)].append(a['magnitude'])
+    z, text = [], []
+    for tbl in tbls:
+        z_row, text_row = [], []
+        for toff in toffs:
+            values = groups.get((tbl, toff))
+            freq = tmc.chopper_freq_hz(tmc.Chopper(tbl, toff, 0, 0), driver) if values else None
+            z_row.append(statistics.median(values) if values else None)
+            text_row.append('%.0f%s' % (z_row[-1], '!' if freq < tmc.AUDIBLE_LIMIT_HZ else '')
+                            if values else '')
+        z.append(z_row)
+        text.append(text_row)
+    return tbls, toffs, z, text
+
+
+def hyst_matrix(ranked: 'list[dict]', tbl: int, toff: int):
+    """Magnitude per (hstrt, hend) cell for a fixed tbl/toff."""
+    cells = defaultdict(list)
+    for a in ranked:
+        if a['chopper'].tbl == tbl and a['chopper'].toff == toff:
+            cells[(a['chopper'].hstrt, a['chopper'].hend)].append(a['magnitude'])
+    hstrts = sorted({k[0] for k in cells})
+    hends = sorted({k[1] for k in cells})
+    z = [[statistics.median(cells[(hs, he)]) if (hs, he) in cells else None for he in hends]
+         for hs in hstrts]
+    return hstrts, hends, z
+
+
+def write_report(ranked: 'list[dict]', driver: tmc.Driver, title: str, path: str, top: int = 30):
     import plotly.graph_objects as go
-    palette = ('#2F4F4F', '#12B57F', '#9DB512', '#DF8816', '#1297B5', '#5912B5', '#B51284', '#127D0C')
-    ordered = ranked[::-1]
+    heat = {'colorscale': 'RdYlGn', 'reversescale': True, 'colorbar': {'title': 'magnitude'}}
+    figures = []
+
+    tbls, toffs, z, text = tbl_toff_matrix(ranked, driver)
+    fig = go.Figure(go.Heatmap(x=['toff %d' % o for o in toffs], y=['tbl %d' % t for t in tbls],
+                               z=z, text=text, texttemplate='%{text}', **heat))
+    fig.update_layout(title='chopper frequency landscape: median magnitude per tbl/toff '
+                            '(! = audible, lower is better)', height=320)
+    figures.append(fig)
+
+    best = ranked[0]['chopper']
+    hstrts, hends, z = hyst_matrix(ranked, best.tbl, best.toff)
+    if len(hstrts) > 1 or len(hends) > 1:
+        fig = go.Figure(go.Heatmap(x=['hend %d' % h for h in hends],
+                                   y=['hstrt %d' % h for h in hstrts], z=z, **heat))
+        fig.update_layout(title='hysteresis landscape at the best tbl=%d toff=%d'
+                                % (best.tbl, best.toff), height=380)
+        figures.append(fig)
+
+    leaders = ranked[:top][::-1]
     fig = go.Figure(go.Bar(
-        x=[a['magnitude'] for a in ordered],
-        y=[a['chopper'].label() for a in ordered],
+        x=[a['magnitude'] for a in leaders],
+        y=[a['chopper'].label() for a in leaders],
         orientation='h',
-        marker_color=['#d62728' if a['audible'] else palette[a['chopper'].toff % len(palette)]
-                      for a in ordered],
+        marker_color=['#d62728' if a['audible'] else '#1D9E75' for a in leaders],
         hovertext=['magnitude %.1f, spread %.1f, n=%d, f_chop %.1f kHz%s'
                    % (a['magnitude'], a['spread'], a['n'], a['chopper_freq_hz'] / 1000,
-                      ', audible' if a['audible'] else '') for a in ordered],
+                      ', audible' if a['audible'] else '') for a in leaders],
     ))
-    fig.update_layout(title=title, xaxis_title='median magnitude (red = audible chopper)',
-                      height=max(500, 200 + 14 * len(ordered)))
-    fig.write_html(path)
+    fig.update_layout(title='top %d configurations (red = audible chopper)' % len(leaders),
+                      xaxis_title='median magnitude', height=max(400, 60 + 18 * len(leaders)))
+    figures.append(fig)
+
+    fig = go.Figure(go.Scatter(
+        x=[a['chopper_freq_hz'] / 1000 for a in ranked],
+        y=[a['magnitude'] for a in ranked],
+        mode='markers',
+        marker={'color': ['#d62728' if a['audible'] else '#1D9E75' for a in ranked],
+                'size': 5, 'opacity': 0.5},
+        hovertext=[a['chopper'].label() for a in ranked],
+    ))
+    fig.add_vline(x=tmc.AUDIBLE_LIMIT_HZ / 1000, line_dash='dash', line_color='#d62728')
+    fig.update_layout(title='vibration vs chopper frequency (left of the line is audible)',
+                      xaxis_title='chopper frequency, kHz', yaxis_title='median magnitude',
+                      height=420)
+    figures.append(fig)
+
+    parts = ['<html><head><meta charset="utf-8"><title>%s</title></head>'
+             '<body style="font-family: sans-serif; max-width: 1100px; margin: auto">'
+             '<h2>%s</h2>' % (title, title)]
+    parts += [f.to_html(full_html=False, include_plotlyjs='cdn' if i == 0 else False)
+              for i, f in enumerate(figures)]
+    parts.append('</body></html>')
+    with open(path, 'w') as f:
+        f.write('\n'.join(parts))
 
 
 def run_analyze(args) -> int:
@@ -107,7 +181,7 @@ def run_analyze(args) -> int:
 
     if not args.no_html:
         path = args.html or str(Path(dataset) / 'report.html')
-        write_report(ranked, 'tmc%s %s' % (driver.name, manifest['stepper']), path)
+        write_report(ranked, driver, 'tmc%s %s' % (driver.name, manifest['stepper']), path)
         print('\nReport: %s' % path)
 
     best = ranked[0]
