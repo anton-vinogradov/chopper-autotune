@@ -155,16 +155,18 @@ def _showcase(kl, hw, args, ds, configs, speed, travel, accel, before_move, scre
 
 
 def known_speed(axis: str) -> 'int | None':
-    """Resonance speed of the most recent run on this axis, so the show can start
-    immediately instead of re-scanning for ~2.5 minutes."""
+    """Resonance speed the axis was tuned at, from the most recent collect/descent run,
+    so the show starts immediately instead of re-scanning for ~2.5 minutes. Only tuning
+    datasets (a 'search' mode, single speed) are trusted — find-speed carries the whole
+    scan range and demo datasets only echo whatever speed they were told."""
     from .analyze import dataset_dirs
     for path in reversed(dataset_dirs()):
         manifest = Dataset(path).manifest()
-        if manifest.get('axis') != axis:
+        if manifest.get('axis') != axis or 'search' not in manifest:
             continue
-        speed = manifest.get('speed') or (manifest.get('speeds') or [None])[0]
-        if speed:
-            return int(speed)
+        speeds = manifest.get('speeds') or []
+        if len(speeds) == 1:
+            return int(speeds[0])
     return None
 
 
