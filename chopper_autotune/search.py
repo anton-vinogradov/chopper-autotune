@@ -48,13 +48,45 @@ def coordinate_descent(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range
     return best
 
 
+def _spanning_starts(tbl: Range, toff: Range, hstrt: Range, hend: Range) -> 'list[tmc.Chopper]':
+    """Seeds spread across the (toff, hend) plane. Phase A of the descent sweeps
+    (tbl, toff) at a *fixed* hend, so which toff looks best depends on the starting
+    hend — a single low-hend start hides the low-toff/high-hend valley. Starting
+    from a few hend (and toff) levels lets some run see it."""
+    def levels(r: Range):
+        return sorted({r.lo, (r.lo + r.hi) // 2, r.hi})
+    tbl0, hstrt0 = tbl.lo, (hstrt.lo + hstrt.hi) // 2
+    seeds = [tmc.Chopper(tbl0, o, hstrt0, e) for o in levels(toff) for e in levels(hend)]
+    return [c for c in seeds if tmc.validate(c) is None]
+
+
+def multi_start_descent(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range, hend: Range,
+                        tpfd: 'Range | None', baseline: tmc.Chopper, evaluate,
+                        rounds: int = 2) -> tmc.Chopper:
+    """Coordinate descent from several seeds; the best result wins. evaluate caches,
+    so seeds that converge to the same region cost nothing extra."""
+    starts = [baseline] + [c for c in _spanning_starts(tbl, toff, hstrt, hend) if c != baseline]
+    best, best_score = None, float('inf')
+    for start in starts:
+        candidate = coordinate_descent(driver, tbl, toff, hstrt, hend, tpfd, start, evaluate, rounds)
+        score = evaluate(candidate)
+        if best is None or score < best_score:
+            best, best_score = candidate, score
+    return best
+
+
 def descent_budget(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range, hend: Range,
                    tpfd: 'Range | None', rounds: int = 2) -> int:
-    """Upper bound of unique candidates a descent may evaluate."""
+    """Rough upper bound of unique candidates the multi-start descent evaluates.
+
+    Phase A's (tbl, toff) sweep is re-done once per distinct starting hend, so the
+    cost scales with the number of hend seed levels; seeds sharing a hend converge
+    into the same cached region and add little."""
     pairs = sum(1 for t, o in product(tbl.values(), toff.values()) if not (o == 1 and t < 2))
     per_round = pairs + len(hstrt.values()) + len(hend.values())
     tpfd_count = len(tpfd.values()) if driver.has_tpfd and tpfd is not None else 0
-    return rounds * per_round + tpfd_count
+    hend_levels = len({hend.lo, (hend.lo + hend.hi) // 2, hend.hi})
+    return hend_levels * rounds * per_round + tpfd_count
 
 
 def dataset_history(ds: Dataset) -> 'dict[tmc.Chopper, list[float]]':
@@ -125,8 +157,8 @@ def run_simulate(args) -> int:
         lookups.append(combo)
         return lookup[combo]
 
-    best = coordinate_descent(driver, ranges['tbl'], ranges['toff'], ranges['hstrt'],
-                              ranges['hend'], tpfd, start, evaluate)
+    best = multi_start_descent(driver, ranges['tbl'], ranges['toff'], ranges['hstrt'],
+                               ranges['hend'], tpfd, start, evaluate)
     if best not in lookup:
         raise SystemExit('replay could not reach any measured combo from start %s' % start.label())
     global_best = min(lookup, key=lookup.get)
