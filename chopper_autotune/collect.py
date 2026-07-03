@@ -108,7 +108,9 @@ def detect_hardware(kl: Klippy, axis: str) -> Hardware:
         max_accel=float(settings['printer']['max_accel']),
         baseline=baseline,
         stealth=stealth,
-        display='display_status' in settings or 'display' in settings,
+        # display_status is usually an implicit runtime object (auto-loaded on
+        # Mainsail/Fluidd setups), not a config section — check the live objects
+        display='display_status' in kl.object_list(),
     )
 
 
