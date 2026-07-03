@@ -28,6 +28,7 @@ PARK_INTERVAL_MOVES = 400
 OVERHEAD_STREAM_SEC = 0.3
 OVERHEAD_CSV_SEC = 3.0
 VALIDATE_EXTRA_ITERATIONS = 2
+MAX_VALIDATE_ROUNDS = 4
 
 
 @dataclass(frozen=True)
@@ -355,7 +356,11 @@ def measure_combo(hw: Hardware, ds: Dataset, args, combo: tmc.Chopper, speeds: '
     return ok, failed, magnitudes
 
 
-def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int) -> 'dict | None':
+def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
+                  trusted: 'set | None' = None) -> 'dict | None':
+    """Print the ranking and recommend a config. When `trusted` is given, the
+    recommendation is the best-ranked combo from that (validated) set — never a
+    single unmeasured lucky combo that floated to the top of the whole grid."""
     from .analyze import aggregate, print_table, rank
     ranked = rank(aggregate(ds, False, args.trim), hw.driver, args.audible_weight)
     if not ranked:
@@ -363,10 +368,15 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int) -> 
         return None
     print()
     print_table(ranked, top)
+    winner = ranked[0]
+    if trusted:
+        validated = [entry for entry in ranked if entry['chopper'] in trusted]
+        if validated:
+            winner = validated[0]
     print('\nRecommended for printer.cfg:\n')
-    print(tmc.cfg_snippet(hw.driver, hw.stepper, ranked[0]['chopper']))
-    screen.update('Chopper: %s' % ranked[0]['chopper'].label(), force=True)
-    return ranked[0]
+    print(tmc.cfg_snippet(hw.driver, hw.stepper, winner['chopper']))
+    screen.update('Chopper: %s' % winner['chopper'].label(), force=True)
+    return winner
 
 
 def run_grid(kl: Klippy, hw: Hardware, ds: Dataset, args, plan, travel: float, accel: float,
@@ -395,22 +405,34 @@ def run_grid(kl: Klippy, hw: Hardware, ds: Dataset, args, plan, travel: float, a
 
 def validate_top(kl: Klippy, hw: Hardware, ds: Dataset, args, speeds: 'list[int]', travel: float,
                  accel: float, done: set, before_move, screen: Screen) -> 'tuple[int, int]':
-    """Re-measure the current top candidates: low-n medians are noisy, the final call must not be."""
+    """Re-measure the top candidates until they hold their place.
+
+    Validating the top-N once and re-ranking the whole grid just floats a fresh
+    set of unmeasured lucky combos to the top — the winner's curse survives. So
+    keep re-ranking and validating whichever top-N combos aren't validated yet
+    until a full top-N is stable (or the round budget runs out), and recommend
+    only from the validated set.
+    """
     from .analyze import aggregate, rank
-    ranked = rank(aggregate(ds, False, args.trim), hw.driver, args.audible_weight)
-    finalists = [entry['chopper'] for entry in ranked[:args.validate]]
-    if not finalists:
-        return 0, 0
-    print('Validating top %d with %d extra iterations each'
-          % (len(finalists), VALIDATE_EXTRA_ITERATIONS))
     ok = failed = 0
-    for combo in finalists:
-        combo_ok, combo_failed, _ = measure_combo(
-            hw, ds, args, combo, speeds, VALIDATE_EXTRA_ITERATIONS, args.iterations,
-            travel, accel, done, before_move)
-        ok += combo_ok
-        failed += combo_failed
-    report_winner(hw, ds, args, screen, max(10, args.validate))
+    validated = set()
+    for _ in range(MAX_VALIDATE_ROUNDS):
+        ranked = rank(aggregate(ds, False, args.trim), hw.driver, args.audible_weight)
+        pending = [entry['chopper'] for entry in ranked[:args.validate]
+                   if entry['chopper'] not in validated]
+        if not pending:
+            break
+        print('Validating %d candidate(s) with %d extra iterations each'
+              % (len(pending), VALIDATE_EXTRA_ITERATIONS))
+        for combo in pending:
+            combo_ok, combo_failed, _ = measure_combo(
+                hw, ds, args, combo, speeds, VALIDATE_EXTRA_ITERATIONS, args.iterations,
+                travel, accel, done, before_move)
+            ok += combo_ok
+            failed += combo_failed
+            validated.add(combo)
+    if validated:
+        report_winner(hw, ds, args, screen, max(10, args.validate), trusted=validated)
     return ok, failed
 
 
@@ -468,7 +490,7 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
     for combo in finalists:
         measure_candidate(combo, VALIDATE_EXTRA_ITERATIONS, first_iteration=args.iterations)
 
-    report_winner(hw, ds, args, screen, 10)
+    report_winner(hw, ds, args, screen, 10, trusted=set(finalists))
     return stats['ok'], stats['failed']
 
 
