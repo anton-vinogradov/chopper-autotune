@@ -8,6 +8,15 @@
 
 > **Status: working skeleton.** `collect` and `analyze` are implemented (full-grid sweep first, smart search next), not yet validated on real hardware.
 
+## Contents
+
+- [The problem](#the-problem)
+- [The approach](#the-approach) · [how it works](#how-it-works-today) · [datasheet-driven scoring](#datasheet-driven-scoring-not-just-measurement)
+- [Two runs by design](#two-runs-by-design)
+- [Usage](#usage) · [one command](#the-simple-way--one-command) · [step by step](#the-manual-way--step-by-step) · [command reference](#command-reference)
+- [Stack](#stack) · [Prerequisites](#prerequisites) · [Roadmap](#roadmap)
+- [Prior art](#prior-art--credits) · [Datasheets](#datasheets) · [License](#license)
+
 ## The problem
 
 Chopper register values (`TBL`, `TOFF`, `HSTRT`, `HEND`, `TPFD`) dramatically affect stepper motor behavior: up to ~30% torque difference, up to 10x vibration difference, plus audible noise. The optimal values depend on the specific motor, driver, supply voltage and mechanics — datasheet defaults are a compromise.
@@ -155,11 +164,16 @@ CLI-only extras: `chopper-autotune simulate <grid-dataset>` (replay the descent 
 
 Python 3.9+ on the printer host. The klippy API socket for orchestration and sample streaming (no Jinja macro loops; Moonraker HTTP only for `analyze --apply`), `numpy` for metrics, plotly for reports; `scipy` peak detection and Optuna search are planned.
 
-## Requirements
+## Prerequisites
 
-- Klipper + Moonraker (Mainsail/Fluidd or any other frontend)
-- An accelerometer mounted on the toolhead ([Measuring Resonances](https://www.klipper3d.org/Measuring_Resonances.html))
-- A supported TMC driver (see below)
+- Klipper + Moonraker (Mainsail, Fluidd or any other frontend).
+- A supported TMC driver on the axis being tuned (see the datasheet list below).
+- **An accelerometer on the toolhead** — the measuring instrument of the whole tool:
+  - any chip supported by Klipper's resonance stack works: ADXL345 (the classic), LIS2DW, the MPU-9250 family; USB sticks (KUSBA, FYSETC PIS) and CAN toolhead boards with an onboard chip (EBB36/42, SB2209, …) count too;
+  - mount it **rigidly on the printhead** (screwed down, not taped) — exactly as for input-shaper calibration;
+  - wiring and configuration (`[adxl345]` + `[resonance_tester]`) are covered by Klipper's [Measuring Resonances](https://www.klipper3d.org/Measuring_Resonances.html) guide; config reference: [adxl345](https://www.klipper3d.org/Config_Reference.html#adxl345), [resonance_tester](https://www.klipper3d.org/Config_Reference.html#resonance_tester). The tool picks the chip from `[resonance_tester] accel_chip` automatically (default `adxl345`);
+  - sanity check before tuning: `ACCELEROMETER_QUERY` returns readings and `MEASURE_AXES_NOISE` stays around or below ~100;
+  - unlike Klipper's own shaper tools, chopper-autotune does **not** need numpy inside klippy-env — samples are streamed out and processed in the tool's own venv.
 
 ## Roadmap
 
