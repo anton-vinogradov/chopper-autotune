@@ -8,7 +8,7 @@ import sys
 from .collect import Range
 
 _STORE_TRUE = {'--no-raw', '--dry-run', '--yes', '--csv', '--skip-audible', '--recompute',
-               '--no-html', '--apply'}
+               '--no-html', '--apply', '--save'}
 
 
 def _gcode_args(argv: 'list[str]') -> 'list[str]':
@@ -111,6 +111,8 @@ def main(argv=None) -> int:
     a.add_argument('--html', default=None, help='report path, default <dataset>/report.html')
     a.add_argument('--no-html', action='store_true')
     a.add_argument('--apply', action='store_true', help='apply the best config via SET_TMC_FIELD')
+    a.add_argument('--save', action='store_true',
+                   help='persist the best config into the Klipper config file and restart Klipper')
     a.add_argument('--url', default='http://127.0.0.1:7125')
 
     if hasattr(sys.stdout, 'reconfigure'):
