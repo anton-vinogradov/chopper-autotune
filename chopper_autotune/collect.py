@@ -59,6 +59,7 @@ class Hardware:
     max_accel: float
     baseline: 'dict[str, int]'
     stealth: 'Optional[tuple[str, int, int]]' = None
+    display: bool = False
 
 
 def detect_hardware(kl: Klippy, axis: str) -> Hardware:
@@ -106,6 +107,7 @@ def detect_hardware(kl: Klippy, axis: str) -> Hardware:
         max_accel=float(settings['printer']['max_accel']),
         baseline=baseline,
         stealth=stealth,
+        display='display_status' in settings or 'display' in settings,
     )
 
 
@@ -173,6 +175,30 @@ def now() -> str:
 
 def park(kl: Klippy, hw: Hardware):
     kl.gcode('G28 X Y\nG0 X%.1f Y%.1f F6000\nM400\nM18' % hw.center)
+
+
+class Screen:
+    """Progress on the printer display (KlipperScreen, LCD, web header) via M117."""
+
+    INTERVAL_SEC = 5.0
+
+    def __init__(self, kl: Klippy, enabled: bool):
+        self.kl = kl
+        self.enabled = enabled
+        self.last = 0.0
+
+    def update(self, text: str, force: bool = False):
+        if not self.enabled or (not force and time.monotonic() - self.last < self.INTERVAL_SEC):
+            return
+        self.last = time.monotonic()
+        try:
+            self.kl.gcode('M117 %s' % text)
+        except KlippyError:
+            self.enabled = False
+
+
+def eta_text(seconds: float) -> str:
+    return '%d:%02d' % (seconds // 3600, seconds % 3600 // 60)
 
 
 def enter_spreadcycle(kl: Klippy, hw: Hardware):
@@ -286,8 +312,9 @@ def make_parker(kl: Klippy, hw: Hardware):
 
 
 def run_grid(kl: Klippy, hw: Hardware, ds: Dataset, args, plan, travel: float, accel: float,
-             done: set, before_move) -> 'tuple[int, int]':
+             done: set, before_move, screen: Screen) -> 'tuple[int, int]':
     ok = failed = 0
+    started = time.monotonic()
     for index, (combo, speed) in enumerate(plan, 1):
         pending = [(i, d) for i in range(args.iterations) for d in (1, -1)
                    if measurement_id(combo, speed, i, d) not in done]
@@ -306,12 +333,18 @@ def run_grid(kl: Klippy, hw: Hardware, ds: Dataset, args, plan, travel: float, a
         if magnitudes:
             print('[%d/%d] %s v%d: median %.1f' % (index, len(plan), combo.label(), speed,
                                                    sum(magnitudes) / len(magnitudes)))
+        if ok + failed:
+            remaining = (len(plan) - index) * args.iterations * 2
+            eta = remaining * (time.monotonic() - started) / (ok + failed)
+            screen.update('Chopper %d%% %d/%d ETA %s'
+                          % (100 * index // len(plan), index, len(plan), eta_text(eta)))
+    screen.update('Chopper grid done: %d ok, %d failed' % (ok, failed), force=True)
     return ok, failed
 
 
 def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None',
                 speeds: 'list[int]', travel: float, accel: float, done: set,
-                before_move) -> 'tuple[int, int]':
+                before_move, screen: Screen) -> 'tuple[int, int]':
     from .analyze import aggregate, print_table, rank
     from .search import coordinate_descent, dataset_history, penalized_score, seed_start
 
@@ -351,6 +384,8 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
         note = ' audible' if tmc.is_audible(combo, hw.driver) else ''
         print('  %s -> %s' % (combo.label(),
                               'failed' if score == float('inf') else '%.1f%s' % (score, note)))
+        if score != float('inf'):
+            screen.update('Chopper cand %d: %.0f' % (len(cache), score))
         return score
 
     if args.seed_from:
@@ -375,6 +410,7 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
     print_table(ranked, 10)
     print('\nRecommended for printer.cfg:\n')
     print(tmc.cfg_snippet(hw.driver, hw.stepper, ranked[0]['chopper']))
+    screen.update('Chopper: %s' % ranked[0]['chopper'].label(), force=True)
     return stats['ok'], stats['failed']
 
 
@@ -480,12 +516,14 @@ def collect(kl: Klippy, args) -> int:
     enter_spreadcycle(kl, hw)
     started = time.time()
     before_move = make_parker(kl, hw)
+    screen = Screen(kl, hw.display)
     try:
         measure_baseline(hw, ds, args, done)
         if args.search == 'descent':
-            ok, failed = run_descent(kl, hw, ds, args, tpfd, speeds, travel, accel, done, before_move)
+            ok, failed = run_descent(kl, hw, ds, args, tpfd, speeds, travel, accel, done,
+                                     before_move, screen)
         else:
-            ok, failed = run_grid(kl, hw, ds, args, plan, travel, accel, done, before_move)
+            ok, failed = run_grid(kl, hw, ds, args, plan, travel, accel, done, before_move, screen)
     finally:
         print('Restoring baseline registers, homing')
         if hw.baseline:

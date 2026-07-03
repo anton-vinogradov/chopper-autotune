@@ -72,7 +72,7 @@ CHOPPER_ANALYZE APPLY=1              ; apply the winner live via SET_TMC_FIELD
 
 The same over SSH: `chopper-autotune collect --axis x --speed 55`, `chopper-autotune analyze [dir]`. Every macro parameter maps 1:1 to a CLI flag (`MEASURE_TIME=1.5` → `--measure-time 1.5`).
 
-Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datasets/` — visible in the web file manager. Narrow the grid with `TBL/TOFF/HSTRT/HEND/TPFD=lo:hi` (e.g. `CHOPPER_COLLECT SPEED=55 TOFF=1:8 HEND=0:7`), resume an interrupted run by passing its directory as `DATASET=`. `collect` must run on the printer host (it talks to the klippy unix socket); `analyze` runs anywhere. Applied registers live until reboot — persist the recommended block in `printer.cfg`. `uninstall.sh` removes the integration and keeps the datasets.
+Progress is mirrored to the printer display (KlipperScreen / LCD / web header) via `M117`, with the final recommendation left on screen. Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datasets/` — visible in the web file manager. Narrow the grid with `TBL/TOFF/HSTRT/HEND/TPFD=lo:hi` (e.g. `CHOPPER_COLLECT SPEED=55 TOFF=1:8 HEND=0:7`), resume an interrupted run by passing its directory as `DATASET=`. `collect` must run on the printer host (it talks to the klippy unix socket); `analyze` runs anywhere. Applied registers live until reboot — persist the recommended block in `printer.cfg`. `uninstall.sh` removes the integration and keeps the datasets.
 
 ## Stack
 
