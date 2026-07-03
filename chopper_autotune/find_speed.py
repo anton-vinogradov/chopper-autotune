@@ -9,7 +9,8 @@ from pathlib import Path
 
 from . import __version__
 from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, default_dataset_root,
-                      detect_hardware, measure_baseline, measure_move, now, park, travel_for)
+                      detect_hardware, enter_spreadcycle, exit_spreadcycle, measure_baseline,
+                      measure_move, now, park, travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, find_socket
 
@@ -166,6 +167,7 @@ def scan(kl: Klippy, args) -> int:
 
     print('Preparing: home XY, park at center, disable motors')
     park(kl, hw)
+    enter_spreadcycle(kl, hw)
     started = time.time()
     failed = 0
     try:
@@ -191,6 +193,7 @@ def scan(kl: Klippy, args) -> int:
                                                         sum(magnitudes) / len(magnitudes)))
     finally:
         print('Homing')
+        exit_spreadcycle(kl, hw)
         kl.gcode('G28 X Y')
 
     curve = build_curve(ds)

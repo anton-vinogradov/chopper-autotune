@@ -58,6 +58,7 @@ class Hardware:
     center: 'tuple[float, float]'
     max_accel: float
     baseline: 'dict[str, int]'
+    stealth: 'Optional[tuple[str, int, int]]' = None
 
 
 def detect_hardware(kl: Klippy, axis: str) -> Hardware:
@@ -89,6 +90,10 @@ def detect_hardware(kl: Klippy, axis: str) -> Hardware:
     kinematics = settings['printer']['kinematics']
     span = min(spans.values()) if 'core' in kinematics or 'hbot' in kinematics else spans[axis]
 
+    stealth = None
+    if driver.spreadcycle_switch and float(section.get('stealthchop_threshold') or 0) > 0:
+        stealth = driver.spreadcycle_switch
+
     resonance = settings.get('resonance_tester') or {}
     return Hardware(
         kl=kl,
@@ -100,6 +105,7 @@ def detect_hardware(kl: Klippy, axis: str) -> Hardware:
         center=(centers['x'], centers['y']),
         max_accel=float(settings['printer']['max_accel']),
         baseline=baseline,
+        stealth=stealth,
     )
 
 
@@ -167,6 +173,20 @@ def now() -> str:
 
 def park(kl: Klippy, hw: Hardware):
     kl.gcode('G28 X Y\nG0 X%.1f Y%.1f F6000\nM400\nM18' % hw.center)
+
+
+def enter_spreadcycle(kl: Klippy, hw: Hardware):
+    """Chopper registers only act in spreadCycle; stealthChop would measure noise."""
+    if hw.stealth:
+        field, force, _ = hw.stealth
+        print('stealthChop is configured: forcing spreadCycle for the test')
+        kl.gcode('SET_TMC_FIELD STEPPER=%s FIELD=%s VALUE=%d' % (hw.stepper, field, force))
+
+
+def exit_spreadcycle(kl: Klippy, hw: Hardware):
+    if hw.stealth:
+        field, _, restore = hw.stealth
+        kl.gcode('SET_TMC_FIELD STEPPER=%s FIELD=%s VALUE=%d' % (hw.stepper, field, restore))
 
 
 def capture_stream(hw: Hardware, script: str, duration: float) -> 'tuple[float, np.ndarray]':
@@ -437,6 +457,8 @@ def collect(kl: Klippy, args) -> int:
         'accel_chip': hw.accel_chip,
         'kinematics': hw.kinematics,
         'baseline_registers': hw.baseline,
+        'forced_spreadcycle': bool(hw.stealth),
+        'skip_audible': args.skip_audible,
         'ranges': {'tbl': [args.tbl.lo, args.tbl.hi], 'toff': [args.toff.lo, args.toff.hi],
                    'hstrt': [args.hstrt.lo, args.hstrt.hi], 'hend': [args.hend.lo, args.hend.hi],
                    'tpfd': [tpfd.lo, tpfd.hi] if tpfd else None},
@@ -455,6 +477,7 @@ def collect(kl: Klippy, args) -> int:
 
     print('Preparing: home XY, park at center, disable motors')
     park(kl, hw)
+    enter_spreadcycle(kl, hw)
     started = time.time()
     before_move = make_parker(kl, hw)
     try:
@@ -467,6 +490,7 @@ def collect(kl: Klippy, args) -> int:
         print('Restoring baseline registers, homing')
         if hw.baseline:
             kl.gcode(tmc.set_fields_script(hw.stepper, hw.baseline))
+        exit_spreadcycle(kl, hw)
         kl.gcode('G28 X Y')
 
     print('Done in %dm: %d ok, %d failed -> %s' % ((time.time() - started) // 60, ok, failed, root))

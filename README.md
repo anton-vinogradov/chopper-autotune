@@ -37,7 +37,8 @@ Also datasheet-driven:
 
 - search space constraints (`HSTRT`+`HEND` ≤ 16, `TOFF` = 0 forbidden, `TOFF` = 1 blank-time restrictions) — pruned before any motion;
 - per-driver capability matrix: `TPFD` enters the grid only on TMC2240/5160, clock frequencies match the Klipper driver code;
-- planned: forcing spreadCycle on stealthChop-default drivers for the duration of the test, and StallGuard readout as a torque-margin proxy to auto-tune motor current.
+- when `stealthchop_threshold` is configured, spreadCycle is forced for the duration of the test and restored afterwards — chopper registers only act in spreadCycle, stealthChop would measure noise;
+- planned: StallGuard readout as a torque-margin proxy to auto-tune motor current.
 
 ## Two runs by design
 
@@ -64,6 +65,7 @@ CHOPPER_COLLECT SPEED=55 DRY_RUN=1   ; check the plan and ETA without moving any
 CHOPPER_COLLECT SPEED=55             ; 2. sweep the full grid at the resonance speed (hours)
 CHOPPER_COLLECT SPEED=55 SEARCH=descent  ; ...or coordinate descent (minutes)
 CHOPPER_COLLECT AXIS=Y SPEED=52 SEARCH=descent SEED_FROM=<X dataset>  ; fast second axis
+CHOPPER_STATUS                       ; progress and ETA of the running collection
 CHOPPER_ANALYZE                      ; 3. rank the latest dataset, write the report
 CHOPPER_ANALYZE APPLY=1              ; apply the winner live via SET_TMC_FIELD
 ```
@@ -92,7 +94,7 @@ Python 3.9+ on the printer host. The klippy API socket for orchestration and sam
 - [x] Streaming capture with exact cruise-phase slicing (`--csv` fallback)
 - [x] Hardware validation on a real printer (CoreXY, TMC2209, ADXL345: streaming and CSV paths agree)
 - [x] Automatic resonance speed detection (`find-speed`, prominence-based peak picking)
-- [ ] Forcing spreadCycle on stealthChop-default drivers during the test
+- [x] Forcing spreadCycle during the test when `stealthchop_threshold` is configured; `CHOPPER_STATUS` progress/ETA
 - [x] Coordinate-descent search (`--search descent`: AN-001 order, audible-penalty objective, top-3 re-measurement, offline `simulate` replay)
 - [ ] Optuna/TPE strategy, early abort of bad candidates mid-move
 - [ ] Validation phase (re-measure top candidates before recommending)
