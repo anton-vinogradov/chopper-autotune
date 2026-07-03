@@ -69,7 +69,8 @@ def dataset_history(ds: Dataset) -> 'dict[tmc.Chopper, list[float]]':
 
 def penalized_score(combo: tmc.Chopper, magnitudes: 'list[float]', driver: tmc.Driver,
                     audible_weight: float) -> float:
-    magnitude = statistics.median(magnitudes)
+    # mean across moves (see analyze.aggregate): direction asymmetry is signal
+    magnitude = statistics.mean(magnitudes)
     return magnitude * (1 + audible_weight) if tmc.is_audible(combo, driver) else magnitude
 
 
