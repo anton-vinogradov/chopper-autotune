@@ -13,15 +13,17 @@ class Driver:
     name: str
     fclk_hz: float
     has_tpfd: bool
+    # (field, value forcing spreadCycle, value restoring stealthChop); None = no stealthChop
+    spreadcycle_switch: 'Optional[tuple[str, int, int]]' = None
 
 
 DRIVERS = {
-    '2130': Driver('2130', 13.2e6, False),
-    '2208': Driver('2208', 12.0e6, False),
-    '2209': Driver('2209', 12.0e6, False),
+    '2130': Driver('2130', 13.2e6, False, ('en_pwm_mode', 0, 1)),
+    '2208': Driver('2208', 12.0e6, False, ('en_spreadcycle', 1, 0)),
+    '2209': Driver('2209', 12.0e6, False, ('en_spreadcycle', 1, 0)),
     '2660': Driver('2660', 15.0e6, False),
-    '2240': Driver('2240', 12.5e6, True),
-    '5160': Driver('5160', 12.0e6, True),
+    '2240': Driver('2240', 12.5e6, True, ('en_pwm_mode', 0, 1)),
+    '5160': Driver('5160', 12.0e6, True, ('en_pwm_mode', 0, 1)),
 }
 
 

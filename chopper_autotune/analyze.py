@@ -215,6 +215,59 @@ def run_compare(args) -> int:
     return 0
 
 
+def newest_dataset(bases=(RESULTS_HOME / 'datasets', Path('datasets'))) -> Path:
+    """Most recently written dataset of any kind, for progress reporting."""
+    candidates = [path for base in bases if base.is_dir() for path in base.iterdir()
+                  if (path / 'measurements.jsonl').is_file()]
+    if not candidates:
+        raise SystemExit('no datasets found')
+    return max(candidates, key=lambda p: (p / 'measurements.jsonl').stat().st_mtime)
+
+
+def run_status(args) -> int:
+    from datetime import datetime, timezone
+    path = Path(args.dataset) if args.dataset else newest_dataset()
+    ds = Dataset.open(path)
+    manifest = ds.manifest()
+    records = ds.records()
+    moves = [r for r in records if r.get('kind') in ('move', 'speed')]
+    ok = sum(1 for r in moves if r.get('status') == 'ok')
+
+    print('%s: %s %s, capture %s' % (path, manifest.get('search', manifest.get('mode', 'grid')),
+                                     manifest.get('stepper', ''), manifest.get('capture', '?')))
+    print('Measurements: %d ok, %d failed' % (ok, len(moves) - ok))
+    if len(moves) < 2:
+        return 0
+
+    first = datetime.fromisoformat(moves[0]['ts'])
+    last = datetime.fromisoformat(moves[-1]['ts'])
+    elapsed = (last - first).total_seconds()
+    rate = (len(moves) - 1) / elapsed if elapsed > 0 else 0
+    print('Pace: %.1f s/move over %dm' % (1 / rate if rate else 0, elapsed // 60))
+
+    age = (datetime.now(timezone.utc) - last).total_seconds()
+    if age > 120:
+        print('Last measurement %dm ago — the run looks finished or stalled' % (age // 60))
+
+    total = args.total
+    if not total and manifest.get('search') == 'grid' and 'ranges' in manifest:
+        from .collect import Range, build_plan
+        ranges = manifest['ranges']
+        plan = build_plan(tmc.DRIVERS[manifest['driver']],
+                          Range(*ranges['tbl']), Range(*ranges['toff']),
+                          Range(*ranges['hstrt']), Range(*ranges['hend']),
+                          Range(*ranges['tpfd']) if ranges.get('tpfd') else None,
+                          manifest.get('speeds', [0]),
+                          manifest.get('skip_audible', False))
+        total = len(plan) * manifest.get('iterations', 1) * 2
+    if total and rate:
+        remaining = max(0, total - len(moves))
+        print('Progress: %d/%d (%.0f%%), ETA %dh %02dm'
+              % (len(moves), total, 100 * len(moves) / total,
+                 remaining / rate // 3600, remaining / rate % 3600 // 60))
+    return 0
+
+
 def run_analyze(args) -> int:
     dataset = args.dataset or latest_dataset()
     ds = Dataset.open(dataset)

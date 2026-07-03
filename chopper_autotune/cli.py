@@ -90,6 +90,10 @@ def main(argv=None) -> int:
     s.add_argument('dataset')
     s.add_argument('--audible-weight', type=float, default=0.25)
 
+    t = sub.add_parser('status', help='progress of the most recent (or given) dataset')
+    t.add_argument('dataset', nargs='?', default=None)
+    t.add_argument('--total', type=int, default=None, help='planned moves, for ETA of pre-ranges datasets')
+
     m = sub.add_parser('compare', help='agreement between two datasets: winners, rank correlation, top overlap')
     m.add_argument('dataset_a')
     m.add_argument('dataset_b')
@@ -124,5 +128,8 @@ def main(argv=None) -> int:
     if args.command == 'compare':
         from .analyze import run_compare
         return run_compare(args)
+    if args.command == 'status':
+        from .analyze import run_status
+        return run_status(args)
     from .analyze import run_analyze
     return run_analyze(args)
