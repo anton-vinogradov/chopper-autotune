@@ -30,7 +30,8 @@ def make_hw(baseline):
 
 def demo_args(**over):
     base = dict(axis='x', speed=None, default=None, iterations=3, measure_time=1.0,
-                accel=None, trim=None, socket=None, dry_run=True)
+                accel=None, trim=None, socket=None, dry_run=True,
+                live=False, rounds=3, repeats=4)
     base.update(over)
     return argparse.Namespace(**base)
 
@@ -48,3 +49,34 @@ def test_demo_dry_run_reports_plan(monkeypatch, capsys):
     assert demo(None, demo_args(speed=Range(58, 58))) == 0
     out = capsys.readouterr().out
     assert 'defaults tbl2_toff3_hstrt5_hend0 vs tuned tbl2_toff1_hstrt4_hend14' in out
+
+
+def test_showcase_alternates_and_announces(monkeypatch, capsys):
+    from chopper_autotune.collect import Screen
+    from chopper_autotune.demo import _showcase
+
+    played = []
+
+    def fake_measurement(hw, ds, args, combo, speed, iteration, direction, travel, accel, before):
+        played.append((combo.toff, direction))
+        return {'status': 'ok', 'score': {'median_magnitude': 2000.0 if combo.toff == 3 else 900.0}}
+
+    monkeypatch.setattr(demo_module, 'run_measurement', fake_measurement)
+    kl = type('K', (), {'gcode': lambda self, s: None})()
+    hw = make_hw({'tbl': 2, 'toff': 1, 'hstrt': 4, 'hend': 14})
+    configs = [('default', tmc.Chopper(2, 3, 5, 0)), ('tuned', tmc.Chopper(2, 1, 4, 14))]
+    args = demo_args(rounds=2, repeats=1)
+
+    results = _showcase(kl, hw, args, None, configs, 58, 70.0, 1000,
+                        lambda d, t: None, Screen(kl, display=False))
+
+    # 2 rounds x 2 configs x 1 repeat x 2 directions
+    assert len(played) == 8
+    assert statistics_mean(results['default']) == 2000.0
+    assert statistics_mean(results['tuned']) == 900.0
+    out = capsys.readouterr().out
+    assert 'BEFORE' in out and 'AFTER' in out and 'round 1/2' in out
+
+
+def statistics_mean(xs):
+    return sum(xs) / len(xs)

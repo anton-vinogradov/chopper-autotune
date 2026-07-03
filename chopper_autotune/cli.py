@@ -137,6 +137,10 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument('--default', type=_chopper, default=None,
                    help='the "before" config as tbl,toff,hstrt,hend (default: Klipper 2,3,5,0)')
     d.add_argument('--iterations', type=int, default=3, help='repeats per config, default 3')
+    d.add_argument('--live', action='store_true',
+                   help='showcase mode: play defaults vs tuned alternately, announcing each, so you can hear the difference')
+    d.add_argument('--rounds', type=int, default=3, help='live: alternations of defaults/tuned, default 3')
+    d.add_argument('--repeats', type=int, default=4, help='live: moves per config per round, default 4')
     d.add_argument('--measure-time', type=float, default=1.0)
     d.add_argument('--accel', type=float, default=None)
     d.add_argument('--trim', type=float, default=None)
