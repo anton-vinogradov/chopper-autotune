@@ -116,16 +116,17 @@ def demo(kl: Klippy, args) -> int:
 
 
 def _showcase(kl, hw, args, ds, configs, speed, travel, accel, before_move, screen):
-    """Play defaults and tuned alternately, announcing each so a listener can hear
-    the difference change in real time; return the per-config magnitudes."""
-    labels = {'default': 'BEFORE  defaults', 'tuned': 'AFTER   tuned'}
+    """Play defaults and tuned alternately, announcing on the display/console which is
+    playing and the running difference, so a listener hears and sees it change."""
+    playing = {'default': '>> DEFAULTS (loud)', 'tuned': '>> TUNED (quiet)'}
     results = {name: [] for name, _ in configs}
     it = 0
     for r in range(1, args.rounds + 1):
+        round_avg = {}
         for name, combo in configs:
             kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
-            screen.update('Round %d/%d  %s' % (r, args.rounds, labels[name]), force=True)
-            print('\n>> round %d/%d  %s  (%s) — listen' % (r, args.rounds, labels[name],
+            screen.update('%d/%d  %s' % (r, args.rounds, playing[name]), force=True)
+            print('\n>> round %d/%d  %s  (%s) — listen' % (r, args.rounds, playing[name],
                                                            combo.label()))
             mags = []
             for _ in range(args.repeats):
@@ -137,9 +138,13 @@ def _showcase(kl, hw, args, ds, configs, speed, travel, accel, before_move, scre
                         mags.append(record['score']['median_magnitude'])
             if mags:
                 results[name].extend(mags)
-                avg = statistics.mean(mags)
-                screen.update('%s ~%.0f' % (labels[name], avg), force=True)
-                print('   %s ~%.0f' % (labels[name], avg))
+                round_avg[name] = statistics.mean(mags)
+        if 'default' in round_avg and 'tuned' in round_avg:
+            factor = round_avg['default'] / round_avg['tuned']
+            summary = 'def %.0f -> tuned %.0f  %.1fx quieter' % (
+                round_avg['default'], round_avg['tuned'], factor)
+            screen.update(summary, force=True)
+            print('   => %s' % summary)
     return results
 
 
