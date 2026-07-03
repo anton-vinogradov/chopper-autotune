@@ -27,6 +27,7 @@ MIN_STEADY_SAMPLES = 32
 PARK_INTERVAL_MOVES = 400
 OVERHEAD_STREAM_SEC = 0.3
 OVERHEAD_CSV_SEC = 3.0
+VALIDATE_TOP = 3
 
 
 @dataclass(frozen=True)
@@ -247,6 +248,105 @@ def run_measurement(hw: Hardware, ds: Dataset, args, combo: tmc.Chopper, speed: 
     return measure_move(hw, ds, args, record, speed, args.measure_time, travel, direction, accel)
 
 
+def make_parker(kl: Klippy, hw: Hardware):
+    """Call before every move: re-homes periodically so retry drift cannot random-walk to a rail."""
+    counter = {'moves': 0}
+
+    def before_move():
+        if counter['moves'] >= PARK_INTERVAL_MOVES:
+            print('Re-homing to reset accumulated drift')
+            park(kl, hw)
+            counter['moves'] = 0
+        counter['moves'] += 1
+    return before_move
+
+
+def run_grid(kl: Klippy, hw: Hardware, ds: Dataset, args, plan, travel: float, accel: float,
+             done: set, before_move) -> 'tuple[int, int]':
+    ok = failed = 0
+    for index, (combo, speed) in enumerate(plan, 1):
+        pending = [(i, d) for i in range(args.iterations) for d in (1, -1)
+                   if measurement_id(combo, speed, i, d) not in done]
+        if not pending:
+            continue
+        kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
+        magnitudes = []
+        for iteration, direction in pending:
+            before_move()
+            record = run_measurement(hw, ds, args, combo, speed, iteration, direction, travel, accel)
+            if record['status'] == 'ok':
+                ok += 1
+                magnitudes.append(record['score']['median_magnitude'])
+            else:
+                failed += 1
+        if magnitudes:
+            print('[%d/%d] %s v%d: median %.1f' % (index, len(plan), combo.label(), speed,
+                                                   sum(magnitudes) / len(magnitudes)))
+    return ok, failed
+
+
+def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None',
+                speeds: 'list[int]', travel: float, accel: float, done: set,
+                before_move) -> 'tuple[int, int]':
+    from .analyze import aggregate, print_table, rank
+    from .search import coordinate_descent, dataset_history, penalized_score
+
+    stats = {'ok': 0, 'failed': 0}
+    history = dataset_history(ds)
+    cache = {combo: penalized_score(combo, magnitudes, hw.driver, args.audible_weight)
+             for combo, magnitudes in history.items()}
+    if cache:
+        print('Resuming: %d candidates already measured' % len(cache))
+
+    def measure_candidate(combo: tmc.Chopper, iterations: int, first_iteration: int = 0):
+        kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
+        for speed in speeds:
+            for iteration in range(first_iteration, first_iteration + iterations):
+                for direction in (1, -1):
+                    if measurement_id(combo, speed, iteration, direction) in done:
+                        continue
+                    before_move()
+                    record = run_measurement(hw, ds, args, combo, speed, iteration, direction,
+                                             travel, accel)
+                    if record['status'] == 'ok':
+                        stats['ok'] += 1
+                        history[combo].append(record['score']['median_magnitude'])
+                    else:
+                        stats['failed'] += 1
+
+    def evaluate(combo: tmc.Chopper) -> float:
+        if combo in cache:
+            return cache[combo]
+        measure_candidate(combo, args.iterations)
+        score = (penalized_score(combo, history[combo], hw.driver, args.audible_weight)
+                 if history[combo] else float('inf'))
+        cache[combo] = score
+        note = ' audible' if tmc.is_audible(combo, hw.driver) else ''
+        print('  %s -> %s' % (combo.label(),
+                              'failed' if score == float('inf') else '%.1f%s' % (score, note)))
+        return score
+
+    start = tmc.Chopper(hw.baseline.get('tbl', 2), hw.baseline.get('toff', 3),
+                        hw.baseline.get('hstrt', 5), hw.baseline.get('hend', 0),
+                        hw.baseline.get('tpfd'))
+    if tmc.validate(start) is not None:
+        start = tmc.Chopper(2, 3, 5, 0, hw.baseline.get('tpfd'))
+
+    best = coordinate_descent(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd,
+                              start, evaluate)
+    finalists = sorted((c for c in cache if cache[c] != float('inf')), key=cache.get)[:VALIDATE_TOP]
+    print('Descent best %s; validating top %d with extra runs' % (best.label(), len(finalists)))
+    for combo in finalists:
+        measure_candidate(combo, 1, first_iteration=args.iterations)
+
+    ranked = rank(aggregate(ds, False, args.trim), hw.driver, args.audible_weight)
+    print()
+    print_table(ranked, 10)
+    print('\nRecommended for printer.cfg:\n')
+    print(tmc.cfg_snippet(hw.driver, hw.stepper, ranked[0]['chopper']))
+    return stats['ok'], stats['failed']
+
+
 def run_collect(args) -> int:
     kl = Klippy(find_socket(args.socket)).connect()
     try:
@@ -270,10 +370,6 @@ def collect(kl: Klippy, args) -> int:
         tpfd = None
 
     speeds = list(args.speed.values())
-    plan = build_plan(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd, speeds)
-    if not plan:
-        raise SystemExit('empty plan: all combinations rejected by datasheet constraints')
-
     accel = args.accel or hw.max_accel / 10
     travel = max(travel_for(s, accel, args.measure_time) for s in speeds)
     limit = hw.axis_span * MOVE_MARGIN
@@ -282,12 +378,26 @@ def collect(kl: Klippy, args) -> int:
                          'reduce --measure-time or raise --accel'
                          % (travel, limit, MOVE_MARGIN * 100, hw.axis_span))
 
-    n_moves = len(plan) * args.iterations * 2
     overhead = OVERHEAD_CSV_SEC if args.csv else OVERHEAD_STREAM_SEC
-    eta = n_moves * (args.measure_time + 2 * max(speeds) / accel + overhead)
-    print('Plan: %d combinations x %d speeds -> %d moves of %.1fmm, capture %s, ETA %dh %02dm'
-          % (len(plan) // len(speeds), len(speeds), n_moves, travel, args.source,
-             eta // 3600, eta % 3600 // 60))
+    per_move = args.measure_time + 2 * max(speeds) / accel + overhead
+    plan = []
+    if args.search == 'grid':
+        plan = build_plan(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd, speeds)
+        if not plan:
+            raise SystemExit('empty plan: all combinations rejected by datasheet constraints')
+        n_moves = len(plan) * args.iterations * 2
+        eta = n_moves * per_move
+        print('Plan: %d combinations x %d speeds -> %d moves of %.1fmm, capture %s, ETA %dh %02dm'
+              % (len(plan) // len(speeds), len(speeds), n_moves, travel, args.source,
+                 eta // 3600, eta % 3600 // 60))
+    else:
+        from .search import descent_budget
+        budget = descent_budget(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd)
+        n_moves = (budget + VALIDATE_TOP) * len(speeds) * args.iterations * 2
+        eta = n_moves * per_move
+        print('Plan: coordinate descent, up to %d candidates -> up to %d moves of %.1fmm, '
+              'capture %s, ETA under %dh %02dm'
+              % (budget, n_moves, travel, args.source, eta // 3600, eta % 3600 // 60))
     if args.dry_run:
         return 0
     if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):
@@ -312,6 +422,8 @@ def collect(kl: Klippy, args) -> int:
         'accel_chip': hw.accel_chip,
         'kinematics': hw.kinematics,
         'baseline_registers': hw.baseline,
+        'search': args.search,
+        'audible_weight': args.audible_weight,
         'accel': accel,
         'measure_time': args.measure_time,
         'trim': args.trim,
@@ -326,31 +438,13 @@ def collect(kl: Klippy, args) -> int:
     print('Preparing: home XY, park at center, disable motors')
     park(kl, hw)
     started = time.time()
-    ok = failed = moves_since_park = 0
+    before_move = make_parker(kl, hw)
     try:
         measure_baseline(hw, ds, args, done)
-        for index, (combo, speed) in enumerate(plan, 1):
-            pending = [(i, d) for i in range(args.iterations) for d in (1, -1)
-                       if measurement_id(combo, speed, i, d) not in done]
-            if not pending:
-                continue
-            if moves_since_park >= PARK_INTERVAL_MOVES:
-                print('Re-homing to reset accumulated drift')
-                park(kl, hw)
-                moves_since_park = 0
-            kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
-            magnitudes = []
-            for iteration, direction in pending:
-                record = run_measurement(hw, ds, args, combo, speed, iteration, direction, travel, accel)
-                moves_since_park += 1
-                if record['status'] == 'ok':
-                    ok += 1
-                    magnitudes.append(record['score']['median_magnitude'])
-                else:
-                    failed += 1
-            if magnitudes:
-                print('[%d/%d] %s v%d: median %.1f' % (index, len(plan), combo.label(), speed,
-                                                       sum(magnitudes) / len(magnitudes)))
+        if args.search == 'descent':
+            ok, failed = run_descent(kl, hw, ds, args, tpfd, speeds, travel, accel, done, before_move)
+        else:
+            ok, failed = run_grid(kl, hw, ds, args, plan, travel, accel, done, before_move)
     finally:
         print('Restoring baseline registers, homing')
         if hw.baseline:
