@@ -89,6 +89,8 @@ def main(argv=None) -> int:
     a.add_argument('--apply', action='store_true', help='apply the best config via SET_TMC_FIELD')
     a.add_argument('--url', default='http://127.0.0.1:7125')
 
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(line_buffering=True)
     args = parser.parse_args(_gcode_args(sys.argv[1:] if argv is None else argv))
     if args.command == 'collect':
         from .collect import run_collect
