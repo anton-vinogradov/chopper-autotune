@@ -9,13 +9,17 @@ from chopper_autotune.klippy import KlippyError
 
 
 class FakeKlippy:
-    def __init__(self, settings=None, fail=False):
+    def __init__(self, settings=None, fail=False, objects=()):
         self._settings = settings
+        self._objects = list(objects)
         self.fail = fail
         self.scripts = []
 
     def settings(self):
         return self._settings
+
+    def object_list(self):
+        return self._objects
 
     def gcode(self, script):
         if self.fail:
@@ -52,11 +56,12 @@ def test_switch_polarity_per_driver():
     assert tmc.DRIVERS['2660'].spreadcycle_switch is None
 
 
-def test_display_detected_from_config():
+def test_display_detected_from_live_objects_not_config():
+    # display_status is a runtime object (auto-loaded on Mainsail), not a config section
     settings = make_settings()
-    assert detect_hardware(FakeKlippy(settings), 'x').display is False
-    settings['display_status'] = {}
-    assert detect_hardware(FakeKlippy(settings), 'x').display is True
+    assert detect_hardware(FakeKlippy(settings, objects=['toolhead', 'gcode_move']), 'x').display is False
+    assert detect_hardware(FakeKlippy(settings,
+                                      objects=['toolhead', 'display_status']), 'x').display is True
 
 
 def test_screen_throttles_and_forces():

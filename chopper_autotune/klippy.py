@@ -133,6 +133,9 @@ class Klippy:
         result = self.request('objects/query', {'objects': {'configfile': ['settings']}})
         return result['status']['configfile']['settings']
 
+    def object_list(self) -> 'list[str]':
+        return self.request('objects/list')['objects']
+
     def info(self) -> dict:
         return self.request('info')
 
