@@ -70,6 +70,8 @@ def main(argv=None) -> int:
                    help='start the descent from the best config of a previous dataset '
                         '(fast second axis: every candidate is still measured on this one)')
     c.add_argument('--iterations', type=int, default=1, help='repeats per combination, default 1')
+    c.add_argument('--validate', type=int, default=3,
+                   help='re-measure top N candidates with extra runs before recommending (0 = off)')
     c.add_argument('--skip-audible', action='store_true',
                    help='exclude combinations with an audible chopper frequency instead of just penalizing them')
     c.add_argument('--measure-time', type=float, default=1.25, help='cruise time per move in seconds')
