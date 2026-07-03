@@ -105,7 +105,9 @@ CHOPPER_ANALYZE SAVE=1               ; persist it into the config and restart Kl
 
 The same over SSH: `chopper-autotune tune|collect|analyze|…`. Every macro parameter maps 1:1 to a CLI flag (`MEASURE_TIME=1.5` → `--measure-time 1.5`); boolean flags take `1`/`0`. Progress is mirrored to the printer display (KlipperScreen / LCD / web header) via `M117`, with the final recommendation left on screen.
 
-![Tuning progress on the KlipperScreen display](docs/klipperscreen.svg) Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datasets/` — visible in the web file manager. `collect`/`tune` must run on the printer host (they talk to the klippy unix socket); `analyze` runs anywhere. `uninstall.sh` removes the integration and keeps the datasets.
+![Tuning progress on the KlipperScreen display](docs/klipperscreen.svg)
+
+Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datasets/` — visible in the web file manager. `collect`/`tune` must run on the printer host (they talk to the klippy unix socket); `analyze` runs anywhere. `uninstall.sh` removes the integration and keeps the datasets.
 
 ### Command reference
 
