@@ -4,6 +4,8 @@
 
 [Русская версия](README_RU.md)
 
+[![tests](https://github.com/anton-vinogradov/chopper-autotune/actions/workflows/ci.yml/badge.svg)](https://github.com/anton-vinogradov/chopper-autotune/actions/workflows/ci.yml)
+
 > **Status: working skeleton.** `collect` and `analyze` are implemented (full-grid sweep first, smart search next), not yet validated on real hardware.
 
 ## The problem

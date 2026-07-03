@@ -106,6 +106,20 @@ def test_status_reports_pace_and_eta(tmp_path, capsys):
     assert 'Progress: 20/52 (38%)' in out
 
 
+def test_status_pace_ignores_old_pause(tmp_path, capsys):
+    ds = Dataset.create(tmp_path / 'ds', {'driver': '2209', 'stepper': 'stepper_x'})
+    start = datetime.now(timezone.utc) - timedelta(hours=3)
+    for i in range(60):
+        # one-hour pause in the middle must not skew the pace of the recent window
+        offset = timedelta(seconds=2 * i) + (timedelta(hours=1) if i >= 10 else timedelta())
+        ds.append({'id': 'm%d' % i, 'kind': 'move', 'status': 'ok', 'tbl': 0, 'toff': 3,
+                   'hstrt': 4, 'hend': 0, 'score': {'median_magnitude': 1000.0},
+                   'ts': (start + offset).isoformat(timespec='seconds')})
+
+    run_status(argparse.Namespace(dataset=str(ds.root), total=None))
+    assert 'Pace: 2.0 s/move (last 50 moves)' in capsys.readouterr().out
+
+
 def test_newest_dataset_picks_latest(tmp_path):
     old = Dataset.create(tmp_path / 'a', {})
     old.append({'id': 'x', 'status': 'ok'})
