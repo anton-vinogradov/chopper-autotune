@@ -7,7 +7,7 @@ from chopper_autotune import tmc
 from chopper_autotune.collect import Range
 from chopper_autotune.dataset import Dataset
 from chopper_autotune.search import (coordinate_descent, dataset_history, descent_budget,
-                                     penalized_score, run_simulate)
+                                     penalized_score, run_simulate, seed_start)
 
 DRIVER = tmc.DRIVERS['2209']
 RANGES = {'tbl': Range(0, 3), 'toff': Range(1, 8), 'hstrt': Range(0, 7), 'hend': Range(0, 15)}
@@ -93,6 +93,28 @@ def test_simulate_on_synthetic_grid(tmp_path, capsys):
     out = capsys.readouterr().out
     assert 'Descent best: tbl1_toff6_hstrt4_hend7' in out
     assert 'Gap to global optimum: 0.0%' in out
+
+
+def test_seed_start_picks_penalized_best_and_adapts_tpfd(tmp_path):
+    ds = Dataset.create(tmp_path / 'seed', {})
+    quiet = {'tbl': 0, 'toff': 8, 'hstrt': 7, 'hend': 5, 'tpfd': 4}     # 21.1 kHz
+    whiny = {'tbl': 3, 'toff': 8, 'hstrt': 7, 'hend': 5, 'tpfd': 4}     # 18.6 kHz, audible
+    for name, fields, magnitude in (('a', quiet, 1000.0), ('b', whiny, 900.0)):
+        ds.append({'id': name, 'kind': 'move', 'status': 'ok', **fields,
+                   'score': {'median_magnitude': magnitude}})
+
+    # audible 900 * 1.5 loses to quiet 1000; tpfd stripped for a driver without it
+    best = seed_start(ds, DRIVER, audible_weight=0.5)
+    assert best == tmc.Chopper(0, 8, 7, 5)
+    # for a TPFD-capable driver the seed keeps tpfd, and a small weight flips the winner
+    best5160 = seed_start(ds, tmc.DRIVERS['5160'], audible_weight=0.05)
+    assert best5160 == tmc.Chopper(3, 8, 7, 5, tpfd=4)
+
+
+def test_seed_start_empty_dataset(tmp_path):
+    ds = Dataset.create(tmp_path / 'empty', {})
+    with pytest.raises(SystemExit):
+        seed_start(ds, DRIVER, 0.25)
 
 
 def test_dataset_history_groups_directions(tmp_path):

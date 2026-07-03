@@ -289,7 +289,7 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
                 speeds: 'list[int]', travel: float, accel: float, done: set,
                 before_move) -> 'tuple[int, int]':
     from .analyze import aggregate, print_table, rank
-    from .search import coordinate_descent, dataset_history, penalized_score
+    from .search import coordinate_descent, dataset_history, penalized_score, seed_start
 
     stats = {'ok': 0, 'failed': 0}
     history = dataset_history(ds)
@@ -326,9 +326,13 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
                               'failed' if score == float('inf') else '%.1f%s' % (score, note)))
         return score
 
-    start = tmc.Chopper(hw.baseline.get('tbl', 2), hw.baseline.get('toff', 3),
-                        hw.baseline.get('hstrt', 5), hw.baseline.get('hend', 0),
-                        hw.baseline.get('tpfd'))
+    if args.seed_from:
+        start = seed_start(Dataset.open(args.seed_from), hw.driver, args.audible_weight)
+        print('Seeded from %s: starting at %s' % (args.seed_from, start.label()))
+    else:
+        start = tmc.Chopper(hw.baseline.get('tbl', 2), hw.baseline.get('toff', 3),
+                            hw.baseline.get('hstrt', 5), hw.baseline.get('hend', 0),
+                            hw.baseline.get('tpfd'))
     if tmc.validate(start) is not None:
         start = tmc.Chopper(2, 3, 5, 0, hw.baseline.get('tpfd'))
 
@@ -368,6 +372,8 @@ def collect(kl: Klippy, args) -> int:
     if tpfd is not None and not hw.driver.has_tpfd:
         print('Warning: tmc%s has no TPFD, ignoring --tpfd' % hw.driver.name)
         tpfd = None
+    if args.seed_from and args.search != 'descent':
+        print('Warning: --seed-from only affects --search descent, ignoring')
 
     speeds = list(args.speed.values())
     accel = args.accel or hw.max_accel / 10

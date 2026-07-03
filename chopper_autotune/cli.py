@@ -49,6 +49,9 @@ def main(argv=None) -> int:
                    help='grid = full sweep; descent = coordinate descent per AN-001, minutes instead of hours')
     c.add_argument('--audible-weight', type=float, default=0.25,
                    help='descent objective penalty for audible chopper frequency')
+    c.add_argument('--seed-from', default=None,
+                   help='start the descent from the best config of a previous dataset '
+                        '(fast second axis: every candidate is still measured on this one)')
     c.add_argument('--iterations', type=int, default=1, help='repeats per combination, default 1')
     c.add_argument('--measure-time', type=float, default=1.25, help='cruise time per move in seconds')
     c.add_argument('--accel', type=float, default=None, help='acceleration, default printer max_accel / 10')
