@@ -1,7 +1,7 @@
 import argparse
 
 from chopper_autotune import tmc
-from chopper_autotune.collect import (Hardware, Screen, VALIDATE_EXTRA_ITERATIONS, collect,
+from chopper_autotune.collect import (Hardware, Screen, VALIDATE_EXTRA_ITERATIONS,
                                       measurement_id, validate_top)
 from chopper_autotune.dataset import Dataset
 
@@ -43,7 +43,8 @@ def test_validate_top_remeasures_finalists(tmp_path, monkeypatch, capsys):
     kl = FakeKl()
     calls = []
 
-    def fake_measurement(hw, ds_, args, combo, speed, iteration, direction, travel, accel):
+    def fake_measurement(hw, ds_, args, combo, speed, iteration, direction, travel, accel,
+                         before_move):
         calls.append((combo.toff, iteration, direction))
         record = {'id': measurement_id(combo, speed, iteration, direction), 'kind': 'move',
                   'status': 'ok', **combo.fields(),
@@ -69,7 +70,8 @@ def test_validate_top_skips_done_ids(tmp_path, monkeypatch):
     kl = FakeKl()
     calls = []
 
-    def fake_measurement(hw, ds_, args, combo, speed, iteration, direction, travel, accel):
+    def fake_measurement(hw, ds_, args, combo, speed, iteration, direction, travel, accel,
+                         before_move):
         calls.append(combo.toff)
         record = {'id': measurement_id(combo, speed, iteration, direction), 'kind': 'move',
                   'status': 'ok', **combo.fields(), 'score': {'median_magnitude': 900.0}}
@@ -86,3 +88,25 @@ def test_validate_top_skips_done_ids(tmp_path, monkeypatch):
 
 def test_validate_extra_iterations_constant():
     assert VALIDATE_EXTRA_ITERATIONS == 2
+
+
+def test_parker_parks_before_drift_reaches_rail():
+    parks = []
+    kl = FakeKl()
+    hw = make_hw(kl)
+    import chopper_autotune.collect as cm
+    original = cm.park
+    cm.park = lambda kl_, hw_: parks.append(True)
+    try:
+        before_move = cm.make_parker(kl, hw)
+        # span 260 -> headroom 120; alternating moves never park
+        for _ in range(3):
+            before_move(1, 104.0)
+            before_move(-1, 104.0)
+        assert parks == []
+        # a same-direction retry would put net at 208 > 120: must re-park first
+        before_move(1, 104.0)
+        before_move(1, 104.0)
+        assert parks == [True]
+    finally:
+        cm.park = original

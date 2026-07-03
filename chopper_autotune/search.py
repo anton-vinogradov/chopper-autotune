@@ -97,7 +97,8 @@ def run_simulate(args) -> int:
     lookup = {combo: penalized_score(combo, mags, driver, args.audible_weight)
               for combo, mags in dataset_history(ds).items()}
     if not lookup:
-        raise SystemExit('no successful measurements in %s' % args.dataset)
+        raise SystemExit('no register measurements in %s — simulate needs a grid dataset'
+                         % args.dataset)
 
     combos = list(lookup)
     ranges = {field: Range(min(getattr(c, field) for c in combos),
@@ -106,26 +107,35 @@ def run_simulate(args) -> int:
     tpfd_values = [c.tpfd for c in combos if c.tpfd is not None]
     tpfd = Range(min(tpfd_values), max(tpfd_values)) if tpfd_values else None
 
-    registers = manifest['baseline_registers']
+    registers = manifest.get('baseline_registers') or manifest.get('registers') \
+        or {'tbl': 2, 'toff': 3, 'hstrt': 5, 'hend': 0}
     start = tmc.Chopper(registers['tbl'], registers['toff'], registers['hstrt'],
                         registers['hend'], registers.get('tpfd'))
 
     lookups = []
+    missing = set()
 
     def evaluate(combo: tmc.Chopper) -> float:
         if combo not in lookup:
-            raise SystemExit('%s is missing from the dataset; simulate needs a grid dataset '
-                             'covering the whole descent range' % combo.label())
+            # a dataset collected under narrower ranges (or the old raw<=16 rule)
+            # cannot answer for this combo — steer the replay away from it
+            missing.add(combo)
+            return float('inf')
         lookups.append(combo)
         return lookup[combo]
 
     best = coordinate_descent(driver, ranges['tbl'], ranges['toff'], ranges['hstrt'],
                               ranges['hend'], tpfd, start, evaluate)
+    if best not in lookup:
+        raise SystemExit('replay could not reach any measured combo from start %s' % start.label())
     global_best = min(lookup, key=lookup.get)
     gap = (lookup[best] / lookup[global_best] - 1) * 100
 
     print('Dataset: %d combos; descent evaluated %d unique (%d lookups), %.1f%% of the grid'
           % (len(lookup), len(set(lookups)), len(lookups), 100 * len(set(lookups)) / len(lookup)))
+    if missing:
+        print('Warning: %d candidates were outside the dataset and treated as worst-case'
+              % len(missing))
     print('Descent best: %s -> %.1f' % (best.label(), lookup[best]))
     print('Global best:  %s -> %.1f' % (global_best.label(), lookup[global_best]))
     print('Gap to global optimum: %.1f%%' % gap)

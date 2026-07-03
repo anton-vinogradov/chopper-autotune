@@ -17,8 +17,8 @@ def test_build_plan_filters_constraints():
                       None, [55])
     assert all(tmc.validate(combo) is None for combo, _ in plan)
     assert all(combo.tpfd is None for combo, _ in plan)
-    # 107 valid hstrt/hend pairs; toff=1 allowed only for tbl 2..3
-    assert len(plan) == (4 + 2) * 107
+    # 118 valid hstrt/hend pairs (raw sum <= 18); toff=1 allowed only for tbl 2..3
+    assert len(plan) == (4 + 2) * 118
 
 
 def test_build_plan_tpfd_only_when_supported():

@@ -48,10 +48,11 @@ class Dataset:
 
     def store_raw_samples(self, measurement_id: str, samples) -> str:
         dst = self.raw_dir / (measurement_id + '.csv.gz')
-        with gzip.open(dst, 'wt') as f:
-            f.write('#time,accel_x,accel_y,accel_z\n')
-            for s in samples:
-                f.write('%.6f,%.6f,%.6f,%.6f\n' % (s[0], s[1], s[2], s[3]))
+        lines = ['#time,accel_x,accel_y,accel_z']
+        lines += ['%.6f,%.6f,%.6f,%.6f' % (s[0], s[1], s[2], s[3]) for s in samples]
+        # level 1: ~3x faster than the default 9 on the hot path, ~8% larger files
+        with gzip.open(dst, 'wt', compresslevel=1) as f:
+            f.write('\n'.join(lines) + '\n')
         return str(dst.relative_to(self.root))
 
     def open_raw(self, record: dict):

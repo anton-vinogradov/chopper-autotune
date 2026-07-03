@@ -43,13 +43,6 @@ class Moonraker:
     def gcode(self, script: str):
         return self._request('POST', '/printer/gcode/script', {'script': script})
 
-    def settings(self) -> dict:
-        result = self._request('GET', '/printer/objects/query', {'configfile': 'settings'})
-        return result['status']['configfile']['settings']
-
-    def info(self) -> dict:
-        return self._request('GET', '/printer/info')
-
     def set_tmc_fields(self, stepper: str, fields: dict):
         self.gcode(tmc.set_fields_script(stepper, fields))
 

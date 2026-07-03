@@ -17,6 +17,11 @@ def test_spearman():
     assert abs(spearman([1, 2, 3, 4, 5, 6], [2, 1, 4, 3, 6, 5])) < 1.0
 
 
+def test_spearman_averages_tied_ranks():
+    # ties must get averaged ranks: with ordinal ranks this pair returned 0.8
+    assert spearman([1, 2, 2, 3], [1, 3, 2, 4]) == pytest.approx(0.9487, abs=1e-3)
+
+
 def make_dataset(tmp_path, name, magnitude_of):
     ds = Dataset.create(tmp_path / name, {'driver': '2209', 'stepper': 'stepper_' + name})
     for toff, hend in itertools.product(range(2, 9), range(0, 8)):

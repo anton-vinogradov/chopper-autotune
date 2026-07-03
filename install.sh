@@ -20,6 +20,12 @@ else
     echo "Copied $g_shell_name to $g_shell_path"
 fi
 
+# Klipper rejects duplicate sections: yield to an existing [force_move] elsewhere
+if grep -rq "^\[force_move\]" ~/printer_data/config --include="*.cfg" --exclude="$cfg_name" 2>/dev/null; then
+    sed -i "s/^\[force_move\]/# [force_move] already defined elsewhere/; s/^enable_force_move: True/# enable_force_move: True/" "$repo_path/$cfg_name"
+    echo "[force_move] already present in your config, disabled ours (FORCE_MOVE must stay enabled there)"
+fi
+
 ln -srf "$repo_path/$cfg_name" ~/printer_data/config/
 
 printer_cfg=~/printer_data/config/printer.cfg

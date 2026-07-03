@@ -68,6 +68,20 @@ def test_batches_and_sample_window():
     kl.close()
 
 
+def test_malformed_frame_does_not_kill_reader():
+    kl, server_sock = make_pair()
+
+    def reply():
+        server_sock.recv(4096)
+        server_sock.sendall(b'not json\x03')
+        send(server_sock, {'key': 'accel', 'params': {'data': []}})
+        send(server_sock, {'id': 1, 'result': {'ok': True}})
+
+    threading.Thread(target=reply, daemon=True).start()
+    assert kl.request('info') == {'ok': True}
+    kl.close()
+
+
 def test_framing_split_across_chunks():
     kl, server_sock = make_pair()
     payload = json.dumps({'id': 1, 'result': {'ok': True}}).encode() + b'\x03'

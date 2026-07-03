@@ -5,8 +5,6 @@ all winners are written into the Klipper config in one batch with a single resta
 """
 from __future__ import annotations
 
-from argparse import Namespace
-
 from . import tmc
 from .collect import Range, collect
 from .dataset import Dataset
@@ -17,19 +15,30 @@ from .moonraker import Moonraker
 DRY_RUN_SPEED = 60
 
 
-def scan_args(args, axis: str) -> Namespace:
-    return Namespace(axis=axis, csv=args.csv, min_speed=20, max_speed=120, step=2,
-                     iterations=1, measure_time=1.0, accel=args.accel, trim=None,
-                     dataset=None, no_raw=args.no_raw, dry_run=args.dry_run, yes=True)
+def sub_args(args, argv: 'list[str]'):
+    """Build sub-command args through the real parser, so defaults live in one place."""
+    from .cli import build_parser
+    if args.accel is not None:
+        argv += ['--accel', str(args.accel)]
+    for flag, enabled in (('--csv', args.csv), ('--no-raw', args.no_raw),
+                          ('--dry-run', args.dry_run)):
+        if enabled:
+            argv.append(flag)
+    return build_parser().parse_args(argv)
 
 
-def collect_args(args, axis: str, speed: Range, seed_from: 'str | None') -> Namespace:
-    return Namespace(axis=axis, csv=args.csv, speed=speed, tbl=Range(0, 3), toff=Range(1, 8),
-                     hstrt=Range(0, 7), hend=Range(0, 15), tpfd=Range(0, 15),
-                     search='descent', audible_weight=args.audible_weight,
-                     seed_from=seed_from, iterations=args.iterations, validate=3, skip_audible=False,
-                     measure_time=1.25, accel=args.accel, trim=None, dataset=None,
-                     no_raw=args.no_raw, dry_run=args.dry_run, yes=True)
+def scan_args(args, axis: str):
+    return sub_args(args, ['find-speed', '--axis', axis, '--yes'])
+
+
+def collect_args(args, axis: str, speed: Range, seed_from: 'str | None'):
+    argv = ['collect', '--axis', axis, '--speed', '%d:%d' % (speed.lo, speed.hi),
+            '--search', 'descent', '--tpfd', '0:15',
+            '--audible-weight', str(args.audible_weight),
+            '--iterations', str(args.iterations), '--yes']
+    if seed_from:
+        argv += ['--seed-from', seed_from]
+    return sub_args(args, argv)
 
 
 def winner_of(root: str, audible_weight: float) -> 'tuple[dict, tmc.Chopper]':
@@ -38,6 +47,8 @@ def winner_of(root: str, audible_weight: float) -> 'tuple[dict, tmc.Chopper]':
     manifest = ds.manifest()
     ranked = rank(aggregate(ds, False, manifest.get('trim') or 0.1),
                   tmc.DRIVERS[manifest['driver']], audible_weight)
+    if not ranked:
+        raise SystemExit('no successful measurements in %s' % root)
     return manifest, ranked[0]['chopper']
 
 

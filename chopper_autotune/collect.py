@@ -206,13 +206,13 @@ def enter_spreadcycle(kl: Klippy, hw: Hardware):
     if hw.stealth:
         field, force, _ = hw.stealth
         print('stealthChop is configured: forcing spreadCycle for the test')
-        kl.gcode('SET_TMC_FIELD STEPPER=%s FIELD=%s VALUE=%d' % (hw.stepper, field, force))
+        kl.gcode(tmc.set_fields_script(hw.stepper, {field: force}))
 
 
 def exit_spreadcycle(kl: Klippy, hw: Hardware):
     if hw.stealth:
         field, _, restore = hw.stealth
-        kl.gcode('SET_TMC_FIELD STEPPER=%s FIELD=%s VALUE=%d' % (hw.stepper, field, restore))
+        kl.gcode(tmc.set_fields_script(hw.stepper, {field: restore}))
 
 
 def capture_stream(hw: Hardware, script: str, duration: float) -> 'tuple[float, np.ndarray]':
@@ -229,7 +229,16 @@ def capture_stream(hw: Hardware, script: str, duration: float) -> 'tuple[float, 
 def capture_csv(hw: Hardware, name: str, script: str) -> np.ndarray:
     drop_stale_csv(name)
     measure = 'ACCELEROMETER_MEASURE CHIP=%s NAME=%s' % (hw.accel_chip, name)
-    hw.kl.gcode('\n'.join(['M400', measure, script, 'M400', measure]))
+    try:
+        hw.kl.gcode('\n'.join(['M400', measure, script, 'M400', measure]))
+    except KlippyError:
+        # Klipper toggles measurement per chip, not per name: a mid-script failure can
+        # leave the chip capturing and silently corrupt every following csv
+        try:
+            hw.kl.gcode(measure)
+        except KlippyError:
+            pass
+        raise
     csv_path = wait_for_csv(name)
     with open(csv_path) as f:
         data = parse_accel_csv(f)
@@ -255,12 +264,17 @@ def measure_baseline(hw: Hardware, ds: Dataset, args, done: set):
 
 
 def measure_move(hw: Hardware, ds: Dataset, args, record: dict, speed: float, cruise: float,
-                 travel: float, direction: int, accel: float) -> dict:
-    """One FORCE_MOVE with capture and scoring; cruise is the steady-window duration."""
+                 travel: float, direction: int, accel: float, before_move) -> dict:
+    """One FORCE_MOVE with capture and scoring; cruise is the steady-window duration.
+
+    before_move is consulted per attempt: a retry re-runs the physical move, so drift
+    accounting must see it too.
+    """
     move = 'FORCE_MOVE STEPPER=%s DISTANCE=%.3f VELOCITY=%.1f ACCEL=%.0f' \
            % (hw.stepper, travel * direction, speed, accel)
     for attempt in (1, 2):
         try:
+            before_move(direction, travel)
             if args.csv:
                 data = capture_csv(hw, record['id'], move)
                 record['score'] = vibration_score(data, args.trim)
@@ -291,24 +305,68 @@ def measure_move(hw: Hardware, ds: Dataset, args, record: dict, speed: float, cr
 
 
 def run_measurement(hw: Hardware, ds: Dataset, args, combo: tmc.Chopper, speed: int,
-                    iteration: int, direction: int, travel: float, accel: float) -> dict:
+                    iteration: int, direction: int, travel: float, accel: float,
+                    before_move) -> dict:
     record = {'id': measurement_id(combo, speed, iteration, direction), 'kind': 'move',
               'source': args.source, **combo.fields(), 'speed': speed,
               'direction': direction, 'iteration': iteration, 'ts': now()}
-    return measure_move(hw, ds, args, record, speed, args.measure_time, travel, direction, accel)
+    return measure_move(hw, ds, args, record, speed, args.measure_time, travel, direction, accel,
+                        before_move)
 
 
 def make_parker(kl: Klippy, hw: Hardware):
-    """Call before every move: re-homes periodically so retry drift cannot random-walk to a rail."""
-    counter = {'moves': 0}
+    """Consulted before every physical move, retries included: re-homes on the periodic
+    cadence and whenever accumulated net drift would leave the move no safe headroom —
+    retries and direction-unbalanced resumes must never random-walk into a rail."""
+    state = {'moves': 0, 'net': 0.0}
+    headroom = hw.axis_span / 2 - 10.0
 
-    def before_move():
-        if counter['moves'] >= PARK_INTERVAL_MOVES:
+    def before_move(direction: int, travel: float):
+        if state['moves'] >= PARK_INTERVAL_MOVES or abs(state['net'] + direction * travel) > headroom:
             print('Re-homing to reset accumulated drift')
             park(kl, hw)
-            counter['moves'] = 0
-        counter['moves'] += 1
+            state['moves'] = 0
+            state['net'] = 0.0
+        state['moves'] += 1
+        state['net'] += direction * travel
     return before_move
+
+
+def measure_combo(hw: Hardware, ds: Dataset, args, combo: tmc.Chopper, speeds: 'list[int]',
+                  iterations: int, first_iteration: int, travel: float, accel: float,
+                  done: set, before_move) -> 'tuple[int, int, list[float]]':
+    """The one measurement loop shared by grid, descent and validation: applies the
+    registers, measures every missing (speed, iteration, direction) and reports counts."""
+    hw.kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
+    ok = failed = 0
+    magnitudes = []
+    for speed in speeds:
+        for iteration in range(first_iteration, first_iteration + iterations):
+            for direction in (1, -1):
+                if measurement_id(combo, speed, iteration, direction) in done:
+                    continue
+                record = run_measurement(hw, ds, args, combo, speed, iteration, direction,
+                                         travel, accel, before_move)
+                if record['status'] == 'ok':
+                    ok += 1
+                    magnitudes.append(record['score']['median_magnitude'])
+                else:
+                    failed += 1
+    return ok, failed, magnitudes
+
+
+def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int) -> 'dict | None':
+    from .analyze import aggregate, print_table, rank
+    ranked = rank(aggregate(ds, False, args.trim), hw.driver, args.audible_weight)
+    if not ranked:
+        print('No successful measurements — nothing to recommend')
+        return None
+    print()
+    print_table(ranked, top)
+    print('\nRecommended for printer.cfg:\n')
+    print(tmc.cfg_snippet(hw.driver, hw.stepper, ranked[0]['chopper']))
+    screen.update('Chopper: %s' % ranked[0]['chopper'].label(), force=True)
+    return ranked[0]
 
 
 def run_grid(kl: Klippy, hw: Hardware, ds: Dataset, args, plan, travel: float, accel: float,
@@ -316,20 +374,13 @@ def run_grid(kl: Klippy, hw: Hardware, ds: Dataset, args, plan, travel: float, a
     ok = failed = 0
     started = time.monotonic()
     for index, (combo, speed) in enumerate(plan, 1):
-        pending = [(i, d) for i in range(args.iterations) for d in (1, -1)
-                   if measurement_id(combo, speed, i, d) not in done]
-        if not pending:
+        if all(measurement_id(combo, speed, i, d) in done
+               for i in range(args.iterations) for d in (1, -1)):
             continue
-        kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
-        magnitudes = []
-        for iteration, direction in pending:
-            before_move()
-            record = run_measurement(hw, ds, args, combo, speed, iteration, direction, travel, accel)
-            if record['status'] == 'ok':
-                ok += 1
-                magnitudes.append(record['score']['median_magnitude'])
-            else:
-                failed += 1
+        combo_ok, combo_failed, magnitudes = measure_combo(
+            hw, ds, args, combo, [speed], args.iterations, 0, travel, accel, done, before_move)
+        ok += combo_ok
+        failed += combo_failed
         if magnitudes:
             print('[%d/%d] %s v%d: median %.1f' % (index, len(plan), combo.label(), speed,
                                                    sum(magnitudes) / len(magnitudes)))
@@ -345,7 +396,7 @@ def run_grid(kl: Klippy, hw: Hardware, ds: Dataset, args, plan, travel: float, a
 def validate_top(kl: Klippy, hw: Hardware, ds: Dataset, args, speeds: 'list[int]', travel: float,
                  accel: float, done: set, before_move, screen: Screen) -> 'tuple[int, int]':
     """Re-measure the current top candidates: low-n medians are noisy, the final call must not be."""
-    from .analyze import aggregate, print_table, rank
+    from .analyze import aggregate, rank
     ranked = rank(aggregate(ds, False, args.trim), hw.driver, args.audible_weight)
     finalists = [entry['chopper'] for entry in ranked[:args.validate]]
     if not finalists:
@@ -354,31 +405,18 @@ def validate_top(kl: Klippy, hw: Hardware, ds: Dataset, args, speeds: 'list[int]
           % (len(finalists), VALIDATE_EXTRA_ITERATIONS))
     ok = failed = 0
     for combo in finalists:
-        kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
-        for speed in speeds:
-            for iteration in range(args.iterations, args.iterations + VALIDATE_EXTRA_ITERATIONS):
-                for direction in (1, -1):
-                    if measurement_id(combo, speed, iteration, direction) in done:
-                        continue
-                    before_move()
-                    record = run_measurement(hw, ds, args, combo, speed, iteration, direction,
-                                             travel, accel)
-                    ok += record['status'] == 'ok'
-                    failed += record['status'] != 'ok'
-
-    ranked = rank(aggregate(ds, False, args.trim), hw.driver, args.audible_weight)
-    print()
-    print_table(ranked, max(10, args.validate))
-    print('\nRecommended for printer.cfg:\n')
-    print(tmc.cfg_snippet(hw.driver, hw.stepper, ranked[0]['chopper']))
-    screen.update('Chopper: %s' % ranked[0]['chopper'].label(), force=True)
+        combo_ok, combo_failed, _ = measure_combo(
+            hw, ds, args, combo, speeds, VALIDATE_EXTRA_ITERATIONS, args.iterations,
+            travel, accel, done, before_move)
+        ok += combo_ok
+        failed += combo_failed
+    report_winner(hw, ds, args, screen, max(10, args.validate))
     return ok, failed
 
 
 def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None',
                 speeds: 'list[int]', travel: float, accel: float, done: set,
                 before_move, screen: Screen) -> 'tuple[int, int]':
-    from .analyze import aggregate, print_table, rank
     from .search import coordinate_descent, dataset_history, penalized_score, seed_start
 
     stats = {'ok': 0, 'failed': 0}
@@ -389,20 +427,12 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
         print('Resuming: %d candidates already measured' % len(cache))
 
     def measure_candidate(combo: tmc.Chopper, iterations: int, first_iteration: int = 0):
-        kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
-        for speed in speeds:
-            for iteration in range(first_iteration, first_iteration + iterations):
-                for direction in (1, -1):
-                    if measurement_id(combo, speed, iteration, direction) in done:
-                        continue
-                    before_move()
-                    record = run_measurement(hw, ds, args, combo, speed, iteration, direction,
-                                             travel, accel)
-                    if record['status'] == 'ok':
-                        stats['ok'] += 1
-                        history[combo].append(record['score']['median_magnitude'])
-                    else:
-                        stats['failed'] += 1
+        combo_ok, combo_failed, magnitudes = measure_combo(
+            hw, ds, args, combo, speeds, iterations, first_iteration, travel, accel,
+            done, before_move)
+        stats['ok'] += combo_ok
+        stats['failed'] += combo_failed
+        history[combo].extend(magnitudes)
 
     def evaluate(combo: tmc.Chopper) -> float:
         if combo in cache:
@@ -438,12 +468,7 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
     for combo in finalists:
         measure_candidate(combo, VALIDATE_EXTRA_ITERATIONS, first_iteration=args.iterations)
 
-    ranked = rank(aggregate(ds, False, args.trim), hw.driver, args.audible_weight)
-    print()
-    print_table(ranked, 10)
-    print('\nRecommended for printer.cfg:\n')
-    print(tmc.cfg_snippet(hw.driver, hw.stepper, ranked[0]['chopper']))
-    screen.update('Chopper: %s' % ranked[0]['chopper'].label(), force=True)
+    report_winner(hw, ds, args, screen, 10)
     return stats['ok'], stats['failed']
 
 
@@ -467,7 +492,7 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
 
     tpfd = args.tpfd
     if tpfd is not None and not hw.driver.has_tpfd:
-        print('Warning: tmc%s has no TPFD, ignoring --tpfd' % hw.driver.name)
+        print('Note: tmc%s has no TPFD, skipping the TPFD sweep' % hw.driver.name)
         tpfd = None
     if args.seed_from and args.search != 'descent':
         print('Warning: --seed-from only affects --search descent, ignoring')
@@ -483,6 +508,7 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
 
     overhead = OVERHEAD_CSV_SEC if args.csv else OVERHEAD_STREAM_SEC
     per_move = args.measure_time + 2 * max(speeds) / accel + overhead
+    validation_moves = args.validate * VALIDATE_EXTRA_ITERATIONS * len(speeds) * 2
     plan = []
     if args.search == 'grid':
         plan = build_plan(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd, speeds,
@@ -490,19 +516,17 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
         if not plan:
             raise SystemExit('empty plan: all combinations rejected by datasheet constraints'
                              + (' or audible' if args.skip_audible else ''))
-        n_moves = len(plan) * args.iterations * 2
-        eta = n_moves * per_move
-        print('Plan: %d combinations x %d speeds -> %d moves of %.1fmm, capture %s, ETA %dh %02dm'
+        n_moves = len(plan) * args.iterations * 2 + validation_moves
+        print('Plan: %d combinations x %d speeds -> %d moves of %.1fmm, capture %s, ETA %s'
               % (len(plan) // len(speeds), len(speeds), n_moves, travel, args.source,
-                 eta // 3600, eta % 3600 // 60))
+                 eta_text(n_moves * per_move)))
     else:
         from .search import descent_budget
         budget = descent_budget(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd)
-        n_moves = (budget + args.validate) * len(speeds) * args.iterations * 2
-        eta = n_moves * per_move
+        n_moves = budget * len(speeds) * args.iterations * 2 + validation_moves
         print('Plan: coordinate descent, up to %d candidates -> up to %d moves of %.1fmm, '
-              'capture %s, ETA under %dh %02dm'
-              % (budget, n_moves, travel, args.source, eta // 3600, eta % 3600 // 60))
+              'capture %s, ETA under %s'
+              % (budget, n_moves, travel, args.source, eta_text(n_moves * per_move)))
     if args.dry_run:
         return 0, None
     if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):
@@ -538,6 +562,7 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
         'measure_time': args.measure_time,
         'trim': args.trim,
         'iterations': args.iterations,
+        'validate': args.validate,
         'travel_distance': round(travel, 3),
         'speeds': speeds,
     })

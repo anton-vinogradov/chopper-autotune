@@ -87,3 +87,27 @@ def test_run_save_refuses_ambiguous_sections():
     mk = FakeMoonraker(files)
     with pytest.raises(SystemExit, match='several files'):
         run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))])
+
+
+def test_run_save_ignores_its_own_backups():
+    mk = FakeMoonraker({'printer.cfg': CFG})
+    item = [({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))]
+    run_save(mk, item)
+    mk.uploads.clear()
+    # the backup now sits in the config root with the same section: must not confuse a re-save
+    run_save(mk, item)
+    assert mk.uploads == ['printer.chopper-backup.cfg', 'printer.cfg']
+
+
+def test_run_save_uploads_all_backups_before_edits():
+    files = {'printer.cfg': CFG,
+             'extra.cfg': '[tmc2209 stepper_z]\nuart_pin: PC10\ndriver_TOFF: 4\n'}
+    mk = FakeMoonraker(files)
+    run_save(mk, [
+        ({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5)),
+        ({'driver': '2209', 'stepper': 'stepper_z'}, tmc.Chopper(1, 6, 5, 4)),
+    ])
+    assert mk.uploads[:2] == ['printer.chopper-backup.cfg', 'extra.chopper-backup.cfg']
+    assert set(mk.uploads[2:]) == {'printer.cfg', 'extra.cfg'}
+    assert mk.scripts == ['RESTART']
+    assert 'driver_TOFF: 6' in mk.files['extra.cfg']
