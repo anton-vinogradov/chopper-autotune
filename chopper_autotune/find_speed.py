@@ -8,9 +8,9 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
-from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, default_dataset_root,
-                      detect_hardware, enter_spreadcycle, exit_spreadcycle, measure_baseline,
-                      measure_move, now, park, travel_for)
+from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen,
+                      default_dataset_root, detect_hardware, enter_spreadcycle,
+                      exit_spreadcycle, measure_baseline, measure_move, now, park, travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, find_socket
 
@@ -170,6 +170,7 @@ def scan(kl: Klippy, args) -> int:
     enter_spreadcycle(kl, hw)
     started = time.time()
     failed = 0
+    screen = Screen(kl, hw.display)
     try:
         measure_baseline(hw, ds, args, done)
         for index, (speed, cruise) in enumerate(plan, 1):
@@ -191,6 +192,7 @@ def scan(kl: Klippy, args) -> int:
             if magnitudes:
                 print('[%d/%d] %d mm/s: median %.1f' % (index, len(plan), speed,
                                                         sum(magnitudes) / len(magnitudes)))
+            screen.update('Chopper speed scan %d/%d' % (index, len(plan)))
     finally:
         print('Homing')
         exit_spreadcycle(kl, hw)
@@ -206,9 +208,11 @@ def scan(kl: Klippy, args) -> int:
     print('Done in %dm: report %s' % ((time.time() - started) // 60, path))
 
     if peaks:
+        recommended = recommend(curve, peaks)
         print('Resonance peaks: %s'
               % ', '.join('%d mm/s (magnitude %.0f)' % curve[i] for i in peaks))
-        print('\nRecommended: CHOPPER_COLLECT SPEED=%d' % recommend(curve, peaks))
+        print('\nRecommended: CHOPPER_COLLECT SPEED=%d' % recommended)
+        screen.update('Chopper: resonance %d mm/s' % recommended, force=True)
     else:
         top = max(curve, key=lambda point: point[1])
         print('No clear resonance peaks; highest magnitude %.0f at %d mm/s. '

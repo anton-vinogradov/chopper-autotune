@@ -5,16 +5,24 @@ import pytest
 
 from chopper_autotune import tmc
 from chopper_autotune.analyze import newest_dataset, run_status
-from chopper_autotune.collect import detect_hardware
+from chopper_autotune.collect import Screen, detect_hardware
 from chopper_autotune.dataset import Dataset
+from chopper_autotune.klippy import KlippyError
 
 
 class FakeKlippy:
-    def __init__(self, settings):
+    def __init__(self, settings=None, fail=False):
         self._settings = settings
+        self.fail = fail
+        self.scripts = []
 
     def settings(self):
         return self._settings
+
+    def gcode(self, script):
+        if self.fail:
+            raise KlippyError('no display')
+        self.scripts.append(script)
 
 
 def make_settings(driver='2209', extra_tmc=None):
@@ -44,6 +52,32 @@ def test_switch_polarity_per_driver():
     assert tmc.DRIVERS['5160'].spreadcycle_switch == ('en_pwm_mode', 0, 1)
     assert tmc.DRIVERS['2209'].spreadcycle_switch == ('en_spreadcycle', 1, 0)
     assert tmc.DRIVERS['2660'].spreadcycle_switch is None
+
+
+def test_display_detected_from_config():
+    settings = make_settings()
+    assert detect_hardware(FakeKlippy(settings), 'x').display is False
+    settings['display_status'] = {}
+    assert detect_hardware(FakeKlippy(settings), 'x').display is True
+
+
+def test_screen_throttles_and_forces():
+    kl = FakeKlippy()
+    screen = Screen(kl, enabled=True)
+    screen.update('one')
+    screen.update('two')
+    screen.update('three', force=True)
+    assert kl.scripts == ['M117 one', 'M117 three']
+
+
+def test_screen_disabled_and_error_paths():
+    kl = FakeKlippy()
+    Screen(kl, enabled=False).update('nope', force=True)
+    assert kl.scripts == []
+
+    broken = Screen(FakeKlippy(fail=True), enabled=True)
+    broken.update('boom', force=True)
+    assert broken.enabled is False
 
 
 def make_running_dataset(tmp_path, n=20):
