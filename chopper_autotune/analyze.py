@@ -45,9 +45,12 @@ def aggregate(ds: Dataset, recompute: bool, trim_fraction: float) -> 'list[dict]
             score = record['score']
         key = (record['tbl'], record['toff'], record['hstrt'], record['hend'], record.get('tpfd'))
         groups[key].append(score['median_magnitude'])
+    # mean across moves, not median: the fwd/rev (and iteration) difference is real
+    # signal — a config that is quiet one way and loud the other should not win on
+    # its lucky direction. Per-move sample noise is already tamed by the inner median.
     return [{
         'chopper': tmc.Chopper(*key),
-        'magnitude': statistics.median(values),
+        'magnitude': statistics.mean(values),
         'spread': max(values) - min(values),
         'n': len(values),
     } for key, values in groups.items()]
