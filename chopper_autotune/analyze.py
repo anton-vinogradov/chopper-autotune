@@ -15,11 +15,13 @@ from .moonraker import Moonraker
 
 def latest_dataset(bases=(RESULTS_HOME / 'datasets', Path('datasets'))) -> str:
     for base in bases:
-        if base.is_dir():
-            found = sorted(p for p in base.iterdir() if (p / 'manifest.json').is_file())
-            if found:
-                return str(found[-1])
-    raise SystemExit('no datasets found, pass the dataset directory explicitly')
+        if not base.is_dir():
+            continue
+        for path in sorted(base.iterdir(), reverse=True):
+            if (path / 'manifest.json').is_file() \
+                    and Dataset(path).manifest().get('mode') != 'find-speed':
+                return str(path)
+    raise SystemExit('no chopper datasets found, pass the dataset directory explicitly')
 
 
 def aggregate(ds: Dataset, recompute: bool, trim_fraction: float) -> 'list[dict]':

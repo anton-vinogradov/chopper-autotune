@@ -21,12 +21,13 @@ Close the loop on real hardware: *apply registers → move the axis → measure 
 
 ### How it works today
 
-1. **`collect`** reads everything it needs from the printer config over the klippy API socket (driver type, current registers, accelerometer, kinematics, axis limits), builds a register/speed plan pruned by datasheet constraints, checks the travel length against the axis span, prints an ETA and asks for confirmation.
-2. The printer homes, parks at the bed center and disables motors. For every combination the tool applies registers via `SET_TMC_FIELD`, runs `FORCE_MOVE` back and forth, and streams accelerometer samples straight from the klippy socket. The end of each move is taken from `toolhead.print_time`, so the metric sees exactly the cruise phase — acceleration and deceleration transients are cut analytically, not by guesswork.
-3. Every measurement is appended to an on-disk dataset immediately; an interrupted run resumes from where it stopped.
-4. **`analyze`** aggregates the dataset (median across directions/iterations/speeds), penalizes configurations whose chopper frequency falls into the audible range, prints a ranking table, writes an interactive plotly report and a ready-to-paste `printer.cfg` snippet; `--apply` sets the winner live without restarting Klipper.
+1. **`find-speed`** sweeps the speed range with the current registers, builds the magnitude(speed) curve, finds resonance peaks (prominence-based) and recommends the speed for the main run.
+2. **`collect`** reads everything it needs from the printer config over the klippy API socket (driver type, current registers, accelerometer, kinematics, axis limits), builds a register/speed plan pruned by datasheet constraints, checks the travel length against the axis span, prints an ETA and asks for confirmation.
+3. The printer homes XY, parks at the bed center and disables motors. For every combination the tool applies registers via `SET_TMC_FIELD`, runs `FORCE_MOVE` back and forth, and streams accelerometer samples straight from the klippy socket. The end of each move is taken from `toolhead.print_time`, so the metric sees exactly the cruise phase — acceleration and deceleration transients are cut analytically, not by guesswork.
+4. Every measurement is appended to an on-disk dataset immediately; an interrupted run resumes from where it stopped.
+5. **`analyze`** aggregates the dataset (median across directions/iterations/speeds), penalizes configurations whose chopper frequency falls into the audible range, prints a ranking table, writes an interactive plotly report and a ready-to-paste `printer.cfg` snippet; `--apply` sets the winner live without restarting Klipper.
 
-Current limitations: the resonance speed is chosen by the user (measure it with your current config first, e.g. via the predecessors' `FIND_VIBRATIONS` flow), and the search is a plain grid sweep — automatic peak detection and smart search strategies are next on the roadmap.
+Current limitation: the register search is a plain grid sweep — smart strategies (coordinate descent, Optuna, early abort) are next on the roadmap.
 
 ### Datasheet-driven scoring, not just measurement
 
@@ -58,9 +59,10 @@ cd ~ && git clone https://github.com/anton-vinogradov/chopper-autotune && bash .
 Then from the web console (Mainsail/Fluidd):
 
 ```
+CHOPPER_FIND_SPEED                   ; 1. locate the resonance speeds of the axis
 CHOPPER_COLLECT SPEED=55 DRY_RUN=1   ; check the plan and ETA without moving anything
-CHOPPER_COLLECT SPEED=55             ; 1. sweep the grid at the resonance speed (long)
-CHOPPER_ANALYZE                      ; 2. rank the latest dataset, write the report
+CHOPPER_COLLECT SPEED=55             ; 2. sweep the grid at the resonance speed (long)
+CHOPPER_ANALYZE                      ; 3. rank the latest dataset, write the report
 CHOPPER_ANALYZE APPLY=1              ; apply the winner live via SET_TMC_FIELD
 ```
 
@@ -87,7 +89,7 @@ Python 3.9+ on the printer host. The klippy API socket for orchestration and sam
 - [x] Web-console macros (`CHOPPER_COLLECT`/`CHOPPER_ANALYZE`), installer, Moonraker update_manager
 - [x] Streaming capture with exact cruise-phase slicing (`--csv` fallback)
 - [x] Hardware validation on a real printer (CoreXY, TMC2209, ADXL345: streaming and CSV paths agree)
-- [ ] Automatic resonance speed detection
+- [x] Automatic resonance speed detection (`find-speed`, prominence-based peak picking)
 - [ ] Forcing spreadCycle on stealthChop-default drivers during the test
 - [ ] Smart search in `collect` (coordinate descent per AN-001, Optuna, early abort of bad candidates) with successive halving
 - [ ] Validation phase (re-measure top candidates before recommending)

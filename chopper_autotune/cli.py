@@ -57,6 +57,25 @@ def main(argv=None) -> int:
     c.add_argument('--dry-run', action='store_true', help='print the plan and ETA, do not move anything')
     c.add_argument('-y', '--yes', action='store_true', help='skip the confirmation prompt')
 
+    f = sub.add_parser('find-speed', help='sweep speeds with current registers to locate resonance peaks')
+    f.add_argument('--socket', default=None,
+                   help='klippy unix socket path, default: auto-detect')
+    f.add_argument('--csv', action='store_true',
+                   help='fallback capture via ACCELEROMETER_MEASURE and /tmp CSV instead of streaming')
+    f.add_argument('--axis', type=str.lower, choices=('x', 'y'), default='x')
+    f.add_argument('--min-speed', type=int, default=20)
+    f.add_argument('--max-speed', type=int, default=120)
+    f.add_argument('--step', type=int, default=2, help='speed increment in mm/s, default 2')
+    f.add_argument('--iterations', type=int, default=1)
+    f.add_argument('--measure-time', type=float, default=1.0,
+                   help='target cruise time per move; shrinks at high speeds to fit the axis')
+    f.add_argument('--accel', type=float, default=None, help='acceleration, default printer max_accel / 10')
+    f.add_argument('--trim', type=float, default=None)
+    f.add_argument('--dataset', default=None, help='dataset directory; pass an existing one to resume')
+    f.add_argument('--no-raw', action='store_true')
+    f.add_argument('--dry-run', action='store_true')
+    f.add_argument('-y', '--yes', action='store_true')
+
     a = sub.add_parser('analyze', help='rank configurations from a dataset, report, optionally apply')
     a.add_argument('dataset', nargs='?', default=None,
                    help='dataset directory, default: the latest collected one')
@@ -74,5 +93,8 @@ def main(argv=None) -> int:
     if args.command == 'collect':
         from .collect import run_collect
         return run_collect(args)
+    if args.command == 'find-speed':
+        from .find_speed import run_find_speed
+        return run_find_speed(args)
     from .analyze import run_analyze
     return run_analyze(args)
