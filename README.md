@@ -27,7 +27,7 @@ Close the loop on real hardware: *apply registers → move the axis → measure 
 4. Every measurement is appended to an on-disk dataset immediately; an interrupted run resumes from where it stopped.
 5. **`analyze`** aggregates the dataset (median across directions/iterations/speeds), penalizes configurations whose chopper frequency falls into the audible range, prints a ranking table, writes an interactive plotly report and a ready-to-paste `printer.cfg` snippet; `--apply` sets the winner live without restarting Klipper.
 
-Besides the default full-grid sweep, `--search descent` (`SEARCH=descent`) runs a coordinate descent in the AN-001 tuning order — `TBL`+`TOFF` jointly, then `HSTRT`, `HEND`, then `TPFD` — evaluating a few percent of the grid (minutes instead of hours), re-measuring the top candidates before recommending. The objective includes the audible-chopper penalty, so the descent does not trade a barely lower vibration for a 15 kHz whine. Any recorded grid dataset doubles as an offline benchmark: `simulate <dataset>` replays the descent against it and reports the gap to the true optimum.
+Besides the default full-grid sweep, `--search descent` (`SEARCH=descent`) runs a coordinate descent in the AN-001 tuning order — `TBL`+`TOFF` jointly, then `HSTRT`, `HEND`, then `TPFD` — evaluating a few percent of the grid (minutes instead of hours), re-measuring the top candidates before recommending. The objective includes the audible-chopper penalty, so the descent does not trade a barely lower vibration for a 15 kHz whine. For the second axis, `SEED_FROM=<dataset>` starts the descent from the winner of the first one — the seed only positions the search, every candidate is still measured on the target axis, so belt tension and mechanics differences are accounted for; a good seed converges in a couple of minutes, a bad one just costs the usual descent time. Any recorded grid dataset doubles as an offline benchmark: `simulate <dataset>` replays the descent against it and reports the gap to the true optimum.
 
 ### Datasheet-driven scoring, not just measurement
 
@@ -63,6 +63,7 @@ CHOPPER_FIND_SPEED                   ; 1. locate the resonance speeds of the axi
 CHOPPER_COLLECT SPEED=55 DRY_RUN=1   ; check the plan and ETA without moving anything
 CHOPPER_COLLECT SPEED=55             ; 2. sweep the full grid at the resonance speed (hours)
 CHOPPER_COLLECT SPEED=55 SEARCH=descent  ; ...or coordinate descent (minutes)
+CHOPPER_COLLECT AXIS=Y SPEED=52 SEARCH=descent SEED_FROM=<X dataset>  ; fast second axis
 CHOPPER_ANALYZE                      ; 3. rank the latest dataset, write the report
 CHOPPER_ANALYZE APPLY=1              ; apply the winner live via SET_TMC_FIELD
 ```

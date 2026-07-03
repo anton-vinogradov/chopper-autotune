@@ -73,6 +73,22 @@ def penalized_score(combo: tmc.Chopper, magnitudes: 'list[float]', driver: tmc.D
     return magnitude * (1 + audible_weight) if tmc.is_audible(combo, driver) else magnitude
 
 
+def seed_start(ds: Dataset, driver: tmc.Driver, audible_weight: float) -> tmc.Chopper:
+    """Best combo of a previously collected dataset, adapted to the target driver.
+
+    Used to start the descent for one axis from the winner of another: the seed
+    only positions the search, every candidate is still measured on this axis.
+    """
+    history = dataset_history(ds)
+    if not history:
+        raise SystemExit('no successful measurements in the seed dataset %s' % ds.root)
+    best = min(history, key=lambda combo: penalized_score(combo, history[combo], driver,
+                                                          audible_weight))
+    if not driver.has_tpfd and best.tpfd is not None:
+        best = replace(best, tpfd=None)
+    return best
+
+
 def run_simulate(args) -> int:
     """Replay the descent against a recorded grid dataset: no printer involved."""
     ds = Dataset.open(args.dataset)
