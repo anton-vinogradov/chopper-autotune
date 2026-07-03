@@ -23,6 +23,8 @@ Close the loop on real hardware: *apply registers → move the axis → measure 
 
 ### How it works today
 
+`tune` chains everything below into a single command; each piece is also available separately:
+
 1. **`find-speed`** sweeps the speed range with the current registers, builds the magnitude(speed) curve, finds resonance peaks (prominence-based) and recommends the speed for the main run.
 2. **`collect`** reads everything it needs from the printer config over the klippy API socket (driver type, current registers, accelerometer, kinematics, axis limits), builds a register/speed plan pruned by datasheet constraints, checks the travel length against the axis span, prints an ETA and asks for confirmation.
 3. The printer homes XY, parks at the bed center and disables motors. For every combination the tool applies registers via `SET_TMC_FIELD`, runs `FORCE_MOVE` back and forth, and streams accelerometer samples straight from the klippy socket. The end of each move is taken from `toolhead.print_time`, so the metric sees exactly the cruise phase — acceleration and deceleration transients are cut analytically, not by guesswork.
@@ -59,7 +61,16 @@ Install on the printer host (Klipper restarts at the end):
 cd ~ && git clone https://github.com/anton-vinogradov/chopper-autotune && bash ./chopper-autotune/install.sh
 ```
 
-Then from the web console (Mainsail/Fluidd):
+### The simple way — one command
+
+```
+CHOPPER_TUNE            ; both axes: resonance speed + register descent, ~20 min
+CHOPPER_TUNE SAVE=1     ; ...and write the winners into the config (with a backup)
+```
+
+That is the whole workflow: the tool finds the resonance speed of each axis, runs the register descent at it, seeds the second axis with the first one's winner, prints both `printer.cfg` blocks and — with `SAVE=1` — persists them and restarts Klipper. Progress shows on the printer display; `CHOPPER_STATUS` prints it in the console.
+
+### The manual way — step by step
 
 ```
 CHOPPER_FIND_SPEED                   ; 1. locate the resonance speeds of the axis
@@ -73,9 +84,69 @@ CHOPPER_ANALYZE APPLY=1              ; apply the winner live via SET_TMC_FIELD
 CHOPPER_ANALYZE SAVE=1               ; persist it into the config and restart Klipper
 ```
 
-The same over SSH: `chopper-autotune collect --axis x --speed 55`, `chopper-autotune analyze [dir]`. Every macro parameter maps 1:1 to a CLI flag (`MEASURE_TIME=1.5` → `--measure-time 1.5`).
+The same over SSH: `chopper-autotune tune|collect|analyze|…`. Every macro parameter maps 1:1 to a CLI flag (`MEASURE_TIME=1.5` → `--measure-time 1.5`); boolean flags take `1`/`0`. Progress is mirrored to the printer display (KlipperScreen / LCD / web header) via `M117`, with the final recommendation left on screen. Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datasets/` — visible in the web file manager. `collect`/`tune` must run on the printer host (they talk to the klippy unix socket); `analyze` runs anywhere. `uninstall.sh` removes the integration and keeps the datasets.
 
-Progress is mirrored to the printer display (KlipperScreen / LCD / web header) via `M117`, with the final recommendation left on screen. Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datasets/` — visible in the web file manager. Narrow the grid with `TBL/TOFF/HSTRT/HEND/TPFD=lo:hi` (e.g. `CHOPPER_COLLECT SPEED=55 TOFF=1:8 HEND=0:7`), resume an interrupted run by passing its directory as `DATASET=`. `collect` must run on the printer host (it talks to the klippy unix socket); `analyze` runs anywhere. `APPLY=1` lives until reboot; `SAVE=1` rewrites the `driver_*` lines of the right section in your config (a `.chopper-backup.cfg` copy is made first) and restarts Klipper. `uninstall.sh` removes the integration and keeps the datasets.
+### Command reference
+
+**CHOPPER_TUNE** — the whole pipeline; no parameters needed.
+
+| parameter | default | meaning |
+|---|---|---|
+| `AXIS` | `XY` | `X`, `Y`, or `XY` = both, the second seeded with the first one's winner |
+| `SPEED` | auto | skip the resonance scan and tune at this speed (mm/s) |
+| `SAVE` | `0` | write the winners into the Klipper config (backup first) and restart |
+| `ITERATIONS` | `1` | repeats per candidate — raise on noisy mechanics |
+| `AUDIBLE_WEIGHT` | `0.25` | penalty multiplier for audible chopper frequency |
+| `DRY_RUN` | `0` | print the plan and ETA, do not move anything |
+
+**CHOPPER_FIND_SPEED** — resonance speed scan at the current registers.
+
+| parameter | default | meaning |
+|---|---|---|
+| `AXIS` | `X` | axis to scan |
+| `MIN_SPEED` / `MAX_SPEED` | `20` / `120` | scan range, mm/s |
+| `STEP` | `2` | speed increment, mm/s |
+| `ITERATIONS` | `1` | repeats per speed |
+| `MEASURE_TIME` | `1.0` | target cruise seconds per move (shrinks at high speeds to fit the axis) |
+| `DATASET` | new | pass an existing directory to resume it |
+| `DRY_RUN` | `0` | plan and ETA only |
+
+**CHOPPER_COLLECT** — register search at a given speed.
+
+| parameter | default | meaning |
+|---|---|---|
+| `SPEED` | required | resonance speed, mm/s (or a `lo:hi` range) |
+| `AXIS` | `X` | axis to tune |
+| `SEARCH` | `grid` | `grid` = full sweep (hours), `descent` = coordinate descent (minutes) |
+| `TBL` / `TOFF` / `HSTRT` / `HEND` | `0:3` / `1:8` / `0:7` / `0:15` | register ranges (`lo:hi` or a single value) |
+| `TPFD` | off | TPFD range, TMC2240/5160 only |
+| `SEED_FROM` | — | start the descent from another dataset's winner (fast second axis) |
+| `SKIP_AUDIBLE` | `0` | exclude audibly-whining combos instead of just penalizing them |
+| `AUDIBLE_WEIGHT` | `0.25` | descent-objective penalty for audible chopper frequency |
+| `ITERATIONS` | `1` | repeats per combination |
+| `MEASURE_TIME` | `1.25` | cruise seconds per move |
+| `ACCEL` | `max_accel/10` | move acceleration |
+| `TRIM` | `0.1` | guard fraction of the cruise window (with `CSV=1`: `0.25` of the whole capture) |
+| `DATASET` | new | pass an existing directory to resume it |
+| `NO_RAW` | `0` | do not keep raw samples (saves space, disables `RECOMPUTE`) |
+| `CSV` | `0` | classic `ACCELEROMETER_MEASURE`+`/tmp` capture instead of streaming |
+| `DRY_RUN` | `0` | plan and ETA only |
+
+**CHOPPER_ANALYZE** — offline ranking of a dataset.
+
+| parameter | default | meaning |
+|---|---|---|
+| `DATASET` | latest | dataset directory to analyze |
+| `TOP` | `15` | rows in the console table |
+| `AUDIBLE_WEIGHT` | `0.25` | ranking penalty for audible chopper frequency |
+| `RECOMPUTE` | `0` | recompute metrics from raw samples instead of stored scores |
+| `HTML` / `NO_HTML` | `<dataset>/report.html` | report path / skip the report |
+| `APPLY` | `0` | apply the winner live via `SET_TMC_FIELD` (until reboot) |
+| `SAVE` | `0` | rewrite the `driver_*` lines in the config (backup first) and restart |
+
+**CHOPPER_STATUS** — progress of the most recent (or `DATASET=`) run; `TOTAL=` supplies the planned move count for old datasets.
+
+CLI-only extras: `chopper-autotune simulate <grid-dataset>` (replay the descent offline, report the gap to the true optimum) and `chopper-autotune compare <A> <B>` (winners, rank correlation, top overlap). Expert flags `SOCKET=`/`URL=` override the klippy socket path and the Moonraker URL.
 
 ## Stack
 
@@ -98,6 +169,7 @@ Python 3.9+ on the printer host. The klippy API socket for orchestration and sam
 - [x] Hardware validation on a real printer (CoreXY, TMC2209, ADXL345: streaming and CSV paths agree)
 - [x] Automatic resonance speed detection (`find-speed`, prominence-based peak picking)
 - [x] Forcing spreadCycle during the test when `stealthchop_threshold` is configured; `CHOPPER_STATUS` progress/ETA
+- [x] One-command `CHOPPER_TUNE` pipeline (speed scan → descent per axis → batched `SAVE=1`)
 - [x] Coordinate-descent search (`--search descent`: AN-001 order, audible-penalty objective, top-3 re-measurement, offline `simulate` replay)
 - [ ] Optuna/TPE strategy, early abort of bad candidates mid-move
 - [ ] Validation phase (re-measure top candidates before recommending)

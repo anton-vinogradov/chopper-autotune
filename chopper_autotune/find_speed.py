@@ -99,12 +99,13 @@ def write_report(curve: 'list[tuple[int, float]]', peaks: 'list[int]', title: st
 def run_find_speed(args) -> int:
     kl = Klippy(find_socket(args.socket)).connect()
     try:
-        return scan(kl, args)
+        code, _ = scan(kl, args)
+        return code
     finally:
         kl.close()
 
 
-def scan(kl: Klippy, args) -> int:
+def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
     args.source = 'csv' if args.csv else 'stream'
     if args.trim is None:
         args.trim = 0.25 if args.csv else 0.1
@@ -133,10 +134,10 @@ def scan(kl: Klippy, args) -> int:
           % (len(plan), plan[0][0], plan[-1][0], args.step, n_moves, args.source,
              eta // 60, eta % 60))
     if args.dry_run:
-        return 0
+        return 0, None
     if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):
         print('Aborted')
-        return 1
+        return 1, None
 
     if not args.csv:
         kl.subscribe_accel(hw.accel_chip)
@@ -207,6 +208,7 @@ def scan(kl: Klippy, args) -> int:
     write_report(curve, peaks, 'resonance scan: %s, %s' % (hw.stepper, args.source), path)
     print('Done in %dm: report %s' % ((time.time() - started) // 60, path))
 
+    recommended = None
     if peaks:
         recommended = recommend(curve, peaks)
         print('Resonance peaks: %s'
@@ -217,4 +219,4 @@ def scan(kl: Klippy, args) -> int:
         top = max(curve, key=lambda point: point[1])
         print('No clear resonance peaks; highest magnitude %.0f at %d mm/s. '
               'Consider widening the range or more --iterations.' % (top[1], top[0]))
-    return 0 if failed == 0 else 2
+    return (0 if failed == 0 else 2), recommended

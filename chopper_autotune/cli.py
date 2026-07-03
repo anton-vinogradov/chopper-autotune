@@ -33,6 +33,22 @@ def main(argv=None) -> int:
                                      description='Measurement-driven tuning of TMC chopper registers for Klipper')
     sub = parser.add_subparsers(dest='command', required=True)
 
+    u = sub.add_parser('tune', help='the whole pipeline in one command: resonance speed + descent per axis')
+    u.add_argument('--axis', type=str.lower, choices=('x', 'y', 'xy'), default='xy',
+                   help='default xy: both axes, the second seeded with the first winner')
+    u.add_argument('--speed', type=Range.parse, default=None,
+                   help='skip the resonance scan and use this speed (mm/s)')
+    u.add_argument('--save', action='store_true',
+                   help='write the winners into the Klipper config (with backups) and restart')
+    u.add_argument('--iterations', type=int, default=1)
+    u.add_argument('--audible-weight', type=float, default=0.25)
+    u.add_argument('--accel', type=float, default=None)
+    u.add_argument('--no-raw', action='store_true')
+    u.add_argument('--csv', action='store_true')
+    u.add_argument('--socket', default=None)
+    u.add_argument('--url', default='http://127.0.0.1:7125')
+    u.add_argument('--dry-run', action='store_true')
+
     c = sub.add_parser('collect', help='run measurements on the printer, write a dataset')
     c.add_argument('--socket', default=None,
                    help='klippy unix socket path, default: auto-detect (printer_data/comms, /tmp/klippy_uds)')
@@ -118,6 +134,9 @@ def main(argv=None) -> int:
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(line_buffering=True)
     args = parser.parse_args(_gcode_args(sys.argv[1:] if argv is None else argv))
+    if args.command == 'tune':
+        from .tune import run_tune
+        return run_tune(args)
     if args.command == 'collect':
         from .collect import run_collect
         return run_collect(args)
