@@ -4,6 +4,8 @@
 
 [English version](README.md)
 
+[![tests](https://github.com/anton-vinogradov/chopper-autotune/actions/workflows/ci.yml/badge.svg)](https://github.com/anton-vinogradov/chopper-autotune/actions/workflows/ci.yml)
+
 > **Статус: рабочий скелет.** `collect` и `analyze` реализованы (сначала полный перебор сетки, умный поиск следующим шагом), на реальном железе пока не проверено.
 
 ## Проблема

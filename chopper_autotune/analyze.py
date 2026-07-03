@@ -239,11 +239,12 @@ def run_status(args) -> int:
     if len(moves) < 2:
         return 0
 
-    first = datetime.fromisoformat(moves[0]['ts'])
+    # pace over the recent window only, so pauses and resumed runs do not skew it
+    recent = moves[-50:]
     last = datetime.fromisoformat(moves[-1]['ts'])
-    elapsed = (last - first).total_seconds()
-    rate = (len(moves) - 1) / elapsed if elapsed > 0 else 0
-    print('Pace: %.1f s/move over %dm' % (1 / rate if rate else 0, elapsed // 60))
+    elapsed = (last - datetime.fromisoformat(recent[0]['ts'])).total_seconds()
+    rate = (len(recent) - 1) / elapsed if elapsed > 0 else 0
+    print('Pace: %.1f s/move (last %d moves)' % (1 / rate if rate else 0, len(recent)))
 
     age = (datetime.now(timezone.utc) - last).total_seconds()
     if age > 120:
