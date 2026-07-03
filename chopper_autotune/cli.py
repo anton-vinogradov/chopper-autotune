@@ -6,7 +6,15 @@ import re
 import signal
 import sys
 
+from . import tmc
 from .collect import Range
+
+
+def _chopper(text: str) -> tmc.Chopper:
+    parts = [int(v) for v in text.replace('/', ',').split(',')]
+    if len(parts) != 4:
+        raise argparse.ArgumentTypeError('expected tbl,toff,hstrt,hend, e.g. 2,3,5,0')
+    return tmc.Chopper(*parts)
 
 
 def _gcode_args(argv: 'list[str]', boolean_flags: 'frozenset[str]') -> 'list[str]':
@@ -123,6 +131,18 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument('--dry-run', action='store_true')
     f.add_argument('-y', '--yes', action='store_true')
 
+    d = sub.add_parser('demo', help='measure driver defaults vs the tuned registers and report the gain')
+    d.add_argument('--axis', type=str.lower, choices=('x', 'y'), default='x')
+    d.add_argument('--speed', type=Range.parse, default=None, help='resonance speed; auto-detected if omitted')
+    d.add_argument('--default', type=_chopper, default=None,
+                   help='the "before" config as tbl,toff,hstrt,hend (default: Klipper 2,3,5,0)')
+    d.add_argument('--iterations', type=int, default=3, help='repeats per config, default 3')
+    d.add_argument('--measure-time', type=float, default=1.0)
+    d.add_argument('--accel', type=float, default=None)
+    d.add_argument('--trim', type=float, default=None)
+    d.add_argument('--socket', default=None)
+    d.add_argument('--dry-run', action='store_true')
+
     s = sub.add_parser('simulate', help='replay the descent strategy against a recorded grid dataset')
     s.add_argument('dataset')
     s.add_argument('--audible-weight', type=float, default=0.25)
@@ -178,6 +198,9 @@ def main(argv=None) -> int:
     if args.command == 'find-speed':
         from .find_speed import run_find_speed
         return run_find_speed(args)
+    if args.command == 'demo':
+        from .demo import run_demo
+        return run_demo(args)
     if args.command == 'simulate':
         from .search import run_simulate
         return run_simulate(args)

@@ -101,6 +101,7 @@ CHOPPER_STATUS                       ; progress and ETA of the running collectio
 CHOPPER_ANALYZE                      ; 3. rank the latest dataset, write the report
 CHOPPER_ANALYZE APPLY=1              ; apply the winner live via SET_TMC_FIELD
 CHOPPER_ANALYZE SAVE=1               ; persist it into the config and restart Klipper
+CHOPPER_DEMO                         ; show defaults vs the tuned registers, side by side
 ```
 
 The same over SSH: `chopper-autotune tune|collect|analyze|…`. Every macro parameter maps 1:1 to a CLI flag (`MEASURE_TIME=1.5` → `--measure-time 1.5`); boolean flags take `1`/`0`. Progress is reported two ways: `M117` sets `display_status.message` (the Mainsail/Fluidd header, LCDs, and the KlipperScreen status line), and `M118` echoes each update to the console (Mainsail/Fluidd/KlipperScreen console) — so it's visible however the run was launched. Each channel self-disables if the printer lacks it. The final recommendation stays in the display message.
@@ -167,6 +168,8 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 | `HTML` / `NO_HTML` | `<dataset>/report.html` | report path / skip the report |
 | `APPLY` | `0` | apply the winner live via `SET_TMC_FIELD` (until reboot) |
 | `SAVE` | `0` | rewrite the `driver_*` lines in the config (backup first) and restart |
+
+**CHOPPER_DEMO** — measures the driver defaults against the saved/tuned registers at the resonance speed (alternating for fairness) and prints how much quieter the tuning made the axis. `AXIS`, `SPEED` (auto if omitted), `DEFAULT=tbl,toff,hstrt,hend` (default `2,3,5,0`), `ITERATIONS`.
 
 **CHOPPER_STATUS** — progress of the most recent (or `DATASET=`) run; `TOTAL=` supplies the planned move count for old datasets.
 
