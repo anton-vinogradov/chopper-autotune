@@ -27,7 +27,7 @@ def collect_args(args, axis: str, speed: Range, seed_from: 'str | None') -> Name
     return Namespace(axis=axis, csv=args.csv, speed=speed, tbl=Range(0, 3), toff=Range(1, 8),
                      hstrt=Range(0, 7), hend=Range(0, 15), tpfd=Range(0, 15),
                      search='descent', audible_weight=args.audible_weight,
-                     seed_from=seed_from, iterations=args.iterations, skip_audible=False,
+                     seed_from=seed_from, iterations=args.iterations, validate=3, skip_audible=False,
                      measure_time=1.25, accel=args.accel, trim=None, dataset=None,
                      no_raw=args.no_raw, dry_run=args.dry_run, yes=True)
 

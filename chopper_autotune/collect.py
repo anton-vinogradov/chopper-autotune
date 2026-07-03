@@ -27,7 +27,7 @@ MIN_STEADY_SAMPLES = 32
 PARK_INTERVAL_MOVES = 400
 OVERHEAD_STREAM_SEC = 0.3
 OVERHEAD_CSV_SEC = 3.0
-VALIDATE_TOP = 3
+VALIDATE_EXTRA_ITERATIONS = 2
 
 
 @dataclass(frozen=True)
@@ -342,6 +342,39 @@ def run_grid(kl: Klippy, hw: Hardware, ds: Dataset, args, plan, travel: float, a
     return ok, failed
 
 
+def validate_top(kl: Klippy, hw: Hardware, ds: Dataset, args, speeds: 'list[int]', travel: float,
+                 accel: float, done: set, before_move, screen: Screen) -> 'tuple[int, int]':
+    """Re-measure the current top candidates: low-n medians are noisy, the final call must not be."""
+    from .analyze import aggregate, print_table, rank
+    ranked = rank(aggregate(ds, False, args.trim), hw.driver, args.audible_weight)
+    finalists = [entry['chopper'] for entry in ranked[:args.validate]]
+    if not finalists:
+        return 0, 0
+    print('Validating top %d with %d extra iterations each'
+          % (len(finalists), VALIDATE_EXTRA_ITERATIONS))
+    ok = failed = 0
+    for combo in finalists:
+        kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
+        for speed in speeds:
+            for iteration in range(args.iterations, args.iterations + VALIDATE_EXTRA_ITERATIONS):
+                for direction in (1, -1):
+                    if measurement_id(combo, speed, iteration, direction) in done:
+                        continue
+                    before_move()
+                    record = run_measurement(hw, ds, args, combo, speed, iteration, direction,
+                                             travel, accel)
+                    ok += record['status'] == 'ok'
+                    failed += record['status'] != 'ok'
+
+    ranked = rank(aggregate(ds, False, args.trim), hw.driver, args.audible_weight)
+    print()
+    print_table(ranked, max(10, args.validate))
+    print('\nRecommended for printer.cfg:\n')
+    print(tmc.cfg_snippet(hw.driver, hw.stepper, ranked[0]['chopper']))
+    screen.update('Chopper: %s' % ranked[0]['chopper'].label(), force=True)
+    return ok, failed
+
+
 def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None',
                 speeds: 'list[int]', travel: float, accel: float, done: set,
                 before_move, screen: Screen) -> 'tuple[int, int]':
@@ -400,10 +433,10 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
 
     best = coordinate_descent(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd,
                               start, evaluate)
-    finalists = sorted((c for c in cache if cache[c] != float('inf')), key=cache.get)[:VALIDATE_TOP]
+    finalists = sorted((c for c in cache if cache[c] != float('inf')), key=cache.get)[:args.validate]
     print('Descent best %s; validating top %d with extra runs' % (best.label(), len(finalists)))
     for combo in finalists:
-        measure_candidate(combo, 1, first_iteration=args.iterations)
+        measure_candidate(combo, VALIDATE_EXTRA_ITERATIONS, first_iteration=args.iterations)
 
     ranked = rank(aggregate(ds, False, args.trim), hw.driver, args.audible_weight)
     print()
@@ -465,7 +498,7 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
     else:
         from .search import descent_budget
         budget = descent_budget(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd)
-        n_moves = (budget + VALIDATE_TOP) * len(speeds) * args.iterations * 2
+        n_moves = (budget + args.validate) * len(speeds) * args.iterations * 2
         eta = n_moves * per_move
         print('Plan: coordinate descent, up to %d candidates -> up to %d moves of %.1fmm, '
               'capture %s, ETA under %dh %02dm'
@@ -525,6 +558,11 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
                                      before_move, screen)
         else:
             ok, failed = run_grid(kl, hw, ds, args, plan, travel, accel, done, before_move, screen)
+            if args.validate:
+                extra_ok, extra_failed = validate_top(kl, hw, ds, args, speeds, travel, accel,
+                                                      done, before_move, screen)
+                ok += extra_ok
+                failed += extra_failed
     finally:
         print('Restoring baseline registers, homing')
         if hw.baseline:

@@ -124,6 +124,7 @@ The same over SSH: `chopper-autotune tune|collect|analyze|…`. Every macro para
 | `SKIP_AUDIBLE` | `0` | exclude audibly-whining combos instead of just penalizing them |
 | `AUDIBLE_WEIGHT` | `0.25` | descent-objective penalty for audible chopper frequency |
 | `ITERATIONS` | `1` | repeats per combination |
+| `VALIDATE` | `3` | re-measure top N candidates with extra runs before recommending (`0` = off) |
 | `MEASURE_TIME` | `1.25` | cruise seconds per move |
 | `ACCEL` | `max_accel/10` | move acceleration |
 | `TRIM` | `0.1` | guard fraction of the cruise window (with `CSV=1`: `0.25` of the whole capture) |
@@ -172,7 +173,7 @@ Python 3.9+ on the printer host. The klippy API socket for orchestration and sam
 - [x] One-command `CHOPPER_TUNE` pipeline (speed scan → descent per axis → batched `SAVE=1`)
 - [x] Coordinate-descent search (`--search descent`: AN-001 order, audible-penalty objective, top-3 re-measurement, offline `simulate` replay)
 - [ ] Optuna/TPE strategy, early abort of bad candidates mid-move
-- [ ] Validation phase (re-measure top candidates before recommending)
+- [x] Validation phase: top candidates re-measured with extra runs before recommending (grid and descent)
 - [ ] StallGuard-based current tuning
 
 ## Prior art & credits
