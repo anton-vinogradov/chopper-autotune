@@ -75,7 +75,8 @@ def test_showcase_alternates_and_announces(monkeypatch, capsys):
     assert statistics_mean(results['default']) == 2000.0
     assert statistics_mean(results['tuned']) == 900.0
     out = capsys.readouterr().out
-    assert 'BEFORE' in out and 'AFTER' in out and 'round 1/2' in out
+    assert 'DEFAULTS' in out and 'TUNED' in out and 'round 1/2' in out
+    assert '2.2x quieter' in out          # per-round comparison announced
 
 
 def statistics_mean(xs):
