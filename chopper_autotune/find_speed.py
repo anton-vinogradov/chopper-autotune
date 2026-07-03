@@ -55,6 +55,21 @@ def find_peaks(magnitudes: 'list[float]', prominence_ratio: float = 0.15) -> 'li
     return peaks
 
 
+def recommend(curve: 'list[tuple[int, float]]', peaks: 'list[int]') -> 'int | None':
+    """Lowest peak speed that is at least half as strong as the strongest peak.
+
+    A weak low-speed hump is a worse tuning point than the dominant resonance:
+    register differences drown in noise there.
+    """
+    if not peaks:
+        return None
+    strongest = max(curve[i][1] for i in peaks)
+    for i in peaks:
+        if curve[i][1] >= 0.5 * strongest:
+            return curve[i][0]
+    return None
+
+
 def scan_id(speed: int, iteration: int, direction: int) -> str:
     return 'v%03d_i%d_%s' % (speed, iteration, 'fwd' if direction > 0 else 'rev')
 
@@ -190,7 +205,7 @@ def scan(kl: Klippy, args) -> int:
     if peaks:
         print('Resonance peaks: %s'
               % ', '.join('%d mm/s (magnitude %.0f)' % curve[i] for i in peaks))
-        print('\nRecommended: CHOPPER_COLLECT SPEED=%d' % curve[peaks[0]][0])
+        print('\nRecommended: CHOPPER_COLLECT SPEED=%d' % recommend(curve, peaks))
     else:
         top = max(curve, key=lambda point: point[1])
         print('No clear resonance peaks; highest magnitude %.0f at %d mm/s. '

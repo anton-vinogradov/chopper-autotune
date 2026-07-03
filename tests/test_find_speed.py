@@ -1,7 +1,8 @@
 import pytest
 
 from chopper_autotune.dataset import Dataset
-from chopper_autotune.find_speed import build_curve, cruise_for, find_peaks, scan_id, smooth
+from chopper_autotune.find_speed import (build_curve, cruise_for, find_peaks, recommend,
+                                         scan_id, smooth)
 
 
 def test_cruise_for_respects_travel_limit():
@@ -28,6 +29,15 @@ def test_smooth_keeps_length_and_ends():
     assert len(smoothed) == 5
     assert smoothed[0] == 1.0 and smoothed[-1] == 1.0
     assert smoothed[1] == pytest.approx(4.0)
+
+
+def test_recommend_skips_weak_low_peak():
+    # real case from the first hardware sweep: 34 mm/s hump is 2.4x weaker than 58 mm/s
+    curve = [(32, 1100), (34, 1120), (36, 1000), (56, 2000), (58, 2676), (60, 2100)]
+    assert recommend(curve, [1, 4]) == 58
+    # comparable peaks: prefer the lowest speed
+    assert recommend([(50, 2000), (100, 2100)], [0, 1]) == 50
+    assert recommend([(50, 2000)], []) is None
 
 
 def test_scan_id():
