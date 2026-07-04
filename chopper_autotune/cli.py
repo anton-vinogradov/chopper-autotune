@@ -17,6 +17,12 @@ def _chopper(text: str) -> tmc.Chopper:
     return tmc.Chopper(*parts)
 
 
+def _motor(text: str) -> str:
+    """A/B name the motors we tune; map them to the underlying stepper axes (a=stepper_x,
+    b=stepper_y). x/y are accepted too so old scripts keep working."""
+    return {'a': 'x', 'b': 'y', 'ab': 'xy'}.get(text.lower(), text.lower())
+
+
 def _gcode_args(argv: 'list[str]', boolean_flags: 'frozenset[str]') -> 'list[str]':
     """Translate Klipper-style KEY=VALUE params (as passed by RUN_SHELL_COMMAND) into CLI flags."""
     out = []
@@ -60,9 +66,10 @@ def build_parser() -> argparse.ArgumentParser:
                                      description='Measurement-driven tuning of TMC chopper registers for Klipper')
     sub = parser.add_subparsers(dest='command', required=True)
 
-    u = sub.add_parser('tune', help='the whole pipeline in one command: resonance speed + descent per axis')
-    u.add_argument('--axis', type=str.lower, choices=('x', 'y', 'xy'), default='xy',
-                   help='default xy: both axes, the second seeded with the first winner')
+    u = sub.add_parser('tune', help='the whole pipeline in one command: resonance speed + descent per motor')
+    u.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y', 'xy'), default='xy',
+                   help='motor a/b/ab (a=stepper_x, b=stepper_y); default ab: both motors, '
+                        'the second seeded with the first winner (x/y/xy also accepted)')
     u.add_argument('--speed', type=Range.parse, default=None,
                    help='skip the resonance scan and use this speed (mm/s)')
     u.add_argument('--save', action='store_true',
@@ -81,7 +88,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help='klippy unix socket path, default: auto-detect (printer_data/comms, /tmp/klippy_uds)')
     c.add_argument('--csv', action='store_true',
                    help='fallback capture via ACCELEROMETER_MEASURE and /tmp CSV instead of streaming')
-    c.add_argument('--axis', type=str.lower, choices=('x', 'y'), default='x')
+    c.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y'), default='x',
+                   help='motor a or b (a=stepper_x, b=stepper_y); x/y also accepted')
     c.add_argument('--speed', type=Range.parse, required=True,
                    help='speed or range in mm/s, e.g. 55 or 40:70 (resonance speed of the axis)')
     c.add_argument('--tbl', type=Range.parse, default=Range(0, 3), help='blank time range, default 0:3')
@@ -117,7 +125,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help='klippy unix socket path, default: auto-detect')
     f.add_argument('--csv', action='store_true',
                    help='fallback capture via ACCELEROMETER_MEASURE and /tmp CSV instead of streaming')
-    f.add_argument('--axis', type=str.lower, choices=('x', 'y'), default='x')
+    f.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y'), default='x',
+                   help='motor a or b (a=stepper_x, b=stepper_y); x/y also accepted')
     f.add_argument('--min-speed', type=int, default=20)
     f.add_argument('--max-speed', type=int, default=120)
     f.add_argument('--step', type=int, default=2, help='speed increment in mm/s, default 2')
@@ -131,16 +140,18 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument('--dry-run', action='store_true')
     f.add_argument('-y', '--yes', action='store_true')
 
-    d = sub.add_parser('demo', help='measure driver defaults vs the tuned registers and report the gain')
-    d.add_argument('--axis', type=str.lower, choices=('x', 'y'), default='x')
+    d = sub.add_parser('demo', help='play the driver defaults against the tuned registers so you can hear the gain')
+    d.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y'), default='x',
+                   help='motor a or b (a=stepper_x, b=stepper_y); x/y also accepted')
     d.add_argument('--speed', type=Range.parse, default=None, help='resonance speed; auto-detected if omitted')
     d.add_argument('--default', type=_chopper, default=None,
                    help='the "before" config as tbl,toff,hstrt,hend (default: Klipper 2,3,5,0)')
-    d.add_argument('--iterations', type=int, default=3, help='repeats per config, default 3')
-    d.add_argument('--live', action='store_true',
-                   help='showcase mode: play defaults vs tuned alternately, announcing each, so you can hear the difference')
-    d.add_argument('--rounds', type=int, default=3, help='live: alternations of defaults/tuned, default 3')
-    d.add_argument('--repeats', type=int, default=4, help='live: moves per config per round, default 4')
+    d.add_argument('--report', action='store_true',
+                   help='measured numbers (defaults vs tuned, Nx quieter) instead of the audible showcase')
+    d.add_argument('--iterations', type=int, default=3, help='--report: repeats per config, default 3')
+    d.add_argument('--live', action='store_true', help=argparse.SUPPRESS)  # back-compat: showcase is the default
+    d.add_argument('--rounds', type=int, default=3, help='showcase: alternations of defaults/tuned, default 3')
+    d.add_argument('--repeats', type=int, default=4, help='showcase: moves per config per round, default 4')
     d.add_argument('--measure-time', type=float, default=1.0)
     d.add_argument('--accel', type=float, default=None)
     d.add_argument('--trim', type=float, default=None)

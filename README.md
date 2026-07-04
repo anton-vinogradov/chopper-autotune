@@ -20,9 +20,9 @@
 
 ## Why
 
-- **One command.** `CHOPPER_TUNE SAVE=1` finds each axis's resonance speed, searches the register space and writes the winner into `printer.cfg` in ~20 minutes — no graphs to read, no numbers to copy.
+- **One command.** `CHOPPER_TUNE SAVE=1` finds each motor's resonance speed, searches the register space and writes the winner into `printer.cfg` in ~20 minutes — no graphs to read, no numbers to copy.
 - **Measured on *your* hardware, not guessed.** Every candidate is scored from real toolhead-accelerometer data on your motors, belts and supply voltage — not computed from a database.
-- **A real number.** On the reference printer (CoreXY, TMC2209): **−51% vibration** on the X axis in **8 minutes** versus Klipper defaults, at the resonance speed.
+- **A real number.** On the reference printer (CoreXY, TMC2209): **−51% vibration** on motor A in **8 minutes** versus Klipper defaults, at the resonance speed.
 - **What tuning spreadCycle is for.** Lower vibration and audible noise, cooler motors, a bit more torque headroom — the margin the one-size-fits-all datasheet defaults leave on the table.
 - **Won't trade silence for a whine.** The chopper frequency is derived from the registers, so configs that would slip into the audible band are penalised automatically.
 - **Built for a real printer.** Resumable runs, live progress on the KlipperScreen, a config backup before anything is written, and a `--csv` fallback if streaming misbehaves.
@@ -38,7 +38,7 @@ Existing tools leave a gap:
 
 ## The approach
 
-Close the loop on real hardware: *apply registers → move the axis → measure vibrations with the toolhead accelerometer → score → pick the next candidate*. Fully automatic, from "run one command" to "paste this block into `printer.cfg`".
+Close the loop on real hardware: *apply registers → move the motor → measure vibrations with the toolhead accelerometer → score → pick the next candidate*. Fully automatic, from "run one command" to "paste this block into `printer.cfg`".
 
 ### How it works today
 
@@ -50,7 +50,7 @@ Close the loop on real hardware: *apply registers → move the axis → measure 
 4. Every measurement is appended to an on-disk dataset immediately; an interrupted run resumes from where it stopped.
 5. **`analyze`** aggregates the dataset (mean across directions/iterations/speeds — the fwd/rev difference is real, so a config must be quiet *both* ways to win), penalizes configurations whose chopper frequency falls into the audible range, prints a ranking table, writes an interactive plotly report and a ready-to-paste `printer.cfg` snippet; `--apply` sets the winner live without restarting Klipper.
 
-Besides the default full-grid sweep, `--search descent` (`SEARCH=descent`) runs a **multi-start** coordinate descent in the AN-001 tuning order — `TBL`+`TOFF` jointly, then `HSTRT`, `HEND`, then `TPFD` — evaluating a few percent of the grid (minutes instead of hours), re-measuring the top candidates before recommending. Several seeds spread across the `TOFF`×`HEND` plane keep the greedy search from getting trapped: phase A sweeps `TOFF` at a fixed `HEND`, so a single low-`HEND` start hides the low-`TOFF`/high-`HEND` valley — starting from a few `HEND` levels lets some run find it. The objective includes the audible-chopper penalty, so the descent does not trade a barely lower vibration for a 15 kHz whine. For the second axis, `SEED_FROM=<dataset>` starts the descent from the winner of the first one — the seed only positions the search, every candidate is still measured on the target axis, so belt tension and mechanics differences are accounted for; a good seed converges in a couple of minutes, a bad one just costs the usual descent time. Any recorded grid dataset doubles as an offline benchmark: `simulate <dataset>` replays the descent against it and reports the gap to the true optimum.
+Besides the default full-grid sweep, `--search descent` (`SEARCH=descent`) runs a **multi-start** coordinate descent in the AN-001 tuning order — `TBL`+`TOFF` jointly, then `HSTRT`, `HEND`, then `TPFD` — evaluating a few percent of the grid (minutes instead of hours), re-measuring the top candidates before recommending. Several seeds spread across the `TOFF`×`HEND` plane keep the greedy search from getting trapped: phase A sweeps `TOFF` at a fixed `HEND`, so a single low-`HEND` start hides the low-`TOFF`/high-`HEND` valley — starting from a few `HEND` levels lets some run find it. The objective includes the audible-chopper penalty, so the descent does not trade a barely lower vibration for a 15 kHz whine. For the second motor, `SEED_FROM=<dataset>` starts the descent from the winner of the first one — the seed only positions the search, every candidate is still measured on the target motor, so belt tension and mechanics differences are accounted for; a good seed converges in a couple of minutes, a bad one just costs the usual descent time. Any recorded grid dataset doubles as an offline benchmark: `simulate <dataset>` replays the descent against it and reports the gap to the true optimum.
 
 ### Datasheet-driven scoring, not just measurement
 
@@ -83,38 +83,38 @@ cd ~ && git clone https://github.com/anton-vinogradov/chopper-autotune && bash .
 ### The simple way — one command
 
 ```
-CHOPPER_TUNE            ; both axes: resonance speed + register descent, ~20 min
+CHOPPER_TUNE            ; both motors: resonance speed + register descent, ~20 min
 CHOPPER_TUNE SAVE=1     ; ...and write the winners into the config (with a backup)
 ```
 
-That is the whole workflow: the tool finds the resonance speed of each axis, runs the register descent at it, seeds the second axis with the first one's winner, prints both `printer.cfg` blocks and — with `SAVE=1` — persists them and restarts Klipper. Progress shows on the printer display; `CHOPPER_STATUS` prints it in the console.
+That is the whole workflow: the tool finds the resonance speed of each motor, runs the register descent at it, seeds the second motor with the first one's winner, prints both `printer.cfg` blocks and — with `SAVE=1` — persists them and restarts Klipper. Progress shows on the printer display; `CHOPPER_STATUS` prints it in the console.
 
 ### From the touchscreen — KlipperScreen
 
 If you run [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen), `install.sh` adds a **Chopper** button to its **More** menu (it merges with your existing menu, nothing is rewritten). One tap opens a panel with:
 
-- **Tune A** / **Tune B** — tune one motor and print the recommendation (on CoreXY `stepper_x`/`stepper_y` are the two motors A and B, not the X/Y axes; on other kinematics the buttons read **Tune X** / **Tune Y**);
-- **Both + Save** — tune both axes and write the winners into the config;
+- **Tune A** / **Tune B** — tune one motor and print the recommendation (A = `stepper_x`, B = `stepper_y`; the chopper is a motor property, so it's the same on any kinematics — and on CoreXY those two steppers literally are motors A and B);
+- **Both + Save** — tune both motors and write the winners into the config;
 - **Demo** — play the driver defaults against the tuned registers on the motor so you can *hear* the difference;
 - **Stop** — abort a running job; the tool restores the registers and re-homes before it exits.
 
-Every action confirms before it moves the printer. While a job runs the panel shows live progress; when idle it shows the registers currently saved for each axis. The buttons drive the same `CHOPPER_*` macros, so anything you can do from the console you can do from the screen.
+Every action confirms before it moves the printer. While a job runs the panel shows live progress; when idle it shows the registers currently saved for each motor. The buttons drive the same `CHOPPER_*` macros, so anything you can do from the console you can do from the screen.
 
 ![The Chopper panel on KlipperScreen](docs/klipperscreen-panel.png)
 
 ### The manual way — step by step
 
 ```
-CHOPPER_FIND_SPEED                   ; 1. locate the resonance speeds of the axis
+CHOPPER_FIND_SPEED                   ; 1. locate the resonance speeds of the motor
 CHOPPER_COLLECT SPEED=55 DRY_RUN=1   ; check the plan and ETA without moving anything
 CHOPPER_COLLECT SPEED=55             ; 2. sweep the full grid at the resonance speed (hours)
 CHOPPER_COLLECT SPEED=55 SEARCH=descent  ; ...or multi-start descent (minutes)
-CHOPPER_COLLECT AXIS=Y SPEED=52 SEARCH=descent SEED_FROM=<X dataset>  ; fast second axis
+CHOPPER_COLLECT MOTOR=B SPEED=52 SEARCH=descent SEED_FROM=<A dataset>  ; fast second motor
 CHOPPER_STATUS                       ; progress and ETA of the running collection
 CHOPPER_ANALYZE                      ; 3. rank the latest dataset, write the report
 CHOPPER_ANALYZE APPLY=1              ; apply the winner live via SET_TMC_FIELD
 CHOPPER_ANALYZE SAVE=1               ; persist it into the config and restart Klipper
-CHOPPER_DEMO                         ; show defaults vs the tuned registers, side by side
+CHOPPER_DEMO                         ; play defaults vs the tuned registers so you can hear it
 ```
 
 The same over SSH: `chopper-autotune tune|collect|analyze|…`. Every macro parameter maps 1:1 to a CLI flag (`MEASURE_TIME=1.5` → `--measure-time 1.5`); boolean flags take `1`/`0`. Progress is reported two ways: `M117` sets `display_status.message` (the Mainsail/Fluidd header, LCDs, and the KlipperScreen status line), and a prefixed `RESPOND` echoes each update to the console (Mainsail/Fluidd/KlipperScreen console) — with a `Chopper:` prefix rather than `echo:`, so KlipperScreen does not raise a dismissable notification for every line and swallow taps on the panel. Each channel self-disables if the printer lacks it. The final recommendation stays in the display message.
@@ -129,7 +129,7 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 
 | parameter | default | meaning |
 |---|---|---|
-| `AXIS` | `XY` | `X`, `Y`, or `XY` = both, the second seeded with the first one's winner |
+| `MOTOR` | `AB` | `A`, `B`, or `AB` = both (A = `stepper_x`, B = `stepper_y`), the second seeded with the first one's winner; `x`/`y`/`xy` also accepted |
 | `SPEED` | auto | skip the resonance scan and tune at this speed (mm/s) |
 | `SAVE` | `0` | write the winners into the Klipper config (backup first) and restart |
 | `ITERATIONS` | `1` | repeats per candidate — raise on noisy mechanics |
@@ -140,7 +140,7 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 
 | parameter | default | meaning |
 |---|---|---|
-| `AXIS` | `X` | axis to scan |
+| `MOTOR` | `A` | motor to scan: `a`/`b` (a = `stepper_x`, b = `stepper_y`); `x`/`y` also accepted |
 | `MIN_SPEED` / `MAX_SPEED` | `20` / `120` | scan range, mm/s |
 | `STEP` | `2` | speed increment, mm/s |
 | `ITERATIONS` | `1` | repeats per speed |
@@ -153,11 +153,11 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 | parameter | default | meaning |
 |---|---|---|
 | `SPEED` | required | resonance speed, mm/s (or a `lo:hi` range) |
-| `AXIS` | `X` | axis to tune |
+| `MOTOR` | `A` | motor to tune: `a`/`b` (a = `stepper_x`, b = `stepper_y`); `x`/`y` also accepted |
 | `SEARCH` | `grid` | `grid` = full sweep (hours), `descent` = multi-start coordinate descent (minutes) |
 | `TBL` / `TOFF` / `HSTRT` / `HEND` | `0:3` / `1:8` / `0:7` / `0:15` | register ranges (`lo:hi` or a single value) |
 | `TPFD` | off | TPFD range, TMC2240/5160 only |
-| `SEED_FROM` | — | start the descent from another dataset's winner (fast second axis) |
+| `SEED_FROM` | — | start the descent from another dataset's winner (fast second motor) |
 | `SKIP_AUDIBLE` | `0` | exclude audibly-whining combos instead of just penalizing them |
 | `AUDIBLE_WEIGHT` | `0.25` | descent-objective penalty for audible chopper frequency |
 | `ITERATIONS` | `1` | repeats per combination |
@@ -182,7 +182,7 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 | `APPLY` | `0` | apply the winner live via `SET_TMC_FIELD` (until reboot) |
 | `SAVE` | `0` | rewrite the `driver_*` lines in the config (backup first) and restart |
 
-**CHOPPER_DEMO** — measures the driver defaults against the saved/tuned registers at the resonance speed (alternating for fairness) and prints how much quieter the tuning made the axis. `AXIS`, `SPEED` (auto if omitted), `DEFAULT=tbl,toff,hstrt,hend` (default `2,3,5,0`), `ITERATIONS`.
+**CHOPPER_DEMO** — plays the driver defaults against the saved/tuned registers on the motor at the resonance speed, alternating so you can *hear* the difference and announcing each on the display and console. `MOTOR` (a/b), `SPEED` (auto if omitted), `ROUNDS`, `REPEATS`. `REPORT=1` prints the measured numbers (how much quieter, with bars) instead of the audible show; `DEFAULT=tbl,toff,hstrt,hend` (default `2,3,5,0`) and `ITERATIONS` apply to the report.
 
 **CHOPPER_STATUS** — progress of the most recent (or `DATASET=`) run; `TOTAL=` supplies the planned move count for old datasets.
 
@@ -195,7 +195,7 @@ Python 3.9+ on the printer host. The klippy API socket for orchestration and sam
 ## Prerequisites
 
 - Klipper + Moonraker (Mainsail, Fluidd or any other frontend).
-- A supported TMC driver on the axis being tuned (see the datasheet list below).
+- A supported TMC driver on the motor being tuned (see the datasheet list below).
 - **An accelerometer on the toolhead** — the measuring instrument of the whole tool:
   - any chip supported by Klipper's resonance stack works: ADXL345 (the classic), LIS2DW, the MPU-9250 family; USB sticks (KUSBA, FYSETC PIS) and CAN toolhead boards with an onboard chip (EBB36/42, SB2209, …) count too;
   - mount it **rigidly on the printhead** (screwed down, not taped) — exactly as for input-shaper calibration;
@@ -214,7 +214,7 @@ Python 3.9+ on the printer host. The klippy API socket for orchestration and sam
 - [x] Hardware validation on a real printer (CoreXY, TMC2209, ADXL345: streaming and CSV paths agree)
 - [x] Automatic resonance speed detection (`find-speed`, prominence-based peak picking)
 - [x] Forcing spreadCycle during the test when `stealthchop_threshold` is configured; `CHOPPER_STATUS` progress/ETA
-- [x] One-command `CHOPPER_TUNE` pipeline (speed scan → descent per axis → batched `SAVE=1`)
+- [x] One-command `CHOPPER_TUNE` pipeline (speed scan → descent per motor → batched `SAVE=1`)
 - [x] Multi-start coordinate-descent search (`--search descent`: AN-001 order, TOFF×HEND-spread seeds to escape the non-separable blind spot, audible-penalty objective, offline `simulate` replay)
 - [ ] Optuna/TPE strategy, early abort of bad candidates mid-move
 - [x] Validation phase: top candidates re-measured with extra runs before recommending (grid and descent)

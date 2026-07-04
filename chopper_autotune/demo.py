@@ -46,15 +46,15 @@ def demo(kl: Klippy, args) -> int:
                else tmc.Chopper(*KLIPPER_DEFAULT.fields().values(), tpfd))
     if tuned == default:
         raise SystemExit('current registers equal the defaults — nothing to demo '
-                         '(tune and save the axis first)')
+                         '(tune and save the motor first)')
 
     if args.speed is not None:
         speed = args.speed.lo
     else:
         speed = known_speed(args.axis)
         if speed is not None:
-            print('Using resonance speed %d mm/s from the last %s run (pass SPEED= to override)'
-                  % (speed, args.axis))
+            print('Using resonance speed %d mm/s from the last motor %s run (pass SPEED= to override)'
+                  % (speed, hw.motor))
         else:
             print('No previous run to reuse a speed from; scanning for resonance first')
             from .find_speed import scan
@@ -66,11 +66,12 @@ def demo(kl: Klippy, args) -> int:
     cruise = args.measure_time
     travel = travel_for(speed, accel, cruise)
     if travel > hw.axis_span * MOVE_MARGIN:
-        raise SystemExit('travel too long for the axis; lower MEASURE_TIME or raise ACCEL')
+        raise SystemExit('travel too long for the motor; lower MEASURE_TIME or raise ACCEL')
 
-    mode = 'live showcase, %d rounds' % args.rounds if args.live else 'measure %d each' % args.iterations
-    print('Demo on %s at %d mm/s (%s): defaults %s vs tuned %s'
-          % (hw.stepper, speed, mode, default.label(), tuned.label()))
+    live = not args.report
+    mode = 'live showcase, %d rounds' % args.rounds if live else 'measure %d each' % args.iterations
+    print('Demo on motor %s at %d mm/s (%s): defaults %s vs tuned %s'
+          % (hw.motor, speed, mode, default.label(), tuned.label()))
     if args.dry_run:
         return 0
 
@@ -88,7 +89,7 @@ def demo(kl: Klippy, args) -> int:
     results = {name: [] for name, _ in configs}
     try:
         measure_baseline(hw, ds, args, set())
-        if args.live:
+        if live:
             results = _showcase(kl, hw, args, ds, configs, speed, travel, accel,
                                 before_move, screen)
         else:
@@ -111,7 +112,7 @@ def demo(kl: Klippy, args) -> int:
     d, t = statistics.mean(results['default']), statistics.mean(results['tuned'])
     noise = ds.records()[0]['score']['median_magnitude'] if ds.records() else 0.0
     scale = max(d, t)
-    print('\n%s at %d mm/s (mean vibration, lower is better):\n' % (hw.stepper, speed))
+    print('\nmotor %s at %d mm/s (mean vibration, lower is better):\n' % (hw.motor, speed))
     print('  defaults %-10s %6.0f  %s' % (default.label(), d, bar(d, scale)))
     print('  tuned    %-10s %6.0f  %s' % (tuned.label(), t, bar(t, scale)))
     print('\n  %.2fx quieter overall' % (d / t))
