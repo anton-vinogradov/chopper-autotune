@@ -70,13 +70,14 @@ def test_screen_sends_display_and_console_throttled():
     screen.update('one')
     screen.update('two')                      # throttled away
     screen.update('three', force=True)
-    assert kl.scripts == ['M117 one', 'M118 one', 'M117 three', 'M118 three']
+    assert kl.scripts == ['M117 one', 'RESPOND PREFIX="Chopper: " MSG="one"',
+                          'M117 three', 'RESPOND PREFIX="Chopper: " MSG="three"']
 
 
 def test_screen_console_only_without_display():
     kl = FakeKlippy()
     Screen(kl, display=False).update('go', force=True)
-    assert kl.scripts == ['M118 go']
+    assert kl.scripts == ['RESPOND PREFIX="Chopper: " MSG="go"']
 
 
 def test_screen_channels_self_disable_on_error():

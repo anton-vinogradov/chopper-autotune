@@ -14,7 +14,7 @@
 - [The problem](#the-problem)
 - [The approach](#the-approach) · [how it works](#how-it-works-today) · [datasheet-driven scoring](#datasheet-driven-scoring-not-just-measurement)
 - [Two runs by design](#two-runs-by-design)
-- [Usage](#usage) · [one command](#the-simple-way--one-command) · [step by step](#the-manual-way--step-by-step) · [command reference](#command-reference)
+- [Usage](#usage) · [one command](#the-simple-way--one-command) · [touchscreen](#from-the-touchscreen--klipperscreen) · [step by step](#the-manual-way--step-by-step) · [command reference](#command-reference)
 - [Stack](#stack) · [Prerequisites](#prerequisites) · [Roadmap](#roadmap)
 - [Prior art](#prior-art--credits) · [Datasheets](#datasheets) · [License](#license)
 
@@ -89,6 +89,19 @@ CHOPPER_TUNE SAVE=1     ; ...and write the winners into the config (with a backu
 
 That is the whole workflow: the tool finds the resonance speed of each axis, runs the register descent at it, seeds the second axis with the first one's winner, prints both `printer.cfg` blocks and — with `SAVE=1` — persists them and restarts Klipper. Progress shows on the printer display; `CHOPPER_STATUS` prints it in the console.
 
+### From the touchscreen — KlipperScreen
+
+If you run [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen), `install.sh` adds a **Chopper** button to its main menu (it merges with your existing menu, nothing is rewritten). One tap opens a panel with:
+
+- **Tune X** / **Tune Y** — tune one axis and print the recommendation;
+- **Both + Save** — tune both axes and write the winners into the config;
+- **Demo** — play the driver defaults against the tuned registers on the motor so you can *hear* the difference;
+- **Stop** — abort a running job; the tool restores the registers and re-homes before it exits.
+
+Every action confirms before it moves the printer. While a job runs the panel shows live progress; when idle it shows the registers currently saved for each axis. The buttons drive the same `CHOPPER_*` macros, so anything you can do from the console you can do from the screen.
+
+![The Chopper panel on KlipperScreen](docs/klipperscreen-panel.png)
+
 ### The manual way — step by step
 
 ```
@@ -104,7 +117,7 @@ CHOPPER_ANALYZE SAVE=1               ; persist it into the config and restart Kl
 CHOPPER_DEMO                         ; show defaults vs the tuned registers, side by side
 ```
 
-The same over SSH: `chopper-autotune tune|collect|analyze|…`. Every macro parameter maps 1:1 to a CLI flag (`MEASURE_TIME=1.5` → `--measure-time 1.5`); boolean flags take `1`/`0`. Progress is reported two ways: `M117` sets `display_status.message` (the Mainsail/Fluidd header, LCDs, and the KlipperScreen status line), and `M118` echoes each update to the console (Mainsail/Fluidd/KlipperScreen console) — so it's visible however the run was launched. Each channel self-disables if the printer lacks it. The final recommendation stays in the display message.
+The same over SSH: `chopper-autotune tune|collect|analyze|…`. Every macro parameter maps 1:1 to a CLI flag (`MEASURE_TIME=1.5` → `--measure-time 1.5`); boolean flags take `1`/`0`. Progress is reported two ways: `M117` sets `display_status.message` (the Mainsail/Fluidd header, LCDs, and the KlipperScreen status line), and a prefixed `RESPOND` echoes each update to the console (Mainsail/Fluidd/KlipperScreen console) — with a `Chopper:` prefix rather than `echo:`, so KlipperScreen does not raise a dismissable notification for every line and swallow taps on the panel. Each channel self-disables if the printer lacks it. The final recommendation stays in the display message.
 
 ![Tuning progress on the KlipperScreen display](docs/klipperscreen.svg)
 

@@ -58,5 +58,21 @@ python3 -m venv --system-site-packages "$repo_path/.venv"
 "$repo_path/.venv/bin/pip" install -q --upgrade pip setuptools
 "$repo_path/.venv/bin/pip" install -e "$repo_path"
 
+# KlipperScreen panel (optional): a one-tap app to launch tuning / demo from the touchscreen.
+ks_conf=~/printer_data/config/KlipperScreen.conf
+if [ -d ~/KlipperScreen/panels ]; then
+    ln -srf "$repo_path/klipperscreen/chopper.py" ~/KlipperScreen/panels/chopper.py
+    echo "Linked the Chopper panel into KlipperScreen"
+    if [ -f "$ks_conf" ] && ! grep -q "^\[menu __main chopper\]$" "$ks_conf"; then
+        # add one button to the main menu, above the auto-generated (#~#) block KlipperScreen owns
+        awk 'function emit(){print "[menu __main chopper]"; print "name: Chopper";
+                              print "icon: fine-tune"; print "panel: chopper"; print ""}
+             /^#~#/ && !done {emit(); done=1} {print}
+             END{if(!done){print ""; emit()}}' "$ks_conf" > "$ks_conf.tmp" && mv "$ks_conf.tmp" "$ks_conf"
+        echo "Added the Chopper button to the KlipperScreen main menu"
+    fi
+    sudo systemctl restart KlipperScreen 2>/dev/null || true
+fi
+
 sudo service klipper restart
 echo "Done. Try: CHOPPER_COLLECT SPEED=55 DRY_RUN=1 from the web console"
