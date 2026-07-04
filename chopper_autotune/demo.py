@@ -140,7 +140,9 @@ def _sweep(board, speed, accel, span, args):
     vx, vy = head_velocity(board.kinematics, speed['x'], speed['y'])
     feed = math.hypot(vx, vy)
     cx, cy = board.center
-    stroke = min(travel_for(feed, accel, args.measure_time), span * MOVE_MARGIN)
+    # sweep the whole allowed zone (not just a measure_time cruise): a longer diagonal runs each
+    # motor through more electrical cycles per pass, so the before/after is longer and clearer
+    stroke = span * MOVE_MARGIN
     dx, dy = stroke * vx / feed, stroke * vy / feed
     board.kl.gcode('G1 X%.2f Y%.2f F%.0f\nM400' % (cx - dx / 2, cy - dy / 2, feed * 60))
     mags = []

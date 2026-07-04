@@ -113,6 +113,31 @@ def test_head_velocity_diagonal_puts_each_motor_at_its_speed():
     assert head_velocity('cartesian', 58, 34) == (58.0, 34.0)
 
 
+def test_sweep_spans_the_full_allowed_zone(monkeypatch):
+    import math
+
+    from chopper_autotune.collect import MOVE_MARGIN
+    from chopper_autotune.demo import _sweep
+
+    captured = []
+    monkeypatch.setattr(demo_module, 'capture_stream',
+                        lambda board, move, dur: (captured.append(move), (0.0, None))[1])
+    monkeypatch.setattr(demo_module, 'vibration_score', lambda data, trim: {'median_magnitude': 100.0})
+    board = type('B', (), {'kinematics': 'corexy', 'center': (130, 130),
+                           'kl': type('K', (), {'gcode': lambda self, s: None})()})()
+    span = 260
+    _sweep(board, {'x': 58, 'y': 34}, 1000, span, demo_args(repeats=1))
+
+    def xy(move):
+        p = {seg[0]: float(seg[1:]) for seg in move.split() if seg[0] in 'XY'}
+        return p['X'], p['Y']
+
+    (bx, by), (ax, ay) = xy(captured[0]), xy(captured[1])       # the two diagonal endpoints
+    # endpoint-to-endpoint distance is the stroke, sized to the whole allowed zone
+    # (abs_tol covers the 2-decimal rounding of the gcode coordinates)
+    assert math.isclose(math.hypot(bx - ax, by - ay), span * MOVE_MARGIN, abs_tol=0.05)
+
+
 def test_showcase_alternates_and_announces(monkeypatch, capsys):
     from chopper_autotune.collect import Screen
     from chopper_autotune.demo import _showcase
