@@ -190,6 +190,10 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument('--save', action='store_true',
                    help='persist the best config into the Klipper config file and restart Klipper')
     a.add_argument('--url', default='http://127.0.0.1:7125')
+
+    sv = sub.add_parser('save', help='save the latest tuning result for each motor into the config')
+    sv.add_argument('--audible-weight', type=float, default=0.25)
+    sv.add_argument('--url', default='http://127.0.0.1:7125')
     return parser
 
 
@@ -204,6 +208,9 @@ def main(argv=None) -> int:
     if getattr(args, 'dataset_opt', None):
         args.dataset = args.dataset_opt
 
+    if args.command == 'save':
+        from .analyze import run_save_latest
+        return run_save_latest(args)
     if args.command == 'tune':
         from .tune import run_tune
         return run_tune(args)

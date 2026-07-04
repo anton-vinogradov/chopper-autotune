@@ -117,6 +117,48 @@ def test_run_save_ignores_its_own_backups():
     assert mk.uploads == ['printer.chopper-backup.cfg', 'printer.cfg']
 
 
+def test_run_save_latest_saves_newest_tuning_dataset_per_motor(monkeypatch, tmp_path):
+    import argparse
+
+    from chopper_autotune import analyze
+    from chopper_autotune.dataset import Dataset
+
+    for name, manifest in [
+        ('01_x', {'axis': 'x', 'search': 'grid'}),
+        ('02_y', {'axis': 'y', 'search': 'descent'}),
+        ('03_x', {'axis': 'x', 'search': 'descent'}),               # newer x -> this one wins
+        ('04_x', {'axis': 'x', 'mode': 'find-speed'}),              # no 'search' -> ignored
+        ('05_x', {'axis': 'x', 'mode': 'demo'}),                    # ignored
+    ]:
+        Dataset.create(tmp_path / name, manifest)
+
+    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: sorted(tmp_path.iterdir()))
+    called = []
+
+    def fake_winner(root, weight):
+        called.append(root.rsplit('/', 1)[-1])
+        return (Dataset(root).manifest(), tmc.Chopper(0, 8, 7, 5))
+
+    monkeypatch.setattr('chopper_autotune.tune.winner_of', fake_winner)
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: object())
+    saved = {}
+    monkeypatch.setattr(analyze, 'run_save', lambda mk, items: saved.update(items=items))
+
+    analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
+
+    assert set(called) == {'03_x', '02_y'}                 # newest tuning dataset per motor
+    assert {m['axis'] for m, _ in saved['items']} == {'x', 'y'}
+
+
+def test_run_save_latest_errors_without_datasets(monkeypatch):
+    import argparse
+
+    from chopper_autotune import analyze
+    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: [])
+    with pytest.raises(SystemExit, match='no tuning datasets'):
+        analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
+
+
 def test_run_save_uploads_all_backups_before_edits():
     files = {'printer.cfg': '[include extra.cfg]\n' + CFG,
              'extra.cfg': '[tmc2209 stepper_z]\nuart_pin: PC10\ndriver_TOFF: 4\n'}

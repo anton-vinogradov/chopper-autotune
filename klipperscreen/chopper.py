@@ -1,10 +1,10 @@
-"""KlipperScreen panel for chopper-autotune: a one-tap app to launch tuning and
-the audible before/after demo from the touchscreen, and watch live progress.
+"""KlipperScreen panel for chopper-autotune: a one-tap app to tune the motors, save the
+result, and play the audible before/after show from the touchscreen.
 
-Buttons send the CHOPPER_* macros over the Klippy websocket; those macros launch
-the tool detached, so the screen stays responsive. Progress comes back on
-display_status.message (the tool's M117) and is shown live under the buttons;
-when idle the same line shows the registers currently saved for each motor.
+Buttons send the CHOPPER_* macros over the Klippy websocket; those macros launch the tool
+detached, so the screen stays responsive. Progress comes back on display_status.message
+(the tool's M117) and is shown live under the buttons; when idle the same area shows each
+motor's default vs currently-saved registers.
 """
 import gi
 
@@ -13,6 +13,8 @@ from gi.repository import GLib, Gtk, Pango
 from ks_includes.screen_panel import ScreenPanel
 
 REGISTERS = ("driver_tbl", "driver_toff", "driver_hstrt", "driver_hend")
+DRIVERS = ("tmc2209", "tmc2208", "tmc2240", "tmc5160", "tmc2130", "tmc2660")
+DEFAULT = (2, 3, 5, 0)  # Klipper's chopper defaults — the "before" the show compares against
 
 
 class Panel(ScreenPanel):
@@ -20,7 +22,7 @@ class Panel(ScreenPanel):
     def __init__(self, screen, title):
         super().__init__(screen, title or _("Chopper Autotune"))
 
-        # the chopper is a property of the motor, so A = stepper_x, B = stepper_y on any
+        # the chopper is a property of the motor: A = stepper_x, B = stepper_y on any
         # kinematics (on CoreXY those two steppers literally are motors A and B)
         self.motors = (("stepper_x", "A"), ("stepper_y", "B"))
 
@@ -29,22 +31,22 @@ class Panel(ScreenPanel):
              _("Tune motor A (stepper_x)? The printer will home and move for several minutes.")),
             ("fine-tune", _("Tune B"), "color2", "CHOPPER_TUNE MOTOR=B",
              _("Tune motor B (stepper_y)? The printer will home and move for several minutes.")),
-            ("complete", _("Both + Save"), "color3", "CHOPPER_TUNE MOTOR=AB SAVE=1",
-             _("Tune both motors and save the result to the printer config?\n"
-               "About 20 minutes of movement; Klipper restarts at the end.")),
-            ("resume", _("Demo"), "color4", "CHOPPER_DEMO MOTOR=A ROUNDS=3",
-             _("Play the driver defaults against the tuned registers on motor A\n"
-               "so you can hear the difference?")),
+            ("fine-tune", _("Tune both"), "color3", "CHOPPER_TUNE MOTOR=AB",
+             _("Tune both motors (A and B)? About 20 minutes of movement.")),
+            ("complete", _("Save"), "color1", "CHOPPER_SAVE",
+             _("Save the latest tuning result for each motor into the config and restart Klipper?")),
+            ("resume", _("Show"), "color2", "CHOPPER_DEMO MOTOR=A ROUNDS=3 REPEATS=2",
+             _("Play the driver defaults against the tuned registers so you can hear the difference?")),
         ]
 
         grid = Gtk.Grid(column_homogeneous=True, row_homogeneous=True, vexpand=False)
         for index, (icon, label, style, command, confirm) in enumerate(actions):
             button = self._gtk.Button(icon, label, style)
             button.connect("clicked", self.run, command, confirm)
-            grid.attach(button, index % 2, index // 2, 1, 1)
+            grid.attach(button, index % 3, index // 3, 1, 1)
         stop = self._gtk.Button("stop", _("Stop"), "color4")
         stop.connect("clicked", self.stop)
-        grid.attach(stop, 0, 2, 2, 1)
+        grid.attach(stop, 2, 1, 1, 1)
 
         self.status = Gtk.Label(hexpand=True, vexpand=True, halign=Gtk.Align.CENTER,
                                 valign=Gtk.Align.CENTER, wrap=True,
@@ -71,14 +73,25 @@ class Panel(ScreenPanel):
             self.show_status(data["display_status"]["message"])
 
     def show_status(self, message):
-        text = message.strip() if message else self.saved_registers()
-        self.status.set_markup(f"<span size='x-large'>{GLib.markup_escape_text(text)}</span>")
+        if message and message.strip():
+            self.status.set_markup(f"<span size='x-large'>{GLib.markup_escape_text(message.strip())}</span>")
+        else:
+            self.status.set_markup(
+                f"<span font_family='monospace' size='large'>{GLib.markup_escape_text(self.register_table())}</span>")
 
-    def saved_registers(self):
-        saved = []
+    def register_table(self):
+        default = "/".join(str(v) for v in DEFAULT)
+        rows = [_("default → tuned   (tbl/toff/hstrt/hend)")]
         for stepper, name in self.motors:
-            section = self._printer.get_config_section(f"tmc2209 {stepper}")
-            fields = " ".join(f"{reg[7:]}{section[reg]}" for reg in REGISTERS if reg in section)
-            if fields:
-                saved.append(f"{name}  {fields}")
-        return _("Saved:  ") + "      ".join(saved) if saved else _("Not tuned yet — pick one above")
+            tuned = self.tuned_registers(stepper)
+            rows.append("%s   %s → %s" % (name, default, tuned or _("(untuned)")))
+        return "\n".join(rows)
+
+    def tuned_registers(self, stepper):
+        for driver in DRIVERS:
+            section = self._printer.get_config_section(f"{driver} {stepper}")
+            if section:
+                values = [section.get(reg) for reg in REGISTERS]
+                if all(value is not None for value in values):
+                    return "/".join(str(value) for value in values)
+        return ""
