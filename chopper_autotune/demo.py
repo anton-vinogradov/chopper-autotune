@@ -10,11 +10,12 @@ import statistics
 from datetime import datetime
 
 from . import __version__, tmc
-from .collect import (MOVE_MARGIN, Screen, default_dataset_root, detect_hardware,
-                      enter_spreadcycle, exit_spreadcycle, make_parker, measure_baseline,
-                      now, park, run_measurement, travel_for)
+from .collect import (MOVE_MARGIN, Screen, capture_stream, default_dataset_root,
+                      detect_hardware, enter_spreadcycle, exit_spreadcycle, make_parker,
+                      measure_baseline, now, park, run_measurement, travel_for)
 from .dataset import Dataset
-from .klippy import Klippy, find_socket
+from .klippy import Klippy, KlippyError, find_socket
+from .metrics import vibration_score
 
 KLIPPER_DEFAULT = tmc.Chopper(2, 3, 5, 0)
 BAR_WIDTH = 40
@@ -30,6 +31,8 @@ def run_demo(args) -> int:
     from .collect import motor_label
     kl = Klippy(find_socket(args.socket)).connect()
     try:
+        if args.axis == 'xy' and not args.report:
+            return showcase_together(kl, args)          # both motors together, like printing
         axes = ['x', 'y'] if args.axis == 'xy' else [args.axis]
         worst = 0
         for axis in axes:
@@ -45,6 +48,99 @@ def run_demo(args) -> int:
         return worst
     finally:
         kl.close()
+
+
+MOTORS = {'x': 'stepper_x', 'y': 'stepper_y'}
+
+
+def showcase_together(kl, args) -> int:
+    """Live show for the whole printer: put default vs tuned on BOTH motors and do the same
+    coordinated back-and-forth in X at each motor's resonance speed (a pure X move turns both
+    CoreXY motors together, like printing), so a listener hears the whole machine change, not
+    one motor at a time. Reports the combined drop in vibration."""
+    hw = {axis: detect_hardware(kl, axis) for axis in MOTORS}
+    tpfd = {axis: hw[axis].baseline.get('tpfd') for axis in MOTORS}
+    tuned = {axis: tmc.Chopper(hw[axis].baseline.get('tbl', 2), hw[axis].baseline.get('toff', 3),
+                               hw[axis].baseline.get('hstrt', 5), hw[axis].baseline.get('hend', 0),
+                               tpfd[axis]) for axis in MOTORS}
+    default = {axis: (args.default if args.default is not None
+                      else tmc.Chopper(*KLIPPER_DEFAULT.fields().values(), tpfd[axis]))
+               for axis in MOTORS}
+    if all(tuned[axis] == default[axis] for axis in MOTORS):
+        raise SystemExit('current registers equal the defaults on both motors — tune and save first')
+
+    board = hw['x']
+    accel = args.accel or board.max_accel / 10
+    span = min(hw['x'].axis_span, hw['y'].axis_span)
+    speed = {axis: (args.speed.lo if args.speed is not None else known_speed(axis) or 50)
+             for axis in MOTORS}
+    print('Show on both motors together — back-and-forth in X at %d and %d mm/s (both motors '
+          'turn together, hitting motor A and motor B resonances): defaults vs tuned %s / %s'
+          % (speed['x'], speed['y'], tuned['x'].label(), tuned['y'].label()))
+    if args.dry_run:
+        return 0
+
+    kl.subscribe_accel(board.accel_chip)
+    # home and hold at center with the motors ENABLED (park disables them) for G1 moves
+    kl.gcode('G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, *board.center))
+    for axis in MOTORS:
+        enter_spreadcycle(kl, hw[axis])
+    screen = Screen(kl, board.display)
+    configs = [('default', default), ('tuned', tuned)]
+    playing = {'default': '>> DEFAULTS', 'tuned': '>> TUNED'}
+    results = {name: [] for name, _ in configs}
+    try:
+        for r in range(1, args.rounds + 1):
+            round_avg = {}
+            for name, regs in configs:
+                for axis, stepper in MOTORS.items():
+                    kl.gcode(tmc.set_fields_script(stepper, regs[axis].fields()))
+                screen.update('%d/%d  %s' % (r, args.rounds, playing[name]), force=True)
+                print('\n>> round %d/%d  %s — listen (both motors)' % (r, args.rounds, playing[name]))
+                mags = _sweep(board, speed, accel, span, args)
+                if mags:
+                    results[name].extend(mags)
+                    round_avg[name] = statistics.mean(mags)
+            if 'default' in round_avg and 'tuned' in round_avg:
+                factor = round_avg['default'] / round_avg['tuned']
+                summary = 'both motors: %.1fx less vibration' % factor
+                screen.update(summary, force=True)
+                print('   => %s' % summary)
+    finally:
+        for axis, stepper in MOTORS.items():
+            kl.gcode(tmc.set_fields_script(stepper, tuned[axis].fields()))
+        for axis in MOTORS:
+            exit_spreadcycle(kl, hw[axis])
+        kl.gcode('M204 S%.0f\nG28 X Y' % board.max_accel)
+
+    if not results['default'] or not results['tuned']:
+        raise SystemExit('show failed to collect measurements')
+    d, t = statistics.mean(results['default']), statistics.mean(results['tuned'])
+    print('\nboth motors together: %.2fx less vibration overall' % (d / t))
+    screen.update('Chopper: both motors %.1fx less vibration' % (d / t), force=True)
+    return 0
+
+
+def _sweep(board, speed, accel, span, args):
+    """One pass per config: the same back-and-forth along X at each motor's resonance speed.
+    On CoreXY a pure X move turns both motors together (like a print move) at the head speed,
+    so X at motor A's speed hits A's resonance and X at motor B's speed hits B's — one axis,
+    both motors, and an identical motion for defaults and tuned so it's a clean before/after."""
+    mags = []
+    cx = board.center[0]
+    for v in (speed['x'], speed['y']):
+        travel = min(travel_for(v, accel, args.measure_time), span * MOVE_MARGIN)
+        lo, hi = cx - travel / 2, cx + travel / 2
+        board.kl.gcode('G1 X%.2f F%.0f\nM400' % (lo, v * 60))
+        for _ in range(args.repeats):
+            for target in (hi, lo):
+                move = 'G1 X%.2f F%.0f' % (target, v * 60)
+                try:
+                    _, data = capture_stream(board, move, travel / v + v / accel)
+                    mags.append(vibration_score(data, 0.25)['median_magnitude'])
+                except (KlippyError, ValueError, TimeoutError, OSError) as failure:
+                    print('  sweep failed: %s' % failure)
+    return mags
 
 
 def demo(kl: Klippy, args) -> int:
