@@ -39,8 +39,8 @@ class Panel(ScreenPanel):
              _("Tune both motors (A and B)? About 20 minutes of movement.")),
             ("complete", _("Save"), "color1", "CHOPPER_SAVE",
              _("Save the latest tuning result for each motor into the config and restart Klipper?")),
-            ("resume", _("Show"), "color2", "CHOPPER_DEMO MOTOR=A ROUNDS=3 REPEATS=2",
-             _("Play the driver defaults against the tuned registers so you can hear the difference?")),
+            ("resume", _("Show"), "color2", "CHOPPER_DEMO MOTOR=AB ROUNDS=2 REPEATS=2",
+             _("Play the driver defaults against the tuned registers on both motors so you can hear the difference?")),
         ]
 
         grid = Gtk.Grid(column_homogeneous=True, row_homogeneous=True, vexpand=False)
