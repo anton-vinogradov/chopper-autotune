@@ -122,15 +122,16 @@ def showcase_together(kl, args) -> int:
 
 
 def _sweep(board, speed, accel, span, args):
-    """One pass per config: the same back-and-forth along X at each motor's resonance speed.
-    On CoreXY a pure X move turns both motors together (like a print move) at the head speed,
-    so X at motor A's speed hits A's resonance and X at motor B's speed hits B's — one axis,
-    both motors, and an identical motion for defaults and tuned so it's a clean before/after."""
+    """One pass per config: the same back-and-forth along X — same axis AND same distance — at
+    each motor's resonance speed. On CoreXY a pure X move turns both motors together (like a
+    print move) at the head speed, so X at motor A's speed hits A's resonance and X at motor B's
+    hits B's. The travel is fixed (sized for the faster sweep) so the head covers the same stroke
+    every pass; only the speed changes, keeping it a clean before/after."""
     mags = []
     cx = board.center[0]
+    travel = min(travel_for(max(speed.values()), accel, args.measure_time), span * MOVE_MARGIN)
+    lo, hi = cx - travel / 2, cx + travel / 2
     for v in (speed['x'], speed['y']):
-        travel = min(travel_for(v, accel, args.measure_time), span * MOVE_MARGIN)
-        lo, hi = cx - travel / 2, cx + travel / 2
         board.kl.gcode('G1 X%.2f F%.0f\nM400' % (lo, v * 60))
         for _ in range(args.repeats):
             for target in (hi, lo):
