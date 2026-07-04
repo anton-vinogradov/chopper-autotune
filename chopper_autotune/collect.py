@@ -48,6 +48,13 @@ class Range:
         return range(self.lo, self.hi + 1)
 
 
+def motor_label(axis: str) -> str:
+    """Name the driver we tune by its motor, not its axis. The chopper is a property of
+    the motor, so on any kinematics A = stepper_x, B = stepper_y — and on CoreXY those
+    two steppers *are* motors A and B (the head moves on a diagonal, not along one)."""
+    return {'x': 'A', 'y': 'B'}.get(axis.lower(), axis.upper())
+
+
 @dataclass
 class Hardware:
     kl: Klippy
@@ -61,6 +68,10 @@ class Hardware:
     baseline: 'dict[str, int]'
     stealth: 'Optional[tuple[str, int, int]]' = None
     display: bool = False
+
+    @property
+    def motor(self) -> str:
+        return motor_label(self.stepper.rsplit('_', 1)[-1])
 
 
 def detect_hardware(kl: Klippy, axis: str) -> Hardware:
@@ -535,8 +546,8 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
         args.trim = 0.25 if args.csv else 0.1
 
     hw = detect_hardware(kl, args.axis)
-    print('Driver tmc%s on %s, accelerometer %s, kinematics %s, baseline %s'
-          % (hw.driver.name, hw.stepper, hw.accel_chip, hw.kinematics, hw.baseline))
+    print('Driver tmc%s on %s (motor %s), accelerometer %s, kinematics %s, baseline %s'
+          % (hw.driver.name, hw.stepper, hw.motor, hw.accel_chip, hw.kinematics, hw.baseline))
 
     tpfd = args.tpfd
     if tpfd is not None and not hw.driver.has_tpfd:

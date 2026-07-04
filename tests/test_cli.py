@@ -41,6 +41,22 @@ def test_dataset_macro_param_parses():
     assert args.dataset_opt == '/tmp/y'
 
 
+def test_motor_alias_maps_to_axis():
+    parser = build_parser()
+    # motors A/B name the drivers; they map to stepper_x/stepper_y internally
+    assert parser.parse_args(_gcode_args(['collect', 'MOTOR=A', 'SPEED=55'], FLAGS)).axis == 'x'
+    assert parser.parse_args(_gcode_args(['collect', 'MOTOR=B', 'SPEED=55'], FLAGS)).axis == 'y'
+    assert parser.parse_args(_gcode_args(['tune', 'MOTOR=AB'], FLAGS)).axis == 'xy'
+    # the old AXIS= keeps working
+    assert parser.parse_args(_gcode_args(['collect', 'AXIS=Y', 'SPEED=55'], FLAGS)).axis == 'y'
+
+
+def test_motor_label():
+    from chopper_autotune.collect import motor_label
+    assert motor_label('x') == 'A'
+    assert motor_label('y') == 'B'
+
+
 def test_sigterm_handler_raises_systemexit():
     install_sigterm_handler()
     handler = signal.getsignal(signal.SIGTERM)

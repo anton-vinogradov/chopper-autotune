@@ -1,12 +1,12 @@
-"""One-command pipeline: resonance speed scan + register descent per axis, optional save.
+"""One-command pipeline: resonance speed scan + register descent per motor, optional save.
 
-The second axis is seeded with the first one's winner automatically; with --save
+The second motor is seeded with the first one's winner automatically; with --save
 all winners are written into the Klipper config in one batch with a single restart.
 """
 from __future__ import annotations
 
 from . import tmc
-from .collect import Range, collect
+from .collect import Range, collect, motor_label
 from .dataset import Dataset
 from .find_speed import scan
 from .klippy import Klippy, find_socket
@@ -60,7 +60,7 @@ def run_tune(args) -> int:
     try:
         seed_root = None
         for axis in axes:
-            print('=== Axis %s ===' % axis.upper())
+            print('=== Motor %s ===' % motor_label(axis))
             speed = args.speed
             if speed is None:
                 code, recommended = scan(kl, scan_args(args, axis))
@@ -70,8 +70,8 @@ def run_tune(args) -> int:
                           % DRY_RUN_SPEED)
                     recommended = DRY_RUN_SPEED
                 elif recommended is None:
-                    raise SystemExit('no clear resonance peak on %s; tune this axis manually '
-                                     'via CHOPPER_FIND_SPEED + CHOPPER_COLLECT' % axis.upper())
+                    raise SystemExit('no clear resonance peak on motor %s; tune it manually '
+                                     'via CHOPPER_FIND_SPEED + CHOPPER_COLLECT' % motor_label(axis))
                 speed = Range(recommended, recommended)
             code, root = collect(kl, collect_args(args, axis, speed, seed_root))
             worst = max(worst, code)

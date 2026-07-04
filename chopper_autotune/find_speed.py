@@ -112,8 +112,8 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
         args.trim = 0.25 if args.csv else 0.1
 
     hw = detect_hardware(kl, args.axis)
-    print('Driver tmc%s on %s, accelerometer %s, kinematics %s, registers %s'
-          % (hw.driver.name, hw.stepper, hw.accel_chip, hw.kinematics, hw.baseline))
+    print('Driver tmc%s on %s (motor %s), accelerometer %s, kinematics %s, registers %s'
+          % (hw.driver.name, hw.stepper, hw.motor, hw.accel_chip, hw.kinematics, hw.baseline))
 
     accel = args.accel or hw.max_accel / 10
     limit = hw.axis_span * MOVE_MARGIN
@@ -208,7 +208,8 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
     peaks = find_peaks(smooth([magnitude for _, magnitude in curve]))
 
     path = str(root / 'report.html')
-    write_report(curve, peaks, 'resonance scan: %s, %s' % (hw.stepper, args.source), path)
+    write_report(curve, peaks, 'resonance scan: motor %s (%s), %s'
+                 % (hw.motor, hw.stepper, args.source), path)
     print('Done in %dm: report %s' % ((time.time() - started) // 60, path))
 
     recommended = None
@@ -216,7 +217,7 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
         recommended = recommend(curve, peaks)
         print('Resonance peaks: %s'
               % ', '.join('%d mm/s (magnitude %.0f)' % curve[i] for i in peaks))
-        print('\nRecommended: CHOPPER_COLLECT SPEED=%d' % recommended)
+        print('\nRecommended: CHOPPER_COLLECT MOTOR=%s SPEED=%d' % (hw.motor, recommended))
         screen.update('Chopper: resonance %d mm/s' % recommended, force=True)
     else:
         top = max(curve, key=lambda point: point[1])

@@ -31,7 +31,7 @@ def make_hw(baseline):
 def demo_args(**over):
     base = dict(axis='x', speed=None, default=None, iterations=3, measure_time=1.0,
                 accel=None, trim=None, socket=None, dry_run=True,
-                live=False, rounds=3, repeats=4)
+                report=False, rounds=3, repeats=4)
     base.update(over)
     return argparse.Namespace(**base)
 
@@ -48,7 +48,17 @@ def test_demo_dry_run_reports_plan(monkeypatch, capsys):
                         lambda kl, axis: make_hw({'tbl': 2, 'toff': 1, 'hstrt': 4, 'hend': 14}))
     assert demo(None, demo_args(speed=Range(58, 58))) == 0
     out = capsys.readouterr().out
+    assert 'Demo on motor A' in out
     assert 'defaults tbl2_toff3_hstrt5_hend0 vs tuned tbl2_toff1_hstrt4_hend14' in out
+
+
+def test_demo_defaults_to_showcase_report_switches_to_numbers(monkeypatch, capsys):
+    monkeypatch.setattr(demo_module, 'detect_hardware',
+                        lambda kl, axis: make_hw({'tbl': 2, 'toff': 1, 'hstrt': 4, 'hend': 14}))
+    demo(None, demo_args(speed=Range(58, 58)))                     # report=False → audible show
+    assert 'live showcase' in capsys.readouterr().out
+    demo(None, demo_args(speed=Range(58, 58), report=True))        # REPORT=1 → measured numbers
+    assert 'measure' in capsys.readouterr().out
 
 
 def test_showcase_alternates_and_announces(monkeypatch, capsys):

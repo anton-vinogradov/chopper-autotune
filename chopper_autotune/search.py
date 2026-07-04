@@ -109,8 +109,8 @@ def penalized_score(combo: tmc.Chopper, magnitudes: 'list[float]', driver: tmc.D
 def seed_start(ds: Dataset, driver: tmc.Driver, audible_weight: float) -> tmc.Chopper:
     """Best combo of a previously collected dataset, adapted to the target driver.
 
-    Used to start the descent for one axis from the winner of another: the seed
-    only positions the search, every candidate is still measured on this axis.
+    Used to start the descent for one motor from the winner of another: the seed
+    only positions the search, every candidate is still measured on this motor.
     """
     history = dataset_history(ds)
     if not history:

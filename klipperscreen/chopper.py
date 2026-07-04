@@ -20,23 +20,21 @@ class Panel(ScreenPanel):
     def __init__(self, screen, title):
         super().__init__(screen, title or _("Chopper Autotune"))
 
-        # on CoreXY/CoreXZ stepper_x/stepper_y are the two motors (A and B), not the
-        # X/Y axes, so label them the way the mechanics actually move
-        kinematics = (self._printer.get_config_section("printer") or {}).get("kinematics", "")
-        first, second = ("A", "B") if kinematics in ("corexy", "corexz") else ("X", "Y")
-        self.motors = (("stepper_x", first), ("stepper_y", second))
+        # the chopper is a property of the motor, so A = stepper_x, B = stepper_y on any
+        # kinematics (on CoreXY those two steppers literally are motors A and B)
+        self.motors = (("stepper_x", "A"), ("stepper_y", "B"))
 
         actions = [
-            ("fine-tune", _("Tune %s") % first, "color1", "CHOPPER_TUNE AXIS=X",
-             _("Tune %s? The printer will home and move for several minutes.") % first),
-            ("fine-tune", _("Tune %s") % second, "color2", "CHOPPER_TUNE AXIS=Y",
-             _("Tune %s? The printer will home and move for several minutes.") % second),
-            ("complete", _("Both + Save"), "color3", "CHOPPER_TUNE AXIS=XY SAVE=1",
-             _("Tune both and save the result to the printer config?\n"
+            ("fine-tune", _("Tune A"), "color1", "CHOPPER_TUNE MOTOR=A",
+             _("Tune motor A (stepper_x)? The printer will home and move for several minutes.")),
+            ("fine-tune", _("Tune B"), "color2", "CHOPPER_TUNE MOTOR=B",
+             _("Tune motor B (stepper_y)? The printer will home and move for several minutes.")),
+            ("complete", _("Both + Save"), "color3", "CHOPPER_TUNE MOTOR=AB SAVE=1",
+             _("Tune both motors and save the result to the printer config?\n"
                "About 20 minutes of movement; Klipper restarts at the end.")),
-            ("resume", _("Demo"), "color4", "CHOPPER_SHOW AXIS=X ROUNDS=3",
-             _("Play the driver defaults against the tuned registers on %s\n"
-               "so you can hear the difference?") % first),
+            ("resume", _("Demo"), "color4", "CHOPPER_DEMO MOTOR=A ROUNDS=3",
+             _("Play the driver defaults against the tuned registers on motor A\n"
+               "so you can hear the difference?")),
         ]
 
         grid = Gtk.Grid(column_homogeneous=True, row_homogeneous=True, vexpand=False)
