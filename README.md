@@ -93,12 +93,13 @@ That is the whole workflow: the tool finds the resonance speed of each motor, ru
 
 If you run [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen), `install.sh` adds a **Chopper** button to its **More** menu (it merges with your existing menu, nothing is rewritten). One tap opens a panel with:
 
-- **Tune A** / **Tune B** — tune one motor and print the recommendation (A = `stepper_x`, B = `stepper_y`; the chopper is a motor property, so it's the same on any kinematics — and on CoreXY those two steppers literally are motors A and B);
-- **Both + Save** — tune both motors and write the winners into the config;
-- **Demo** — play the driver defaults against the tuned registers on the motor so you can *hear* the difference;
+- **Tune A** / **Tune B** — tune one motor (A = `stepper_x`, B = `stepper_y`; the chopper is a motor property, so it's the same on any kinematics — and on CoreXY those two steppers literally are motors A and B);
+- **Tune both** — tune both motors in one run, seeding the second from the first winner;
+- **Save** — write the latest tuning result for each motor into the config (backup first, one restart);
+- **Show** — play the driver defaults against the tuned registers so you can *hear* the difference, announcing which is playing;
 - **Stop** — abort a running job; the tool restores the registers and re-homes before it exits.
 
-Every action confirms before it moves the printer. While a job runs the panel shows live progress; when idle it shows the registers currently saved for each motor. The buttons drive the same `CHOPPER_*` macros, so anything you can do from the console you can do from the screen.
+Every action confirms before it moves the printer. While a job runs the panel shows live progress; when idle it shows, per motor, the **default → tuned** registers and how much **quieter** tuning made it (measured by the last Show). The buttons drive the same `CHOPPER_*` macros, so anything you can do from the console you can do from the screen.
 
 ![The Chopper panel on KlipperScreen](docs/klipperscreen-panel.png)
 
@@ -183,6 +184,10 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 | `SAVE` | `0` | rewrite the `driver_*` lines in the config (backup first) and restart |
 
 **CHOPPER_DEMO** — plays the driver defaults against the saved/tuned registers on the motor at the resonance speed, alternating so you can *hear* the difference and announcing each on the display and console. `MOTOR` (a/b), `SPEED` (auto if omitted), `ROUNDS`, `REPEATS`. `REPORT=1` prints the measured numbers (how much quieter, with bars) instead of the audible show; `DEFAULT=tbl,toff,hstrt,hend` (default `2,3,5,0`) and `ITERATIONS` apply to the report.
+
+**CHOPPER_SAVE** — write the latest tuning result for each motor into the config in one batched restart (with a backup); logs which winner it saves per motor and from which dataset. Save what the last tuning achieved, whether the motors were tuned separately or together.
+
+**CHOPPER_STOP** — abort a running tuning/show job; the tool restores the registers, leaves spreadCycle and re-homes before it exits.
 
 **CHOPPER_STATUS** — progress of the most recent (or `DATASET=`) run; `TOTAL=` supplies the planned move count for old datasets.
 
