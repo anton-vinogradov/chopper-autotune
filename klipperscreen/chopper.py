@@ -4,7 +4,7 @@ the audible before/after demo from the touchscreen, and watch live progress.
 Buttons send the CHOPPER_* macros over the Klippy websocket; those macros launch
 the tool detached, so the screen stays responsive. Progress comes back on
 display_status.message (the tool's M117) and is shown live under the buttons;
-when idle the same line shows the registers currently saved for each axis.
+when idle the same line shows the registers currently saved for each motor.
 """
 import gi
 
@@ -12,7 +12,6 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk, Pango
 from ks_includes.screen_panel import ScreenPanel
 
-AXES = (("X", "stepper_x"), ("Y", "stepper_y"))
 REGISTERS = ("driver_tbl", "driver_toff", "driver_hstrt", "driver_hend")
 
 
@@ -21,17 +20,23 @@ class Panel(ScreenPanel):
     def __init__(self, screen, title):
         super().__init__(screen, title or _("Chopper Autotune"))
 
+        # on CoreXY/CoreXZ stepper_x/stepper_y are the two motors (A and B), not the
+        # X/Y axes, so label them the way the mechanics actually move
+        kinematics = (self._printer.get_config_section("printer") or {}).get("kinematics", "")
+        first, second = ("A", "B") if kinematics in ("corexy", "corexz") else ("X", "Y")
+        self.motors = (("stepper_x", first), ("stepper_y", second))
+
         actions = [
-            ("fine-tune", _("Tune X"), "color1", "CHOPPER_TUNE AXIS=X",
-             _("Tune the X axis? The printer will home and move for several minutes.")),
-            ("fine-tune", _("Tune Y"), "color2", "CHOPPER_TUNE AXIS=Y",
-             _("Tune the Y axis? The printer will home and move for several minutes.")),
+            ("fine-tune", _("Tune %s") % first, "color1", "CHOPPER_TUNE AXIS=X",
+             _("Tune %s? The printer will home and move for several minutes.") % first),
+            ("fine-tune", _("Tune %s") % second, "color2", "CHOPPER_TUNE AXIS=Y",
+             _("Tune %s? The printer will home and move for several minutes.") % second),
             ("complete", _("Both + Save"), "color3", "CHOPPER_TUNE AXIS=XY SAVE=1",
-             _("Tune both axes and save the result to the printer config?\n"
+             _("Tune both and save the result to the printer config?\n"
                "About 20 minutes of movement; Klipper restarts at the end.")),
             ("resume", _("Demo"), "color4", "CHOPPER_SHOW AXIS=X ROUNDS=3",
-             _("Play the driver defaults against the tuned registers on X\n"
-               "so you can hear the difference?")),
+             _("Play the driver defaults against the tuned registers on %s\n"
+               "so you can hear the difference?") % first),
         ]
 
         grid = Gtk.Grid(column_homogeneous=True, row_homogeneous=True, vexpand=False)
@@ -72,10 +77,10 @@ class Panel(ScreenPanel):
         self.status.set_markup(f"<span size='x-large'>{GLib.markup_escape_text(text)}</span>")
 
     def saved_registers(self):
-        axes = []
-        for axis, stepper in AXES:
+        saved = []
+        for stepper, name in self.motors:
             section = self._printer.get_config_section(f"tmc2209 {stepper}")
             fields = " ".join(f"{reg[7:]}{section[reg]}" for reg in REGISTERS if reg in section)
             if fields:
-                axes.append(f"{axis}  {fields}")
-        return _("Saved:  ") + "      ".join(axes) if axes else _("Not tuned yet — pick an axis above")
+                saved.append(f"{name}  {fields}")
+        return _("Saved:  ") + "      ".join(saved) if saved else _("Not tuned yet — pick one above")

@@ -91,9 +91,9 @@ That is the whole workflow: the tool finds the resonance speed of each axis, run
 
 ### From the touchscreen — KlipperScreen
 
-If you run [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen), `install.sh` adds a **Chopper** button to its main menu (it merges with your existing menu, nothing is rewritten). One tap opens a panel with:
+If you run [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen), `install.sh` adds a **Chopper** button to its **More** menu (it merges with your existing menu, nothing is rewritten). One tap opens a panel with:
 
-- **Tune X** / **Tune Y** — tune one axis and print the recommendation;
+- **Tune A** / **Tune B** — tune one motor and print the recommendation (on CoreXY `stepper_x`/`stepper_y` are the two motors A and B, not the X/Y axes; on other kinematics the buttons read **Tune X** / **Tune Y**);
 - **Both + Save** — tune both axes and write the winners into the config;
 - **Demo** — play the driver defaults against the tuned registers on the motor so you can *hear* the difference;
 - **Stop** — abort a running job; the tool restores the registers and re-homes before it exits.

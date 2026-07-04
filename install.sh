@@ -63,13 +63,13 @@ ks_conf=~/printer_data/config/KlipperScreen.conf
 if [ -d ~/KlipperScreen/panels ]; then
     ln -srf "$repo_path/klipperscreen/chopper.py" ~/KlipperScreen/panels/chopper.py
     echo "Linked the Chopper panel into KlipperScreen"
-    if [ -f "$ks_conf" ] && ! grep -q "^\[menu __main chopper\]$" "$ks_conf"; then
-        # add one button to the main menu, above the auto-generated (#~#) block KlipperScreen owns
-        awk 'function emit(){print "[menu __main chopper]"; print "name: Chopper";
+    if [ -f "$ks_conf" ] && ! grep -q "^\[menu __main more chopper\]$" "$ks_conf"; then
+        # add one button to the "More" submenu, above the auto-generated (#~#) block KlipperScreen owns
+        awk 'function emit(){print "[menu __main more chopper]"; print "name: Chopper";
                               print "icon: fine-tune"; print "panel: chopper"; print ""}
              /^#~#/ && !done {emit(); done=1} {print}
              END{if(!done){print ""; emit()}}' "$ks_conf" > "$ks_conf.tmp" && mv "$ks_conf.tmp" "$ks_conf"
-        echo "Added the Chopper button to the KlipperScreen main menu"
+        echo "Added the Chopper button to the KlipperScreen More menu"
     fi
     sudo systemctl restart KlipperScreen 2>/dev/null || true
 fi

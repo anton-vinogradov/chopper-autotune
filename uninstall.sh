@@ -7,8 +7,8 @@ rm -f ~/printer_data/config/$cfg_name
 # remove the KlipperScreen panel and its menu button if they were installed
 ks_conf=~/printer_data/config/KlipperScreen.conf
 rm -f ~/KlipperScreen/panels/chopper.py
-if [ -f "$ks_conf" ] && grep -q "^\[menu __main chopper\]$" "$ks_conf"; then
-    sed -i "/^\[menu __main chopper\]$/,/^$/d" "$ks_conf"
+if [ -f "$ks_conf" ] && grep -q "^\[menu __main more chopper\]$" "$ks_conf"; then
+    sed -i "/^\[menu __main more chopper\]$/,/^$/d" "$ks_conf"
     sudo systemctl restart KlipperScreen 2>/dev/null || true
 fi
 
