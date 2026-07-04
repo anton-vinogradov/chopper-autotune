@@ -100,7 +100,7 @@ def test_run_demo_together_is_the_default_for_both_motors(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert code == 0
     assert 'both motors together' in out
-    assert 'motor A 58 mm/s' in out and 'motor B 34 mm/s' in out
+    assert '58 and 34 mm/s' in out          # both resonance speeds, both motors
 
 
 def test_showcase_alternates_and_announces(monkeypatch, capsys):

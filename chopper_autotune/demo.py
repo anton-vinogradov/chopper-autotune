@@ -54,10 +54,10 @@ MOTORS = {'x': 'stepper_x', 'y': 'stepper_y'}
 
 
 def showcase_together(kl, args) -> int:
-    """Live show for the whole printer: put default vs tuned on BOTH motors and do
-    coordinated moves — a back-and-forth in X (both motors turn together, near motor A's
-    resonance) then in Y (near motor B's) — so a listener hears the whole machine change,
-    not one motor at a time. Reports the combined drop in vibration."""
+    """Live show for the whole printer: put default vs tuned on BOTH motors and do the same
+    coordinated back-and-forth in X at each motor's resonance speed (a pure X move turns both
+    CoreXY motors together, like printing), so a listener hears the whole machine change, not
+    one motor at a time. Reports the combined drop in vibration."""
     hw = {axis: detect_hardware(kl, axis) for axis in MOTORS}
     tpfd = {axis: hw[axis].baseline.get('tpfd') for axis in MOTORS}
     tuned = {axis: tmc.Chopper(hw[axis].baseline.get('tbl', 2), hw[axis].baseline.get('toff', 3),
@@ -74,8 +74,8 @@ def showcase_together(kl, args) -> int:
     span = min(hw['x'].axis_span, hw['y'].axis_span)
     speed = {axis: (args.speed.lo if args.speed is not None else known_speed(axis) or 50)
              for axis in MOTORS}
-    print('Show on both motors together (X near motor A %d mm/s, Y near motor B %d mm/s): '
-          'defaults vs tuned %s / %s'
+    print('Show on both motors together — back-and-forth in X at %d and %d mm/s (both motors '
+          'turn together, hitting motor A and motor B resonances): defaults vs tuned %s / %s'
           % (speed['x'], speed['y'], tuned['x'].label(), tuned['y'].label()))
     if args.dry_run:
         return 0
@@ -97,7 +97,7 @@ def showcase_together(kl, args) -> int:
                     kl.gcode(tmc.set_fields_script(stepper, regs[axis].fields()))
                 screen.update('%d/%d  %s' % (r, args.rounds, playing[name]), force=True)
                 print('\n>> round %d/%d  %s — listen (both motors)' % (r, args.rounds, playing[name]))
-                mags = _sweep_both(board, speed, accel, span, args)
+                mags = _sweep(board, speed, accel, span, args)
                 if mags:
                     results[name].extend(mags)
                     round_avg[name] = statistics.mean(mags)
@@ -121,18 +121,20 @@ def showcase_together(kl, args) -> int:
     return 0
 
 
-def _sweep_both(board, speed, accel, span, args):
-    """One coordinated pass per config: back-and-forth in X then Y, both driving the whole
-    CoreXY, measuring the combined toolhead vibration."""
+def _sweep(board, speed, accel, span, args):
+    """One pass per config: the same back-and-forth along X at each motor's resonance speed.
+    On CoreXY a pure X move turns both motors together (like a print move) at the head speed,
+    so X at motor A's speed hits A's resonance and X at motor B's speed hits B's — one axis,
+    both motors, and an identical motion for defaults and tuned so it's a clean before/after."""
     mags = []
-    for axis, coord, home in (('x', 'X', board.center[0]), ('y', 'Y', board.center[1])):
-        v = speed[axis]
+    cx = board.center[0]
+    for v in (speed['x'], speed['y']):
         travel = min(travel_for(v, accel, args.measure_time), span * MOVE_MARGIN)
-        lo, hi = home - travel / 2, home + travel / 2
-        board.kl.gcode('G1 %s%.2f F%.0f\nM400' % (coord, lo, v * 60))
+        lo, hi = cx - travel / 2, cx + travel / 2
+        board.kl.gcode('G1 X%.2f F%.0f\nM400' % (lo, v * 60))
         for _ in range(args.repeats):
             for target in (hi, lo):
-                move = 'G1 %s%.2f F%.0f' % (coord, target, v * 60)
+                move = 'G1 X%.2f F%.0f' % (target, v * 60)
                 try:
                     _, data = capture_stream(board, move, travel / v + v / accel)
                     mags.append(vibration_score(data, 0.25)['median_magnitude'])
