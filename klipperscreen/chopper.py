@@ -73,7 +73,9 @@ class Panel(ScreenPanel):
         self.show_status(_("Stopping — restoring registers and re-homing…"))
 
     def process_update(self, action, data):
-        if action == "notify_status_update" and data.get("display_status", {}).get("message") is not None:
+        # fire whenever the message field is in the update (progress-only updates omit it),
+        # including a clear back to None/"" so the panel returns to the register table
+        if action == "notify_status_update" and "message" in data.get("display_status", {}):
             self.show_status(data["display_status"]["message"])
 
     def show_status(self, message):
@@ -86,7 +88,7 @@ class Panel(ScreenPanel):
     def register_table(self):
         default = "/".join(str(v) for v in DEFAULT)
         state = self.load_state()
-        rows = ["%-3s %7s   %-10s %s" % ("", _("default"), _("tuned"), _("noise"))]
+        rows = ["%-3s %7s   %-10s %s" % ("", _("default"), _("tuned"), _("vibration"))]
         for stepper, name in self.motors:
             tuned = self.tuned_registers(stepper)
             axis = stepper.rsplit("_", 1)[-1]

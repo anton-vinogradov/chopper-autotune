@@ -1,7 +1,8 @@
 """Demo: measure the driver defaults against the tuned registers, side by side.
 
 Alternates the two configs move by move at the resonance speed so thermal and
-timing drift hit both equally, then reports how much quieter the tuned one is.
+timing drift hit both equally, then reports how much less the tuned one vibrates
+(measured at the toolhead, not perceived loudness — see the README caveat).
 """
 from __future__ import annotations
 
@@ -115,10 +116,10 @@ def demo(kl: Klippy, args) -> int:
     print('\nmotor %s at %d mm/s (mean vibration, lower is better):\n' % (hw.motor, speed))
     print('  defaults %-10s %6.0f  %s' % (default.label(), d, bar(d, scale)))
     print('  tuned    %-10s %6.0f  %s' % (tuned.label(), t, bar(t, scale)))
-    print('\n  %.2fx quieter overall' % (d / t))
+    print('\n  %.2fx less vibration overall' % (d / t))
     if noise:
-        print('  %.2fx quieter above the %.0f noise floor' % ((d - noise) / (t - noise), noise))
-    screen.update('Chopper demo: %.1fx quieter' % (d / t), force=True)
+        print('  %.2fx less vibration above the %.0f noise floor' % ((d - noise) / (t - noise), noise))
+    screen.update('Chopper demo: %.1fx less vibration' % (d / t), force=True)
     write_state(args.axis, tuned, d / t)
     return 0
 
@@ -147,7 +148,7 @@ def write_state(axis: str, tuned: tmc.Chopper, quieter: float):
 def _showcase(kl, hw, args, ds, configs, speed, travel, accel, before_move, screen):
     """Play defaults and tuned alternately, announcing on the display/console which is
     playing and the running difference, so a listener hears and sees it change."""
-    playing = {'default': '>> DEFAULTS (loud)', 'tuned': '>> TUNED (quiet)'}
+    playing = {'default': '>> DEFAULTS', 'tuned': '>> TUNED'}
     results = {name: [] for name, _ in configs}
     it = 0
     for r in range(1, args.rounds + 1):
@@ -170,7 +171,7 @@ def _showcase(kl, hw, args, ds, configs, speed, travel, accel, before_move, scre
                 round_avg[name] = statistics.mean(mags)
         if 'default' in round_avg and 'tuned' in round_avg:
             factor = round_avg['default'] / round_avg['tuned']
-            summary = 'def %.0f -> tuned %.0f  %.1fx quieter' % (
+            summary = 'def %.0f -> tuned %.0f  %.1fx less vibration' % (
                 round_avg['default'], round_avg['tuned'], factor)
             screen.update(summary, force=True)
             print('   => %s' % summary)
