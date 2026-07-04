@@ -261,6 +261,27 @@ def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]'):
           % (', '.join(edited), BACKUP_SUFFIX))
 
 
+def run_save_latest(args) -> int:
+    """Persist the most recent tuning result for each motor into the config, batched into
+    one restart. Backs the panel's Save button: save what the last tuning achieved, whether
+    the motors were tuned separately (Tune A, Tune B) or together (Tune both)."""
+    from .collect import motor_label
+    from .tune import winner_of
+    seen, items = set(), []
+    for path in reversed(dataset_dirs()):
+        info = Dataset(str(path)).manifest()
+        axis = info.get('axis')
+        if axis in ('x', 'y') and axis not in seen and 'search' in info:
+            seen.add(axis)
+            manifest, combo = winner_of(str(path), args.audible_weight)
+            items.append((manifest, combo))
+            print('motor %s: saving %s (from %s)' % (motor_label(axis), combo.label(), Path(path).name))
+    if not items:
+        raise SystemExit('no tuning datasets to save — run CHOPPER_TUNE first')
+    run_save(Moonraker(args.url), items)
+    return 0
+
+
 def spearman(xs: 'list[float]', ys: 'list[float]') -> float:
     def ranks(values):
         order = sorted(range(len(values)), key=values.__getitem__)
