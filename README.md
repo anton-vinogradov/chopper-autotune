@@ -23,7 +23,7 @@
 - **One command.** `CHOPPER_TUNE SAVE=1` finds each motor's resonance speed, searches the register space and writes the winner into `printer.cfg` in ~20 minutes — no graphs to read, no numbers to copy.
 - **Measured on *your* hardware, not guessed.** Every candidate is scored from real toolhead-accelerometer data on your motors, belts and supply voltage — not computed from a database.
 - **A real number.** On the reference printer (CoreXY, TMC2209): **−51% vibration** on motor A in **8 minutes** versus Klipper defaults, at the resonance speed.
-- **What tuning spreadCycle is for.** Lower vibration and audible noise, cooler motors, a bit more torque headroom — the margin the one-size-fits-all datasheet defaults leave on the table.
+- **What tuning spreadCycle is for.** Lower vibration (measured at the toolhead), cooler motors, a bit more torque headroom — the margin the one-size-fits-all datasheet defaults leave on the table. It targets *vibration*, not perceived loudness — see the [caveat](#datasheet-driven-scoring-not-just-measurement).
 - **Won't trade silence for a whine.** The chopper frequency is derived from the registers, so configs that would slip into the audible band are penalised automatically.
 - **Built for a real printer.** Resumable runs, live progress on the KlipperScreen, a config backup before anything is written, and a `--csv` fallback if streaming misbehaves.
 
@@ -55,6 +55,8 @@ Besides the default full-grid sweep, `--search descent` (`SEARCH=descent`) runs 
 ### Datasheet-driven scoring, not just measurement
 
 The accelerometer cannot hear the chopper (ADXL345 samples at 3.2 kHz), but the chopper frequency is *computable* from the registers and the driver clock. That makes the classic "low vibration but nasty audible whine" trade-off automatic: candidates whose chopper frequency falls into the audible range get penalized analytically (`--audible-weight`).
+
+**It optimises vibration, not perceived loudness.** Sampling at 3.2 kHz, the accelerometer only sees vibration up to ~1.6 kHz — the low-frequency growl/resonance that causes ringing in prints, shakes the frame and tracks motor efficiency and heat. Your ear hears much higher (peak sensitivity ~2–5 kHz), a band the sensor is blind to. So "−N% vibration" means less *measured* low-frequency vibration; it usually but not always sounds quieter — a config can shake the toolhead less yet emit a higher-pitched hiss the ear reads as louder (no whine, since the chopper itself is ultrasonic). Optimising true acoustic loudness would need a microphone.
 
 Also datasheet-driven:
 
@@ -99,7 +101,7 @@ If you run [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen), `ins
 - **Show** — play the driver defaults against the tuned registers so you can *hear* the difference, announcing which is playing;
 - **Stop** — abort a running job; the tool restores the registers and re-homes before it exits.
 
-Every action confirms before it moves the printer. While a job runs the panel shows live progress; when idle it shows, per motor, the **default → tuned** registers and how much **quieter** tuning made it (measured by the last Show). The buttons drive the same `CHOPPER_*` macros, so anything you can do from the console you can do from the screen.
+Every action confirms before it moves the printer. While a job runs the panel shows live progress; when idle it shows, per motor, the **default → tuned** registers and how much **less it vibrates** (measured by the last Show). The buttons drive the same `CHOPPER_*` macros, so anything you can do from the console you can do from the screen.
 
 ![The Chopper panel on KlipperScreen](docs/klipperscreen-panel.png)
 
@@ -183,7 +185,7 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 | `APPLY` | `0` | apply the winner live via `SET_TMC_FIELD` (until reboot) |
 | `SAVE` | `0` | rewrite the `driver_*` lines in the config (backup first) and restart |
 
-**CHOPPER_DEMO** — plays the driver defaults against the saved/tuned registers on the motor at the resonance speed, alternating so you can *hear* the difference and announcing each on the display and console. `MOTOR` (a/b), `SPEED` (auto if omitted), `ROUNDS`, `REPEATS`. `REPORT=1` prints the measured numbers (how much quieter, with bars) instead of the audible show; `DEFAULT=tbl,toff,hstrt,hend` (default `2,3,5,0`) and `ITERATIONS` apply to the report.
+**CHOPPER_DEMO** — plays the driver defaults against the saved/tuned registers on the motor at the resonance speed, alternating so you can *hear* the difference and announcing each on the display and console. `MOTOR` (a/b), `SPEED` (auto if omitted), `ROUNDS`, `REPEATS`. `REPORT=1` prints the measured numbers (how much less vibration, with bars) instead of the audible show; `DEFAULT=tbl,toff,hstrt,hend` (default `2,3,5,0`) and `ITERATIONS` apply to the report.
 
 **CHOPPER_SAVE** — write the latest tuning result for each motor into the config in one batched restart (with a backup); logs which winner it saves per motor and from which dataset. Save what the last tuning achieved, whether the motors were tuned separately or together.
 
