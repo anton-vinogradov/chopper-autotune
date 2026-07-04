@@ -98,7 +98,7 @@ If you run [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen), `ins
 - **Tune A** / **Tune B** — tune one motor (A = `stepper_x`, B = `stepper_y`; the chopper is a motor property, so it's the same on any kinematics — and on CoreXY those two steppers literally are motors A and B);
 - **Tune both** — tune both motors in one run, seeding the second from the first winner;
 - **Save** — write the latest tuning result for each motor into the config (backup first, one restart);
-- **Show** — play the driver defaults against the tuned registers on both motors (A then B) so you can *hear* the difference, announcing which is playing;
+- **Show** — set the defaults, then the tuned registers, on **both** motors and do coordinated moves (both run together, like printing) so you can *hear* the whole printer change; it reports the combined drop in vibration;
 - **Stop** — abort a running job; the tool restores the registers and re-homes before it exits.
 
 Every action confirms before it moves the printer. While a job runs the panel shows live progress; when idle it shows, per motor, the **default → tuned** registers and how much **less it vibrates** (measured by the last Show). The buttons drive the same `CHOPPER_*` macros, so anything you can do from the console you can do from the screen.
@@ -185,7 +185,7 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 | `APPLY` | `0` | apply the winner live via `SET_TMC_FIELD` (until reboot) |
 | `SAVE` | `0` | rewrite the `driver_*` lines in the config (backup first) and restart |
 
-**CHOPPER_DEMO** — plays the driver defaults against the saved/tuned registers at the resonance speed, alternating so you can *hear* the difference and announcing each on the display and console. `MOTOR` (a/b/**ab** — both by default, one after the other), `SPEED` (auto if omitted), `ROUNDS`, `REPEATS`. `REPORT=1` prints the measured numbers (how much less vibration, with bars) instead of the audible show; `DEFAULT=tbl,toff,hstrt,hend` (default `2,3,5,0`) and `ITERATIONS` apply to the report.
+**CHOPPER_DEMO** — plays the driver defaults against the saved/tuned registers, alternating so you can *hear* the difference and announcing each on the display and console. `MOTOR` (a/b, or **ab** = the default: **both motors together** in coordinated moves, like printing — a whole-printer before/after), `SPEED`, `ROUNDS`, `REPEATS`. `REPORT=1` prints the measured numbers (how much less vibration, per motor, with bars) one motor at a time instead of the audible show; `DEFAULT=tbl,toff,hstrt,hend` (default `2,3,5,0`) and `ITERATIONS` apply to the report.
 
 **CHOPPER_SAVE** — write the latest tuning result for each motor into the config in one batched restart (with a backup); logs which winner it saves per motor and from which dataset. Save what the last tuning achieved, whether the motors were tuned separately or together.
 

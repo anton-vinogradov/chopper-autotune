@@ -65,16 +65,17 @@ def fake_klippy(*_):
     return type('K', (), {'connect': lambda self: self, 'close': lambda self: None})()
 
 
-def test_run_demo_shows_both_motors(monkeypatch):
+def test_run_demo_report_measures_both_motors(monkeypatch):
     played = []
     monkeypatch.setattr(demo_module, 'demo', lambda kl, args: played.append(args.axis) or 0)
     monkeypatch.setattr(demo_module, 'find_socket', lambda socket: 'sock')
     monkeypatch.setattr(demo_module, 'Klippy', fake_klippy)
-    assert demo_module.run_demo(argparse.Namespace(axis='xy', socket=None)) == 0
+    # MOTOR=AB REPORT=1 measures each motor in turn (the audible show goes through _together)
+    assert demo_module.run_demo(argparse.Namespace(axis='xy', report=True, socket=None)) == 0
     assert played == ['x', 'y']
 
 
-def test_run_demo_skips_an_untuned_motor_in_both(monkeypatch, capsys):
+def test_run_demo_report_skips_an_untuned_motor(monkeypatch, capsys):
     def one_untuned(kl, args):
         if args.axis == 'x':
             raise SystemExit('nothing to demo')
@@ -83,8 +84,23 @@ def test_run_demo_skips_an_untuned_motor_in_both(monkeypatch, capsys):
     monkeypatch.setattr(demo_module, 'demo', one_untuned)
     monkeypatch.setattr(demo_module, 'find_socket', lambda socket: 'sock')
     monkeypatch.setattr(demo_module, 'Klippy', fake_klippy)
-    assert demo_module.run_demo(argparse.Namespace(axis='xy', socket=None)) == 2
+    assert demo_module.run_demo(argparse.Namespace(axis='xy', report=True, socket=None)) == 2
     assert 'motor A skipped' in capsys.readouterr().out
+
+
+def test_run_demo_together_is_the_default_for_both_motors(monkeypatch, capsys):
+    monkeypatch.setattr(demo_module, 'detect_hardware',
+                        lambda kl, axis: make_hw({'tbl': 2, 'toff': 1, 'hstrt': 4, 'hend': 14}))
+    monkeypatch.setattr(demo_module, 'known_speed', lambda axis: 58 if axis == 'x' else 34)
+    monkeypatch.setattr(demo_module, 'find_socket', lambda socket: 'sock')
+    monkeypatch.setattr(demo_module, 'Klippy', fake_klippy)
+    code = demo_module.run_demo(argparse.Namespace(
+        axis='xy', report=False, dry_run=True, socket=None, default=None, speed=None,
+        accel=None, rounds=2, repeats=2, measure_time=1.0))
+    out = capsys.readouterr().out
+    assert code == 0
+    assert 'both motors together' in out
+    assert 'motor A 58 mm/s' in out and 'motor B 34 mm/s' in out
 
 
 def test_showcase_alternates_and_announces(monkeypatch, capsys):
