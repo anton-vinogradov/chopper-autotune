@@ -6,6 +6,7 @@ timing drift hit both equally, then reports how much less the tuned one vibrates
 """
 from __future__ import annotations
 
+import math
 import statistics
 from datetime import datetime
 
@@ -55,9 +56,10 @@ MOTORS = {'x': 'stepper_x', 'y': 'stepper_y'}
 
 def showcase_together(kl, args) -> int:
     """Live show for the whole printer: put default vs tuned on BOTH motors and do the same
-    coordinated back-and-forth in X at each motor's resonance speed (a pure X move turns both
-    CoreXY motors together, like printing), so a listener hears the whole machine change, not
-    one motor at a time. Reports the combined drop in vibration."""
+    coordinated back-and-forth that runs each motor at its own resonance speed at once (a
+    diagonal on CoreXY, so the head moves in X and Y and the gantry moves too, like printing),
+    so a listener hears the whole machine change, not one motor at a time. Reports the combined
+    drop in vibration."""
     hw = {axis: detect_hardware(kl, axis) for axis in MOTORS}
     tpfd = {axis: hw[axis].baseline.get('tpfd') for axis in MOTORS}
     tuned = {axis: tmc.Chopper(hw[axis].baseline.get('tbl', 2), hw[axis].baseline.get('toff', 3),
@@ -74,8 +76,8 @@ def showcase_together(kl, args) -> int:
     span = min(hw['x'].axis_span, hw['y'].axis_span)
     speed = {axis: (args.speed.lo if args.speed is not None else known_speed(axis) or 50)
              for axis in MOTORS}
-    print('Show on both motors together — back-and-forth in X at %d and %d mm/s (both motors '
-          'turn together, hitting motor A and motor B resonances): defaults vs tuned %s / %s'
+    print('Show on both motors together — diagonal move running motor A at %d and motor B at %d '
+          'mm/s at once (both at resonance; head moves in X and Y): defaults vs tuned %s / %s'
           % (speed['x'], speed['y'], tuned['x'].label(), tuned['y'].label()))
     if args.dry_run:
         return 0
@@ -121,26 +123,35 @@ def showcase_together(kl, args) -> int:
     return 0
 
 
+def head_velocity(kinematics, motor_a, motor_b):
+    """Head (X, Y) velocity that runs stepper_x at motor_a and stepper_y at motor_b at once.
+    On CoreXY stepper_x = X+Y and stepper_y = X-Y, so a diagonal is needed to give the two
+    motors different speeds; on Cartesian each motor drives its own axis."""
+    if kinematics in ('corexy', 'corexz'):
+        return (motor_a + motor_b) / 2.0, (motor_a - motor_b) / 2.0
+    return float(motor_a), float(motor_b)
+
+
 def _sweep(board, speed, accel, span, args):
-    """One pass per config: the same back-and-forth along X — same axis AND same distance — at
-    each motor's resonance speed. On CoreXY a pure X move turns both motors together (like a
-    print move) at the head speed, so X at motor A's speed hits A's resonance and X at motor B's
-    hits B's. The travel is fixed (sized for the faster sweep) so the head covers the same stroke
-    every pass; only the speed changes, keeping it a clean before/after."""
+    """One pass per config: a back-and-forth that runs each motor at its own resonance speed at
+    the same time. On CoreXY that means a diagonal (stepper_x at speed['x'], stepper_y at
+    speed['y']), so the head moves in both X and Y — the gantry moves too, like a print move.
+    Identical stroke and speed for defaults and tuned, so it's a clean before/after."""
+    vx, vy = head_velocity(board.kinematics, speed['x'], speed['y'])
+    feed = math.hypot(vx, vy)
+    cx, cy = board.center
+    stroke = min(travel_for(feed, accel, args.measure_time), span * MOVE_MARGIN)
+    dx, dy = stroke * vx / feed, stroke * vy / feed
+    board.kl.gcode('G1 X%.2f Y%.2f F%.0f\nM400' % (cx - dx / 2, cy - dy / 2, feed * 60))
     mags = []
-    cx = board.center[0]
-    travel = min(travel_for(max(speed.values()), accel, args.measure_time), span * MOVE_MARGIN)
-    lo, hi = cx - travel / 2, cx + travel / 2
-    for v in (speed['x'], speed['y']):
-        board.kl.gcode('G1 X%.2f F%.0f\nM400' % (lo, v * 60))
-        for _ in range(args.repeats):
-            for target in (hi, lo):
-                move = 'G1 X%.2f F%.0f' % (target, v * 60)
-                try:
-                    _, data = capture_stream(board, move, travel / v + v / accel)
-                    mags.append(vibration_score(data, 0.25)['median_magnitude'])
-                except (KlippyError, ValueError, TimeoutError, OSError) as failure:
-                    print('  sweep failed: %s' % failure)
+    for _ in range(args.repeats):
+        for hx, hy in ((cx + dx / 2, cy + dy / 2), (cx - dx / 2, cy - dy / 2)):
+            move = 'G1 X%.2f Y%.2f F%.0f' % (hx, hy, feed * 60)
+            try:
+                _, data = capture_stream(board, move, stroke / feed + feed / accel)
+                mags.append(vibration_score(data, 0.25)['median_magnitude'])
+            except (KlippyError, ValueError, TimeoutError, OSError) as failure:
+                print('  sweep failed: %s' % failure)
     return mags
 
 
