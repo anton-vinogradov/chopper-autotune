@@ -100,7 +100,17 @@ def test_run_demo_together_is_the_default_for_both_motors(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert code == 0
     assert 'both motors together' in out
-    assert '58 and 34 mm/s' in out          # both resonance speeds, both motors
+    assert 'motor A at 58 and motor B at 34' in out          # each motor at its own resonance
+
+
+def test_head_velocity_diagonal_puts_each_motor_at_its_speed():
+    from chopper_autotune.demo import head_velocity
+    # CoreXY: stepper_x = X+Y, stepper_y = X-Y, so a diagonal gives the two motors different speeds
+    vx, vy = head_velocity('corexy', 58, 34)
+    assert (vx, vy) == (46.0, 12.0)
+    assert vx + vy == 58 and vx - vy == 34
+    # Cartesian: each motor drives its own axis directly
+    assert head_velocity('cartesian', 58, 34) == (58.0, 34.0)
 
 
 def test_showcase_alternates_and_announces(monkeypatch, capsys):
