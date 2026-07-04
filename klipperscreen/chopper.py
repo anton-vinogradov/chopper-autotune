@@ -6,6 +6,9 @@ detached, so the screen stays responsive. Progress comes back on display_status.
 (the tool's M117) and is shown live under the buttons; when idle the same area shows each
 motor's default vs currently-saved registers.
 """
+import json
+import os
+
 import gi
 
 gi.require_version("Gtk", "3.0")
@@ -15,6 +18,7 @@ from ks_includes.screen_panel import ScreenPanel
 REGISTERS = ("driver_tbl", "driver_toff", "driver_hstrt", "driver_hend")
 DRIVERS = ("tmc2209", "tmc2208", "tmc2240", "tmc5160", "tmc2130", "tmc2660")
 DEFAULT = (2, 3, 5, 0)  # Klipper's chopper defaults — the "before" the show compares against
+STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/state.json")
 
 
 class Panel(ScreenPanel):
@@ -81,10 +85,13 @@ class Panel(ScreenPanel):
 
     def register_table(self):
         default = "/".join(str(v) for v in DEFAULT)
-        rows = [_("default → tuned   (tbl/toff/hstrt/hend)")]
+        state = self.load_state()
+        rows = ["%-3s %7s   %-10s %s" % ("", _("default"), _("tuned"), _("noise"))]
         for stepper, name in self.motors:
             tuned = self.tuned_registers(stepper)
-            rows.append("%s   %s → %s" % (name, default, tuned or _("(untuned)")))
+            axis = stepper.rsplit("_", 1)[-1]
+            rows.append("%-3s %7s → %-10s %s" % (name, default, tuned or _("untuned"),
+                                                 self.noise_change(axis, tuned, state)))
         return "\n".join(rows)
 
     def tuned_registers(self, stepper):
@@ -95,3 +102,17 @@ class Panel(ScreenPanel):
                 if all(value is not None for value in values):
                     return "/".join(str(value) for value in values)
         return ""
+
+    def noise_change(self, axis, tuned, state):
+        entry = state.get(axis)
+        if not tuned or not entry or entry.get("regs") != tuned or not entry.get("quieter"):
+            return ""
+        return "-%d%%" % round((1 - 1 / entry["quieter"]) * 100)
+
+    @staticmethod
+    def load_state():
+        try:
+            with open(STATE) as handle:
+                return json.load(handle)
+        except (OSError, ValueError):
+            return {}

@@ -119,7 +119,29 @@ def demo(kl: Klippy, args) -> int:
     if noise:
         print('  %.2fx quieter above the %.0f noise floor' % ((d - noise) / (t - noise), noise))
     screen.update('Chopper demo: %.1fx quieter' % (d / t), force=True)
+    write_state(args.axis, tuned, d / t)
     return 0
+
+
+def write_state(axis: str, tuned: tmc.Chopper, quieter: float):
+    """Record the last measured improvement so the KlipperScreen panel can show how much
+    quieter tuning made the motor: RESULTS_HOME/state.json -> {"x": {"regs": "2/1/4/14",
+    "quieter": 2.38}, ...}. Keyed by the tuned registers so the panel can drop it as stale
+    once the motor is retuned."""
+    import json
+
+    from .dataset import RESULTS_HOME
+    path = RESULTS_HOME / 'state.json'
+    state = {}
+    if path.exists():
+        try:
+            state = json.loads(path.read_text())
+        except (ValueError, OSError):
+            state = {}
+    state[axis] = {'regs': '%d/%d/%d/%d' % (tuned.tbl, tuned.toff, tuned.hstrt, tuned.hend),
+                   'quieter': round(quieter, 2)}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(state))
 
 
 def _showcase(kl, hw, args, ds, configs, speed, travel, accel, before_move, screen):

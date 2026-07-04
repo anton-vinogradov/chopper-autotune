@@ -93,6 +93,17 @@ def statistics_mean(xs):
     return sum(xs) / len(xs)
 
 
+def test_write_state_merges_per_motor(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setattr('chopper_autotune.dataset.RESULTS_HOME', tmp_path)
+    demo_module.write_state('x', tmc.Chopper(2, 1, 4, 14), 2.375)
+    assert json.loads((tmp_path / 'state.json').read_text()) == {'x': {'regs': '2/1/4/14', 'quieter': 2.38}}
+    demo_module.write_state('y', tmc.Chopper(0, 2, 7, 9), 1.9)          # merged, not overwritten
+    state = json.loads((tmp_path / 'state.json').read_text())
+    assert set(state) == {'x', 'y'} and state['y'] == {'regs': '0/2/7/9', 'quieter': 1.9}
+
+
 def test_known_speed_reuses_latest_axis_run(tmp_path, monkeypatch):
     from chopper_autotune.dataset import Dataset
     from chopper_autotune.demo import known_speed
