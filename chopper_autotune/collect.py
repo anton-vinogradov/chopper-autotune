@@ -182,12 +182,20 @@ def park(kl: Klippy, hw: Hardware):
 
 class Screen:
     """Progress to the display via M117 (display_status -> KlipperScreen / LCD / web
-    header) and to the console via M118 (Mainsail / Fluidd / KlipperScreen console).
+    header) and to the console via a prefixed RESPOND (Mainsail / Fluidd / KlipperScreen
+    console).
+
+    The console uses a custom prefix rather than M118/`echo: `: KlipperScreen pops up a
+    dismissable notification for every `echo: ` line, which during a run would cover the
+    panel and swallow touch input (e.g. the Stop button). A non-`echo:` prefix still
+    shows in every console but raises no popup.
 
     The display is only written when display_status exists; the console is attempted
     regardless and self-disables if the printer has no [respond]. Either channel
     disables itself on error so a missing one never stops a run.
     """
+
+    CONSOLE_PREFIX = 'Chopper: '
 
     INTERVAL_SEC = 5.0
 
@@ -206,7 +214,7 @@ class Screen:
         if self.display:
             self.display = self._send('M117 %s' % text)
         if self.console:
-            self.console = self._send('M118 %s' % text)
+            self.console = self._send('RESPOND PREFIX="%s" MSG="%s"' % (self.CONSOLE_PREFIX, text))
 
     def _send(self, command: str) -> bool:
         try:
