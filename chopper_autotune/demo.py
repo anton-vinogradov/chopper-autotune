@@ -25,9 +25,24 @@ def bar(value: float, scale: float) -> str:
 
 
 def run_demo(args) -> int:
+    from argparse import Namespace
+
+    from .collect import motor_label
     kl = Klippy(find_socket(args.socket)).connect()
     try:
-        return demo(kl, args)
+        axes = ['x', 'y'] if args.axis == 'xy' else [args.axis]
+        worst = 0
+        for axis in axes:
+            per_motor = Namespace(**vars(args))
+            per_motor.axis = axis
+            try:
+                worst = max(worst, demo(kl, per_motor))
+            except SystemExit as skip:
+                if len(axes) == 1:
+                    raise
+                print('motor %s skipped: %s' % (motor_label(axis), skip))
+                worst = max(worst, 2)
+        return worst
     finally:
         kl.close()
 

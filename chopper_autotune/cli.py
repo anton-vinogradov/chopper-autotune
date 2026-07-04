@@ -141,8 +141,8 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument('-y', '--yes', action='store_true')
 
     d = sub.add_parser('demo', help='play the driver defaults against the tuned registers so you can hear the gain')
-    d.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y'), default='x',
-                   help='motor a or b (a=stepper_x, b=stepper_y); x/y also accepted')
+    d.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y', 'xy'), default='xy',
+                   help='motor a/b/ab (a=stepper_x, b=stepper_y); default ab = both; x/y/xy also accepted')
     d.add_argument('--speed', type=Range.parse, default=None, help='resonance speed; auto-detected if omitted')
     d.add_argument('--default', type=_chopper, default=None,
                    help='the "before" config as tbl,toff,hstrt,hend (default: Klipper 2,3,5,0)')

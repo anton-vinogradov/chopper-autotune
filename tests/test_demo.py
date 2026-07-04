@@ -61,6 +61,32 @@ def test_demo_defaults_to_showcase_report_switches_to_numbers(monkeypatch, capsy
     assert 'measure' in capsys.readouterr().out
 
 
+def fake_klippy(*_):
+    return type('K', (), {'connect': lambda self: self, 'close': lambda self: None})()
+
+
+def test_run_demo_shows_both_motors(monkeypatch):
+    played = []
+    monkeypatch.setattr(demo_module, 'demo', lambda kl, args: played.append(args.axis) or 0)
+    monkeypatch.setattr(demo_module, 'find_socket', lambda socket: 'sock')
+    monkeypatch.setattr(demo_module, 'Klippy', fake_klippy)
+    assert demo_module.run_demo(argparse.Namespace(axis='xy', socket=None)) == 0
+    assert played == ['x', 'y']
+
+
+def test_run_demo_skips_an_untuned_motor_in_both(monkeypatch, capsys):
+    def one_untuned(kl, args):
+        if args.axis == 'x':
+            raise SystemExit('nothing to demo')
+        return 0
+
+    monkeypatch.setattr(demo_module, 'demo', one_untuned)
+    monkeypatch.setattr(demo_module, 'find_socket', lambda socket: 'sock')
+    monkeypatch.setattr(demo_module, 'Klippy', fake_klippy)
+    assert demo_module.run_demo(argparse.Namespace(axis='xy', socket=None)) == 2
+    assert 'motor A skipped' in capsys.readouterr().out
+
+
 def test_showcase_alternates_and_announces(monkeypatch, capsys):
     from chopper_autotune.collect import Screen
     from chopper_autotune.demo import _showcase
