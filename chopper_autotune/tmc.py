@@ -5,6 +5,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 BLANK_TIME_CLOCKS = (16, 24, 36, 54)
+# TMC2208/2209 use a different blank-time table than the rest of the family
+BLANK_TIME_CLOCKS_220X = (16, 24, 32, 40)
 AUDIBLE_LIMIT_HZ = 20000.0
 
 
@@ -15,12 +17,13 @@ class Driver:
     has_tpfd: bool
     # (field, value forcing spreadCycle, value restoring stealthChop); None = no stealthChop
     spreadcycle_switch: 'Optional[tuple[str, int, int]]' = None
+    blank_times: 'tuple[int, ...]' = BLANK_TIME_CLOCKS
 
 
 DRIVERS = {
     '2130': Driver('2130', 13.2e6, False, ('en_pwm_mode', 0, 1)),
-    '2208': Driver('2208', 12.0e6, False, ('en_spreadcycle', 1, 0)),
-    '2209': Driver('2209', 12.0e6, False, ('en_spreadcycle', 1, 0)),
+    '2208': Driver('2208', 12.0e6, False, ('en_spreadcycle', 1, 0), BLANK_TIME_CLOCKS_220X),
+    '2209': Driver('2209', 12.0e6, False, ('en_spreadcycle', 1, 0), BLANK_TIME_CLOCKS_220X),
     '2660': Driver('2660', 15.0e6, False),
     '2240': Driver('2240', 12.5e6, True, ('en_pwm_mode', 0, 1)),
     '5160': Driver('5160', 12.0e6, True, ('en_pwm_mode', 0, 1)),
@@ -83,7 +86,7 @@ def chopper_freq_hz(c: Chopper, driver: Driver) -> float:
     Fast decay and hysteresis time are ignored, so the real frequency is somewhat
     lower; accurate enough to flag combos falling into the audible range.
     """
-    clocks = 2 * (BLANK_TIME_CLOCKS[c.tbl] + 12 + 32 * c.toff)
+    clocks = 2 * (driver.blank_times[c.tbl] + 12 + 32 * c.toff)
     return driver.fclk_hz / clocks
 
 

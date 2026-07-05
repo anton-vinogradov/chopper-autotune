@@ -105,6 +105,52 @@ Next steps (need the printer):
    penalty** (peak/median or click rate) to the scoring so the winner must be
    clean, not just quiet on median. Then re-tune and verify.
 
+## Cross-check: klipper_tmc_autotune's model vs our measured grid (July 2026)
+
+We transcribed the hysteresis formula from
+[klipper_tmc_autotune](https://github.com/andrewmcgr/klipper_tmc_autotune)
+(`motor_constants.hysteresis()`: hysteresis sized to the natural current change
+over one blank + two slow-decay intervals) verbatim, fed it their own motor
+database entries, and asked our measured 3540-combo grid (motor A, 58 mm/s,
+TMC2209, 24 V, 1.8 A) how those predictions actually perform.
+
+| finding | data |
+| --- | --- |
+| vibration falls **monotonically** with effective hysteresis (chopper fixed at tbl2/toff1) | 3915 @ h_eff −2 → 1180 @ h_eff 16, a 3.3× span **[measured]** |
+| their formula + their own DB (Creality 42-xx, 24 V, 1.8 A) yields h_eff **−2…+1** | measured 2800–3915 — *worse than Klipper defaults* (2922), bottom 5 % of the grid **[measured]** |
+| their hstrt-first **split** of a given total is near-optimal | at h_eff 14 their split (regs hstrt7/hend9) is the best same-chopper combo (1227); motor B's independently measured winner is *exactly* that config **[measured]** |
+| their **cap** (h_eff 14) is vindicated | h_eff 16 wins the median by ~4 % (1180 vs 1227) but is the config that clicks (see the case study) **[measured]** |
+
+Reading: their formula computes the **anti-chatter minimum** — just enough
+hysteresis to cover the unavoidable current ripple — and then uses it as *the*
+setting. The measured **vibration optimum sits near the cap**, 2–6× above that
+minimum (for their formula to output h_eff 14 at 1.8 A the natural ripple would
+have to be ~78 mA; their DB values for a 42-40 give ~12 mA). Plausible missing
+pieces: small-signal DB inductance (saturation at run current lowers L and
+raises the real ripple), peak-vs-RMS current convention, back-EMF at speed —
+or simply a different objective (minimum viable ≠ minimum vibration). We are
+taking these to the community as questions.
+
+Caveats: their exact 2209 default chopper (tbl1/toff1) is not in our grid — we
+exclude `TOFF=1` with `TBL<2` per the datasheet note (their code only bumps
+TBL 0→1, another upstream question); the nearest tbl2/toff1 cells were used.
+Grid cells are n=2, but the trend spans 19 hysteresis levels smoothly.
+
+What we took from their code **[model]**:
+
+- **our blank-time table was wrong for TMC2208/2209** (16/24/32/40 clocks, not
+  16/24/36/54) — found by diffing their `_tblank_cycles()` against ours; fixed
+  in `tmc.py` (slightly shifts the audible-frequency estimate);
+- our simulator modeled one slow-decay phase per chopper cycle; the real
+  spreadCycle sequence is on → slow decay → fast decay → **second slow decay**
+  — a refinement for the next model iteration;
+- a cheaper search: since vibration is near-monotonic in h_eff and their split
+  is near-optimal, the hysteresis plane can first be swept as a **single h_eff
+  line** (parametrized by their split), then refined locally;
+- click-fix bounds sharpened: their formula is a **floor** (below it the
+  chopper chatters), the datasheet cap is the **ceiling** — the search should
+  live between them, not centered on the model value as we first assumed.
+
 ## Practical rules distilled so far
 
 - A winner on the edge of the datasheet-allowed region (effective hysteresis 16)
