@@ -11,7 +11,7 @@ from . import __version__
 from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen,
                       default_dataset_root, detect_hardware, enter_spreadcycle,
                       exit_spreadcycle, make_parker, measure_baseline, measure_move, now, park,
-                      travel_for)
+                      refuse_if_printing, run_restore, travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, find_socket
 
@@ -140,6 +140,7 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
         print('Aborted')
         return 1, None
 
+    refuse_if_printing(kl)
     if not args.csv:
         kl.subscribe_accel(hw.accel_chip)
 
@@ -199,8 +200,9 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
             screen.update('Chopper speed scan %d/%d' % (index, len(plan)))
     finally:
         print('Homing')
-        exit_spreadcycle(kl, hw)
-        kl.gcode('G28 X Y')
+        run_restore(
+            lambda: exit_spreadcycle(kl, hw),
+            lambda: kl.gcode('G28 X Y'))
 
     curve = build_curve(ds)
     if not curve:

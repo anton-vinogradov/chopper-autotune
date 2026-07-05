@@ -109,7 +109,9 @@ class Panel(ScreenPanel):
         entry = state.get(axis)
         if not tuned or not entry or entry.get("regs") != tuned or not entry.get("quieter"):
             return ""
-        return "-%d%%" % round((1 - 1 / entry["quieter"]) * 100)
+        pct = round((1 - 1 / entry["quieter"]) * 100)
+        # quieter < 1 means the demo measured MORE vibration: show +N%, not "--N%"
+        return "-%d%%" % pct if pct >= 0 else "+%d%%" % -pct
 
     @staticmethod
     def load_state():

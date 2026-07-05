@@ -143,6 +143,13 @@ class Klippy:
         result = self.request('objects/query', {'objects': {'toolhead': ['print_time']}})
         return float(result['status']['toolhead']['print_time'])
 
+    def is_printing(self) -> bool:
+        """True while a job is printing or paused (print_stats needs [virtual_sdcard];
+        without it there is no job state to protect and False is returned)."""
+        result = self.request('objects/query', {'objects': {'print_stats': ['state']}})
+        state = (result['status'].get('print_stats') or {}).get('state')
+        return state in ('printing', 'paused')
+
     def subscribe_accel(self, accel_chip: str):
         """Chip section like 'adxl345', 'adxl345 head' or 'lis2dw' -> '<type>/dump_<type>' endpoint."""
         parts = accel_chip.split()

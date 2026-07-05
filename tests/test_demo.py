@@ -88,6 +88,23 @@ def test_run_demo_report_skips_an_untuned_motor(monkeypatch, capsys):
     assert 'motor A skipped' in capsys.readouterr().out
 
 
+def test_run_demo_report_reraises_a_sigterm_exit(monkeypatch):
+    # CHOPPER_STOP lands as SystemExit(143) from the SIGTERM handler: it must stop
+    # the whole demo, not be swallowed as "motor A skipped" with motor B still played
+    played = []
+
+    def stopped(kl, args):
+        played.append(args.axis)
+        raise SystemExit(143)
+
+    monkeypatch.setattr(demo_module, 'demo', stopped)
+    monkeypatch.setattr(demo_module, 'find_socket', lambda socket: 'sock')
+    monkeypatch.setattr(demo_module, 'Klippy', fake_klippy)
+    with pytest.raises(SystemExit):
+        demo_module.run_demo(argparse.Namespace(axis='xy', report=True, socket=None))
+    assert played == ['x']
+
+
 def test_run_demo_together_is_the_default_for_both_motors(monkeypatch, capsys):
     monkeypatch.setattr(demo_module, 'detect_hardware',
                         lambda kl, axis: make_hw({'tbl': 2, 'toff': 1, 'hstrt': 4, 'hend': 14}))
@@ -105,12 +122,53 @@ def test_run_demo_together_is_the_default_for_both_motors(monkeypatch, capsys):
 
 def test_head_velocity_diagonal_puts_each_motor_at_its_speed():
     from chopper_autotune.demo import head_velocity
-    # CoreXY: stepper_x = X+Y, stepper_y = X-Y, so a diagonal gives the two motors different speeds
+    # CoreXY/H-Bot: stepper_x = X+Y, stepper_y = X-Y, so a diagonal gives the two
+    # motors different speeds
     vx, vy = head_velocity('corexy', 58, 34)
     assert (vx, vy) == (46.0, 12.0)
     assert vx + vy == 58 and vx - vy == 34
+    assert head_velocity('hbot', 58, 34) == (46.0, 12.0)
     # Cartesian: each motor drives its own axis directly
     assert head_velocity('cartesian', 58, 34) == (58.0, 34.0)
+    # CoreXZ: the coupled pair is X/Z, untouched by an X/Y move -> identity too
+    assert head_velocity('corexz', 58, 34) == (58.0, 34.0)
+
+
+def test_show_requires_a_recorded_speed(monkeypatch):
+    # a silent 50 mm/s fallback would play the show off resonance and prove nothing
+    monkeypatch.setattr(demo_module, 'detect_hardware',
+                        lambda kl, axis: make_hw({'tbl': 2, 'toff': 1, 'hstrt': 4, 'hend': 14}))
+    monkeypatch.setattr(demo_module, 'known_speed', lambda axis: None)
+    with pytest.raises(SystemExit, match='no tuned speed'):
+        demo_module.showcase_together(None, demo_args())
+
+
+def test_show_writes_state_for_both_motors(tmp_path, monkeypatch):
+    import json
+
+    monkeypatch.setattr('chopper_autotune.dataset.RESULTS_HOME', tmp_path)
+    monkeypatch.setattr(demo_module, 'detect_hardware',
+                        lambda kl, axis: make_hw({'tbl': 2, 'toff': 1, 'hstrt': 4, 'hend': 14}))
+    monkeypatch.setattr(demo_module, 'known_speed', lambda axis: 58 if axis == 'x' else 34)
+    sweeps = iter([[2000.0], [1000.0]] * 2)
+    monkeypatch.setattr(demo_module, '_sweep', lambda *a, **kw: next(sweeps))
+    kl = type('K', (), {'gcode': lambda self, s: None,
+                        'subscribe_accel': lambda self, chip: None,
+                        'is_printing': lambda self: False})()
+
+    assert demo_module.showcase_together(kl, demo_args(dry_run=False, rounds=2)) == 0
+    state = json.loads((tmp_path / 'state.json').read_text())
+    # the Show button must feed the panel's vibration column for both motors
+    assert state == {'x': {'regs': '2/1/4/14', 'quieter': 2.0},
+                     'y': {'regs': '2/1/4/14', 'quieter': 2.0}}
+
+
+def test_scan_args_share_the_find_speed_parser_defaults():
+    from chopper_autotune.cli import build_parser
+    reference = build_parser().parse_args(['find-speed', '--axis', 'x', '--yes'])
+    got = demo_module._scan_args(demo_args(csv=False, no_raw=True, dry_run=False))
+    for field in ('min_speed', 'max_speed', 'step', 'iterations', 'measure_time'):
+        assert getattr(got, field) == getattr(reference, field)
 
 
 def test_sweep_spans_the_full_allowed_zone(monkeypatch):

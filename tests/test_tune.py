@@ -81,6 +81,21 @@ def test_tune_save_batches_all_winners(tmp_path, monkeypatch):
     assert saved[0][1] == tmc.Chopper(0, 8, 7, 5)
 
 
+def test_winner_of_prefers_the_recorded_winner(tmp_path):
+    # the run's validated recommendation, not a full re-rank that can surface
+    # an unvalidated lucky combo (winner's curse)
+    root = make_dataset(tmp_path, 'x', 8)
+    Dataset.open(root).update_manifest(winner={'tbl': 2, 'toff': 1, 'hstrt': 4, 'hend': 14})
+    _, combo = tune.winner_of(root, 0.25)
+    assert combo == tmc.Chopper(2, 1, 4, 14)
+
+
+def test_winner_of_falls_back_to_ranking(tmp_path):
+    root = make_dataset(tmp_path, 'x', 8)          # pre-winner dataset
+    _, combo = tune.winner_of(root, 0.25)
+    assert combo == tmc.Chopper(0, 8, 7, 5)
+
+
 def test_tune_aborts_without_resonance_peak(monkeypatch):
     monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
     monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)

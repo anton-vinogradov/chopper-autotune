@@ -45,6 +45,19 @@ class Chopper:
         return '_'.join('%s%d' % (name, value) for name, value in self.fields().items())
 
 
+KLIPPER_DEFAULT = Chopper(2, 3, 5, 0)
+
+
+def baseline_chopper(registers: dict, tpfd: 'Optional[int]' = None) -> Chopper:
+    """The chopper currently configured on a driver; missing fields fall back to
+    the Klipper defaults. The single owner of those fallback values."""
+    return Chopper(registers.get('tbl', KLIPPER_DEFAULT.tbl),
+                   registers.get('toff', KLIPPER_DEFAULT.toff),
+                   registers.get('hstrt', KLIPPER_DEFAULT.hstrt),
+                   registers.get('hend', KLIPPER_DEFAULT.hend),
+                   tpfd if tpfd is not None else registers.get('tpfd'))
+
+
 def validate(c: Chopper) -> Optional[str]:
     if not 0 <= c.tbl <= 3:
         return 'tbl out of range 0..3'

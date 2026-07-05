@@ -15,13 +15,21 @@ from .moonraker import Moonraker
 
 
 def dataset_dirs(bases=(RESULTS_HOME / 'datasets', Path('datasets'))) -> 'list[Path]':
-    return [path for base in bases if base.is_dir() for path in sorted(base.iterdir())
-            if (path / 'manifest.json').is_file()]
+    """Oldest to newest by actual data write time, not by name: a custom-named dataset
+    would otherwise lexicographically shadow newer timestamped ones forever."""
+    def written(path):
+        records = path / 'measurements.jsonl'
+        return (records if records.is_file() else path / 'manifest.json').stat().st_mtime
+
+    return sorted((path for base in bases if base.is_dir() for path in base.iterdir()
+                   if (path / 'manifest.json').is_file()), key=written)
 
 
 def latest_dataset(bases=(RESULTS_HOME / 'datasets', Path('datasets'))) -> str:
     for path in reversed(dataset_dirs(bases)):
-        if Dataset(path).manifest().get('mode') != 'find-speed':
+        # scans and demos are not tuning results: analyzing (worse, SAVE-ing) a
+        # two-combo demo dataset as "the latest run" would persist nonsense
+        if Dataset(path).manifest().get('mode') not in ('find-speed', 'demo'):
             return str(path)
     raise SystemExit('no chopper datasets found, pass the dataset directory explicitly')
 
@@ -377,7 +385,7 @@ def run_status(args) -> int:
     if age > 120:
         print('Last measurement %dm ago — the run looks finished or stalled' % (age // 60))
 
-    total = args.total
+    total = args.total or manifest.get('total_moves')
     if not total and manifest.get('search') == 'grid' and 'ranges' in manifest:
         from .collect import Range, VALIDATE_EXTRA_ITERATIONS, build_plan
         ranges = manifest['ranges']
@@ -418,6 +426,17 @@ def run_analyze(args) -> int:
         print('\nReport: %s' % path)
 
     best = ranked[0]
+    saved = manifest.get('winner')
+    if saved:
+        validated = tmc.Chopper(saved['tbl'], saved['toff'], saved['hstrt'], saved['hend'],
+                                saved.get('tpfd'))
+        if validated != best['chopper']:
+            # recommend what the run validated, not an unvalidated re-rank topper
+            print('\nUsing the validated winner recorded by the run: %s '
+                  '(top-ranked %s was never re-measured)'
+                  % (validated.label(), best['chopper'].label()))
+            best = next((a for a in ranked if a['chopper'] == validated),
+                        {'chopper': validated})
     print('\nRecommended for printer.cfg:\n')
     print(tmc.cfg_snippet(driver, manifest['stepper'], best['chopper']))
     if args.apply and not args.save:

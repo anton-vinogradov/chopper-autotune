@@ -20,15 +20,25 @@ else
     echo "Copied $g_shell_name to $g_shell_path"
 fi
 
-# Klipper rejects duplicate sections: yield to an existing [force_move] elsewhere
-if grep -rq "^\[force_move\]" ~/printer_data/config --include="*.cfg" --exclude="$cfg_name" 2>/dev/null; then
-    sed -i "s/^\[force_move\]/# [force_move] already defined elsewhere/; s/^enable_force_move: True/# enable_force_move: True/" "$repo_path/$cfg_name"
-    echo "[force_move] already present in your config, disabled ours (FORCE_MOVE must stay enabled there)"
-fi
-
 ln -srf "$repo_path/$cfg_name" ~/printer_data/config/
 
+# Klipper rejects duplicate sections: provide [force_move] via a generated local file
+# (never by editing the repo's tracked cfg — update_manager needs a clean git tree)
+# and only when the user's config does not declare one already.
+force_cfg_name=chopper_force_move.cfg
+force_cfg=~/printer_data/config/$force_cfg_name
 printer_cfg=~/printer_data/config/printer.cfg
+if grep -rq "^\[force_move\]" ~/printer_data/config --include="*.cfg" --exclude="$force_cfg_name" 2>/dev/null; then
+    rm -f "$force_cfg"
+    sed -i "/^\[include $force_cfg_name\]$/d" "$printer_cfg"
+    echo "[force_move] already present in your config (FORCE_MOVE must stay enabled there)"
+else
+    printf '[force_move]\nenable_force_move: True\n' > "$force_cfg"
+    if [ -f "$printer_cfg" ] && ! grep -q "^\[include $force_cfg_name\]$" "$printer_cfg"; then
+        sed -i "1i\[include $force_cfg_name]" "$printer_cfg"
+    fi
+fi
+
 if [ -f "$printer_cfg" ] && ! grep -q "^\[include $cfg_name\]$" "$printer_cfg"; then
     sed -i "1i\[include $cfg_name]" "$printer_cfg"
     echo "Included $cfg_name in printer.cfg"

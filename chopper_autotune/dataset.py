@@ -33,6 +33,11 @@ class Dataset:
     def manifest(self) -> dict:
         return json.loads(self.manifest_path.read_text())
 
+    def update_manifest(self, **fields):
+        manifest = self.manifest()
+        manifest.update(fields)
+        self.manifest_path.write_text(json.dumps(manifest, indent=2) + '\n')
+
     def append(self, record: dict):
         with self.records_path.open('a') as f:
             f.write(json.dumps(record) + '\n')
@@ -40,8 +45,18 @@ class Dataset:
     def records(self) -> 'list[dict]':
         if not self.records_path.exists():
             return []
+        result = []
         with self.records_path.open() as f:
-            return [json.loads(line) for line in f if line.strip()]
+            for line in f:
+                if not line.strip():
+                    continue
+                try:
+                    result.append(json.loads(line))
+                except ValueError:
+                    # a crash mid-append leaves a truncated tail line; dropping that one
+                    # measurement beats refusing to resume/analyze the whole dataset
+                    print('%s: skipping a corrupt line' % self.records_path)
+        return result
 
     def done_ids(self) -> 'set[str]':
         return {r['id'] for r in self.records() if r.get('status') == 'ok'}

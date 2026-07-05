@@ -45,6 +45,12 @@ def winner_of(root: str, audible_weight: float) -> 'tuple[dict, tmc.Chopper]':
     from .analyze import aggregate, rank
     ds = Dataset.open(root)
     manifest = ds.manifest()
+    saved = manifest.get('winner')
+    if saved:
+        # the validated recommendation recorded by the run; a full re-rank could
+        # instead surface an unvalidated lucky combo (winner's curse)
+        return manifest, tmc.Chopper(saved['tbl'], saved['toff'], saved['hstrt'],
+                                     saved['hend'], saved.get('tpfd'))
     ranked = rank(aggregate(ds, False, manifest.get('trim') or 0.1),
                   tmc.DRIVERS[manifest['driver']], audible_weight)
     if not ranked:

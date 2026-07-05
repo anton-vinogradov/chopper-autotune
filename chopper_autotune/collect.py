@@ -191,6 +191,26 @@ def park(kl: Klippy, hw: Hardware):
     kl.gcode('G28 X Y\nG0 X%.1f Y%.1f F6000\nM400\nM18' % hw.center)
 
 
+def refuse_if_printing(kl: Klippy):
+    """Tuning homes, disables motors and force-moves the axis — never during a print."""
+    try:
+        printing = kl.is_printing()
+    except KlippyError:
+        return
+    if printing:
+        raise SystemExit('printer is busy printing — not moving anything')
+
+
+def run_restore(*steps):
+    """Run every restore step even when one fails or a second SIGTERM lands mid-restore:
+    registers, spreadCycle and homing must each get their chance."""
+    for step in steps:
+        try:
+            step()
+        except BaseException as failure:
+            print('restore step failed: %s' % failure)
+
+
 class Screen:
     """Progress to the display via M117 (display_status -> KlipperScreen / LCD / web
     header) and to the console via a prefixed RESPOND (Mainsail / Fluidd / KlipperScreen
@@ -410,6 +430,9 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
         validated = [entry for entry in ranked if entry['chopper'] in trusted]
         if validated:
             winner = validated[0]
+    # record the recommendation: save/tune must persist THIS combo, not whatever
+    # unvalidated one floats to the top of a later full re-rank
+    ds.update_manifest(winner=winner['chopper'].fields())
     print('\nRecommended for printer.cfg:\n')
     print(tmc.cfg_snippet(hw.driver, hw.stepper, winner['chopper']))
     screen.update('Chopper: %s' % winner['chopper'].label(), force=True)
@@ -514,11 +537,9 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
         start = seed_start(Dataset.open(args.seed_from), hw.driver, args.audible_weight)
         print('Seeded from %s: starting at %s' % (args.seed_from, start.label()))
     else:
-        start = tmc.Chopper(hw.baseline.get('tbl', 2), hw.baseline.get('toff', 3),
-                            hw.baseline.get('hstrt', 5), hw.baseline.get('hend', 0),
-                            hw.baseline.get('tpfd'))
+        start = tmc.baseline_chopper(hw.baseline)
     if tmc.validate(start) is not None:
-        start = tmc.Chopper(2, 3, 5, 0, hw.baseline.get('tpfd'))
+        start = tmc.Chopper(*tmc.KLIPPER_DEFAULT.fields().values(), hw.baseline.get('tpfd'))
 
     best = multi_start_descent(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd,
                                start, evaluate)
@@ -529,6 +550,21 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
 
     report_winner(hw, ds, args, screen, 10, trusted=set(finalists))
     return stats['ok'], stats['failed']
+
+
+def check_resume(manifest: dict, speeds: 'list[int]', accel: float, measure_time: float):
+    """A resumed run must measure under the same physical conditions as the recorded one,
+    or the aggregate would silently mix incomparable magnitudes under one combo key."""
+    mismatched = [
+        '%s: dataset %s vs current %s' % (key, stored, current)
+        for key, stored, current in (('speeds', manifest.get('speeds'), speeds),
+                                     ('accel', manifest.get('accel'), accel),
+                                     ('measure_time', manifest.get('measure_time'), measure_time))
+        if stored is not None and stored != current]
+    if mismatched:
+        raise SystemExit('refusing to resume with different measurement conditions (%s); '
+                         'pass the original values or start a new dataset'
+                         % '; '.join(mismatched))
 
 
 def run_collect(args) -> int:
@@ -592,11 +628,13 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
         print('Aborted')
         return 1, None
 
+    refuse_if_printing(kl)
     if not args.csv:
         kl.subscribe_accel(hw.accel_chip)
 
     root = Path(args.dataset) if args.dataset else default_dataset_root(
         '%s_%s' % (datetime.now().strftime('%Y%m%d_%H%M%S'), args.axis))
+    resuming = (Path(root) / 'manifest.json').exists()
     ds = Dataset.create(root, {
         'version': __version__,
         'created': now(),
@@ -624,7 +662,10 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
         'validate': args.validate,
         'travel_distance': round(travel, 3),
         'speeds': speeds,
+        'total_moves': n_moves,
     })
+    if resuming:
+        check_resume(ds.manifest(), speeds, accel, args.measure_time)
     done = ds.done_ids()
     if done:
         print('Resuming %s: %d measurements already present' % (root, len(done)))
@@ -649,10 +690,10 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
                 failed += extra_failed
     finally:
         print('Restoring baseline registers, homing')
-        if hw.baseline:
-            kl.gcode(tmc.set_fields_script(hw.stepper, hw.baseline))
-        exit_spreadcycle(kl, hw)
-        kl.gcode('G28 X Y')
+        run_restore(
+            lambda: hw.baseline and kl.gcode(tmc.set_fields_script(hw.stepper, hw.baseline)),
+            lambda: exit_spreadcycle(kl, hw),
+            lambda: kl.gcode('G28 X Y'))
 
     print('Done in %dm: %d ok, %d failed -> %s' % ((time.time() - started) // 60, ok, failed, root))
     print('Next: chopper-autotune analyze %s' % root)
