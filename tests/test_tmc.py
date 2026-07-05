@@ -34,6 +34,16 @@ def test_chopper_freq_estimate():
     assert not tmc.is_audible(tmc.Chopper(0, 5, 0, 0), driver)
 
 
+def test_blank_times_are_per_driver():
+    # 2208/2209 datasheet: 16/24/32/40 clocks; 2130/2240/5160/2660: 16/24/36/54
+    assert tmc.chopper_freq_hz(tmc.Chopper(2, 1, 0, 0), tmc.DRIVERS['2209']) \
+        == pytest.approx(12e6 / (2 * (32 + 12 + 32)))
+    assert tmc.chopper_freq_hz(tmc.Chopper(3, 1, 0, 0), tmc.DRIVERS['2209']) \
+        == pytest.approx(12e6 / (2 * (40 + 12 + 32)))
+    assert tmc.chopper_freq_hz(tmc.Chopper(2, 1, 0, 0), tmc.DRIVERS['5160']) \
+        == pytest.approx(12e6 / (2 * (36 + 12 + 32)))
+
+
 def test_label_and_snippet():
     combo = tmc.Chopper(1, 5, 4, 4, tpfd=2)
     assert combo.label() == 'tbl1_toff5_hstrt4_hend4_tpfd2'
