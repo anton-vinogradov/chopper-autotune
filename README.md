@@ -13,6 +13,7 @@
 - [Why](#why)
 - [The problem](#the-problem)
 - [The approach](#the-approach) · [how it works](#how-it-works-today) · [datasheet-driven scoring](#datasheet-driven-scoring-not-just-measurement)
+- [The science](#the-science)
 - [Two runs by design](#two-runs-by-design)
 - [Usage](#usage) · [one command](#the-simple-way--one-command) · [touchscreen](#from-the-touchscreen--klipperscreen) · [step by step](#the-manual-way--step-by-step) · [command reference](#command-reference)
 - [Stack](#stack) · [Prerequisites](#prerequisites) · [Roadmap](#roadmap)
@@ -64,6 +65,17 @@ Also datasheet-driven:
 - per-driver capability matrix: `TPFD` enters the grid only on TMC2240/5160, clock frequencies match the Klipper driver code;
 - when `stealthchop_threshold` is configured, spreadCycle is forced for the duration of the test and restored afterwards — chopper registers only act in spreadCycle, stealthChop would measure noise;
 - planned: StallGuard readout as a torque-margin proxy to auto-tune motor current.
+
+## The science
+
+Tuning is an experiment, and we keep the lab notebook public:
+[docs/SCIENCE.md](docs/SCIENCE.md) explains what each register physically does
+(the spreadCycle cycle, coil RL physics, why the optimum is per-motor), what the
+accelerometer can and cannot see, how the analytic model and hardware
+measurement complement each other — and hosts the open investigations, currently
+the *clicks-on-the-tuned-config* case: measured facts, the models built, the
+hypotheses they falsified, and the next steps. Updated as the investigation
+moves.
 
 ## Two runs by design
 
