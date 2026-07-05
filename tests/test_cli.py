@@ -20,6 +20,15 @@ def test_gcode_args_flags():
     assert _gcode_args(['collect', 'DRY_RUN=0'], FLAGS) == ['collect']
     assert _gcode_args(['analyze', 'APPLY=true', 'TOP=20'], FLAGS) \
         == ['analyze', '--apply', '--top', '20']
+    assert _gcode_args(['collect', 'DRY_RUN=on'], FLAGS) == ['collect', '--dry-run']
+    assert _gcode_args(['collect', 'DRY_RUN=Y'], FLAGS) == ['collect', '--dry-run']
+    assert _gcode_args(['collect', 'DRY_RUN=off'], FLAGS) == ['collect']
+
+
+def test_gcode_args_rejects_unknown_boolean_value():
+    # DRY_RUN=<typo> silently treated as "off" would physically move the printer
+    with pytest.raises(SystemExit, match='DRY_RUN'):
+        _gcode_args(['collect', 'DRY_RUN=maybe'], FLAGS)
 
 
 def test_gcode_args_passthrough():
@@ -66,11 +75,36 @@ def test_sigterm_handler_raises_systemexit():
 
 def test_latest_dataset(tmp_path):
     base = tmp_path / 'datasets'
-    Dataset.create(base / '20260701_120000_x', {})
-    Dataset.create(base / '20260703_090000_y', {})
+    stamp(Dataset.create(base / '20260701_120000_x', {}), 1000)
+    stamp(Dataset.create(base / '20260703_090000_y', {}), 2000)
     (base / 'not_a_dataset').mkdir()
 
     assert latest_dataset(bases=(base,)) == str(base / '20260703_090000_y')
+
+
+def stamp(ds, mtime):
+    import os
+    os.utime(ds.manifest_path, (mtime, mtime))
+    return ds
+
+
+def test_latest_dataset_skips_scans_and_demos(tmp_path):
+    base = tmp_path / 'datasets'
+    stamp(Dataset.create(base / '01_x', {'search': 'grid'}), 1000)
+    stamp(Dataset.create(base / '02_speed_x', {'mode': 'find-speed'}), 2000)
+    stamp(Dataset.create(base / '03_demo_x', {'mode': 'demo'}), 3000)
+
+    # a fresher demo/scan must not become "the latest run" for analyze/save
+    assert latest_dataset(bases=(base,)) == str(base / '01_x')
+
+
+def test_dataset_dirs_order_by_data_mtime_not_name(tmp_path):
+    from chopper_autotune.analyze import dataset_dirs
+    base = tmp_path / 'datasets'
+    custom = stamp(Dataset.create(base / 'mytest', {}), 1000)      # older, name sorts last
+    newer = stamp(Dataset.create(base / '20260704_120000_x', {}), 2000)
+
+    assert dataset_dirs(bases=(base,)) == [custom.root, newer.root]
 
 
 def test_latest_dataset_missing(tmp_path):

@@ -33,8 +33,13 @@ def _gcode_args(argv: 'list[str]', boolean_flags: 'frozenset[str]') -> 'list[str
             continue
         flag = '--' + match.group(1).lower().replace('_', '-')
         if flag in boolean_flags:
-            if match.group(2).lower() in ('1', 'true', 'yes'):
+            value = match.group(2).lower()
+            if value in ('1', 'true', 'yes', 'on', 'y'):
                 out.append(flag)
+            elif value not in ('0', 'false', 'no', 'off', 'n', ''):
+                # silently treating e.g. DRY_RUN=Y as "off" would move the printer
+                raise SystemExit('%s: expected a boolean like 1/0, got %r'
+                                 % (match.group(1), match.group(2)))
         else:
             out.extend((flag, match.group(2)))
     return out

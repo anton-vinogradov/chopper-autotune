@@ -64,6 +64,8 @@ def test_validate_top_remeasures_finalists(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert 'Validating 2 candidate' in out
     assert 'Recommended for printer.cfg' in out
+    # the recommendation is recorded so save/tune persist THIS combo later
+    assert ds.manifest()['winner'] == {'tbl': 0, 'toff': 5, 'hstrt': 4, 'hend': 4}
 
 
 def test_validate_top_skips_done_ids(tmp_path, monkeypatch):

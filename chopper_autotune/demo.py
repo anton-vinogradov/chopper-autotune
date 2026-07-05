@@ -13,12 +13,13 @@ from datetime import datetime
 from . import __version__, tmc
 from .collect import (MOVE_MARGIN, Screen, capture_stream, default_dataset_root,
                       detect_hardware, enter_spreadcycle, exit_spreadcycle, make_parker,
-                      measure_baseline, now, park, run_measurement, travel_for)
+                      measure_baseline, motor_label, now, park, refuse_if_printing,
+                      run_measurement, run_restore, travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, KlippyError, find_socket
 from .metrics import vibration_score
 
-KLIPPER_DEFAULT = tmc.Chopper(2, 3, 5, 0)
+KLIPPER_DEFAULT = tmc.KLIPPER_DEFAULT
 BAR_WIDTH = 40
 
 
@@ -28,8 +29,6 @@ def bar(value: float, scale: float) -> str:
 
 def run_demo(args) -> int:
     from argparse import Namespace
-
-    from .collect import motor_label
     kl = Klippy(find_socket(args.socket)).connect()
     try:
         if args.axis == 'xy' and not args.report:
@@ -42,7 +41,9 @@ def run_demo(args) -> int:
             try:
                 worst = max(worst, demo(kl, per_motor))
             except SystemExit as skip:
-                if len(axes) == 1:
+                # only a per-motor refusal (a string message) is skippable; an integer
+                # code is the SIGTERM handler — CHOPPER_STOP must stop the whole demo
+                if len(axes) == 1 or not isinstance(skip.code, str):
                     raise
                 print('motor %s skipped: %s' % (motor_label(axis), skip))
                 worst = max(worst, 2)
@@ -51,7 +52,7 @@ def run_demo(args) -> int:
         kl.close()
 
 
-MOTORS = {'x': 'stepper_x', 'y': 'stepper_y'}
+MOTORS = ('x', 'y')
 
 
 def showcase_together(kl, args) -> int:
@@ -62,9 +63,7 @@ def showcase_together(kl, args) -> int:
     drop in vibration."""
     hw = {axis: detect_hardware(kl, axis) for axis in MOTORS}
     tpfd = {axis: hw[axis].baseline.get('tpfd') for axis in MOTORS}
-    tuned = {axis: tmc.Chopper(hw[axis].baseline.get('tbl', 2), hw[axis].baseline.get('toff', 3),
-                               hw[axis].baseline.get('hstrt', 5), hw[axis].baseline.get('hend', 0),
-                               tpfd[axis]) for axis in MOTORS}
+    tuned = {axis: tmc.baseline_chopper(hw[axis].baseline, tpfd[axis]) for axis in MOTORS}
     default = {axis: (args.default if args.default is not None
                       else tmc.Chopper(*KLIPPER_DEFAULT.fields().values(), tpfd[axis]))
                for axis in MOTORS}
@@ -74,14 +73,20 @@ def showcase_together(kl, args) -> int:
     board = hw['x']
     accel = args.accel or board.max_accel / 10
     span = min(hw['x'].axis_span, hw['y'].axis_span)
-    speed = {axis: (args.speed.lo if args.speed is not None else known_speed(axis) or 50)
-             for axis in MOTORS}
+    speed = {}
+    for axis in MOTORS:
+        speed[axis] = args.speed.lo if args.speed is not None else known_speed(axis)
+        if speed[axis] is None:
+            # a silent fallback speed would play the show off resonance and prove nothing
+            raise SystemExit('no tuned speed recorded for motor %s — run CHOPPER_TUNE '
+                             'or pass SPEED=' % motor_label(axis))
     print('Show on both motors together — diagonal move running motor A at %d and motor B at %d '
           'mm/s at once (both at resonance; head moves in X and Y): defaults vs tuned %s / %s'
           % (speed['x'], speed['y'], tuned['x'].label(), tuned['y'].label()))
     if args.dry_run:
         return 0
 
+    refuse_if_printing(kl)
     kl.subscribe_accel(board.accel_chip)
     # home and hold at center with the motors ENABLED (park disables them) for G1 moves
     kl.gcode('G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, *board.center))
@@ -95,8 +100,8 @@ def showcase_together(kl, args) -> int:
         for r in range(1, args.rounds + 1):
             round_avg = {}
             for name, regs in configs:
-                for axis, stepper in MOTORS.items():
-                    kl.gcode(tmc.set_fields_script(stepper, regs[axis].fields()))
+                for axis in MOTORS:
+                    kl.gcode(tmc.set_fields_script(hw[axis].stepper, regs[axis].fields()))
                 screen.update('%d/%d  %s' % (r, args.rounds, playing[name]), force=True)
                 print('\n>> round %d/%d  %s — listen (both motors)' % (r, args.rounds, playing[name]))
                 mags = _sweep(board, speed, accel, span, args)
@@ -109,25 +114,29 @@ def showcase_together(kl, args) -> int:
                 screen.update(summary, force=True)
                 print('   => %s' % summary)
     finally:
-        for axis, stepper in MOTORS.items():
-            kl.gcode(tmc.set_fields_script(stepper, tuned[axis].fields()))
-        for axis in MOTORS:
-            exit_spreadcycle(kl, hw[axis])
-        kl.gcode('M204 S%.0f\nG28 X Y' % board.max_accel)
+        run_restore(
+            *[lambda axis=axis: kl.gcode(tmc.set_fields_script(hw[axis].stepper,
+                                                               tuned[axis].fields()))
+              for axis in MOTORS],
+            *[lambda axis=axis: exit_spreadcycle(kl, hw[axis]) for axis in MOTORS],
+            lambda: kl.gcode('M204 S%.0f\nG28 X Y' % board.max_accel))
 
     if not results['default'] or not results['tuned']:
         raise SystemExit('show failed to collect measurements')
     d, t = statistics.mean(results['default']), statistics.mean(results['tuned'])
     print('\nboth motors together: %.2fx less vibration overall' % (d / t))
     screen.update('Chopper: both motors %.1fx less vibration' % (d / t), force=True)
+    for axis in MOTORS:
+        write_state(axis, tuned[axis], d / t)   # combined factor, shown per motor by the panel
     return 0
 
 
 def head_velocity(kinematics, motor_a, motor_b):
     """Head (X, Y) velocity that runs stepper_x at motor_a and stepper_y at motor_b at once.
-    On CoreXY stepper_x = X+Y and stepper_y = X-Y, so a diagonal is needed to give the two
-    motors different speeds; on Cartesian each motor drives its own axis."""
-    if kinematics in ('corexy', 'corexz'):
+    On CoreXY/H-Bot stepper_x = X+Y and stepper_y = X-Y, so a diagonal is needed to give the
+    two motors different speeds. On CoreXZ the coupled pair is X/Z, which an X/Y move leaves
+    alone (stepper_x follows X, stepper_y is plain Y) — identity, same as Cartesian."""
+    if kinematics in ('corexy', 'hbot'):
         return (motor_a + motor_b) / 2.0, (motor_a - motor_b) / 2.0
     return float(motor_a), float(motor_b)
 
@@ -164,8 +173,7 @@ def demo(kl: Klippy, args) -> int:
 
     hw = detect_hardware(kl, args.axis)
     tpfd = hw.baseline.get('tpfd')
-    tuned = tmc.Chopper(hw.baseline.get('tbl', 2), hw.baseline.get('toff', 3),
-                        hw.baseline.get('hstrt', 5), hw.baseline.get('hend', 0), tpfd)
+    tuned = tmc.baseline_chopper(hw.baseline, tpfd)
     default = (args.default if args.default is not None
                else tmc.Chopper(*KLIPPER_DEFAULT.fields().values(), tpfd))
     if tuned == default:
@@ -179,6 +187,10 @@ def demo(kl: Klippy, args) -> int:
         if speed is not None:
             print('Using resonance speed %d mm/s from the last motor %s run (pass SPEED= to override)'
                   % (speed, hw.motor))
+        elif args.dry_run:
+            print('Demo on motor %s (dry run): no recorded speed, a resonance scan would run first'
+                  % hw.motor)
+            return 0
         else:
             print('No previous run to reuse a speed from; scanning for resonance first')
             from .find_speed import scan
@@ -199,6 +211,7 @@ def demo(kl: Klippy, args) -> int:
     if args.dry_run:
         return 0
 
+    refuse_if_printing(kl)
     kl.subscribe_accel(hw.accel_chip)
     root = default_dataset_root('%s_demo_%s' % (datetime.now().strftime('%Y%m%d_%H%M%S'), args.axis))
     ds = Dataset.create(root, {'version': __version__, 'created': now(), 'mode': 'demo',
@@ -227,20 +240,22 @@ def demo(kl: Klippy, args) -> int:
                             results[name].append(record['score']['median_magnitude'])
                     screen.update('Chopper demo %s %d/%d' % (name, iteration + 1, args.iterations))
     finally:
-        kl.gcode(tmc.set_fields_script(hw.stepper, tuned.fields()))
-        exit_spreadcycle(kl, hw)
-        kl.gcode('G28 X Y')
+        run_restore(
+            lambda: kl.gcode(tmc.set_fields_script(hw.stepper, tuned.fields())),
+            lambda: exit_spreadcycle(kl, hw),
+            lambda: kl.gcode('G28 X Y'))
 
     if not results['default'] or not results['tuned']:
         raise SystemExit('demo failed to collect measurements')
     d, t = statistics.mean(results['default']), statistics.mean(results['tuned'])
-    noise = ds.records()[0]['score']['median_magnitude'] if ds.records() else 0.0
+    records = ds.records()
+    noise = records[0]['score']['median_magnitude'] if records else 0.0
     scale = max(d, t)
     print('\nmotor %s at %d mm/s (mean vibration, lower is better):\n' % (hw.motor, speed))
     print('  defaults %-10s %6.0f  %s' % (default.label(), d, bar(d, scale)))
     print('  tuned    %-10s %6.0f  %s' % (tuned.label(), t, bar(t, scale)))
     print('\n  %.2fx less vibration overall' % (d / t))
-    if noise:
+    if noise and t > noise and d > noise:
         print('  %.2fx less vibration above the %.0f noise floor' % ((d - noise) / (t - noise), noise))
     screen.update('Chopper demo: %.1fx less vibration' % (d / t), force=True)
     write_state(args.axis, tuned, d / t)
@@ -318,7 +333,7 @@ def known_speed(axis: str) -> 'int | None':
 
 
 def _scan_args(args):
-    from argparse import Namespace
-    return Namespace(axis=args.axis, csv=False, min_speed=20, max_speed=120, step=2,
-                     iterations=1, measure_time=1.0, accel=args.accel, trim=None,
-                     dataset=None, no_raw=True, dry_run=False, yes=True)
+    """Through the real find-speed parser (as tune does), so scan defaults live in one place;
+    demo() has already set args.csv/no_raw, and dry_run never reaches here (early return)."""
+    from .tune import scan_args
+    return scan_args(args, args.axis)
