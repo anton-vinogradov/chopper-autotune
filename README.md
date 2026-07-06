@@ -201,6 +201,8 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 
 **CHOPPER_SAVE** — write the latest tuning result for each motor into the config in one batched restart (with a backup); logs which winner it saves per motor and from which dataset. Save what the last tuning achieved, whether the motors were tuned separately or together.
 
+**CHOPPER_CURRENT** — find the minimal safe `run_current` per motor: a worst-case single-motor stress pattern (full machine accel, belt speeds through 200 mm/s) with an **endstop referee** — skipped steps land as a position offset that an endstop creep measures deterministically, because a stall can be nearly silent (measured; see [docs/SCIENCE.md](docs/SCIENCE.md)). Bisects to the skip threshold and recommends `threshold × MARGIN` (default `2.0`); `SAVE=1` writes `run_current` (backup first) and restarts. Re-run `CHOPPER_TUNE` afterwards — the chopper optimum depends on the current. Parameters: `MOTOR`, `MARGIN`, `MIN_CURRENT`, `RESOLUTION`, `ACCEL`, `SAVE`, `DRY_RUN`.
+
 **CHOPPER_STOP** — abort a running tuning/show job; the tool restores the registers, leaves spreadCycle and re-homes before it exits.
 
 **CHOPPER_STATUS** — progress of the most recent (or `DATASET=`) run; `TOTAL=` supplies the planned move count for old datasets.

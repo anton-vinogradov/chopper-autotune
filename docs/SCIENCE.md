@@ -210,6 +210,47 @@ severalfold) and the **objective difference** as the live explanations.
    gains and the clicks are *run-current* phenomena; tune at the current you
    print with.
 
+## Run current: the master knob (July 2026)
+
+The clicks campaign ended at a bigger question: why 1.8 A on 1.0 A-rated motors?
+Because at lower currents the printer used to skip steps. We built a
+skipped-step detector and measured instead of believing:
+
+- **The referee.** A skipped step is quantized — one electrical cycle = 4 full
+  steps ≈ 0.8 mm of belt — and always lands as a position offset. Creeping
+  toward an endstop in 0.2 mm moves while polling `QUERY_ENDSTOPS` measures
+  that offset deterministically (`SET_KINEMATIC_POSITION` widens the legal
+  range to ±13 mm; a per-run calibration absorbs the systematic bias).
+- **The stress.** On coupled-XY kinematics a pure X move splits the load
+  between both motors — the honest single-motor worst case is the X=Y
+  (motor A) / X=−Y (motor B) diagonal at full machine acceleration through the
+  speed band.
+- **Silent slips exist [measured].** The default chopper at 0.65 A lost
+  14.8 mm almost inaudibly (accelerometer barely above baseline) while at
+  0.4 A the tuned one roared at 5× the healthy p99. The accelerometer is
+  theater; the endstop is the judge.
+
+Measured skip thresholds (worst case: belt to 200 mm/s at 10 000 mm/s²):
+
+| chopper | skip threshold |
+| --- | --- |
+| Klipper default | **1.0–1.2 A** (at 1.0 A it slips with a roar — the rig's historical skipped steps, explained) |
+| tuned | **0.40–0.45 A** |
+
+**Chopper tuning bought ~2.5× of torque margin [measured]** — and margin is
+spendable. We dropped `run_current` 1.8 → 1.0 A (2.2× over the measured
+threshold, verified to also hold at 0.7 A), retuned the chopper at the new
+current, and landed on the quietest state this rig has ever measured: at 1.0 A
+the vibration ladder is flat (~940) regardless of registers, the motors run
+3.2× cooler (I²R), and the saturation that broke the analytic model is gone.
+
+The distilled causal chain: **tune the chopper → buy torque margin → spend it
+on lower current → end up cooler and quieter than any register combo at high
+current could make you.** The `current` command (`CHOPPER_CURRENT`) automates
+the ladder — endstop referee, bisection to the threshold, a safety margin
+(default 2×), optional save — followed by a chopper retune, since the optimum
+depends on the current.
+
 ## Practical rules distilled so far
 
 - A winner on the edge of the datasheet-allowed region (effective hysteresis 16)
@@ -220,6 +261,10 @@ severalfold) and the **objective difference** as the live explanations.
   measured clean where hstrt-first splits click, at the same effective total.
 - Tune at the run current and at the resonance speed you actually print with:
   at 1.0 A the whole hysteresis ladder is flat and the clicks vanish.
+- **Run current is the master knob**: registers matter most when the current is
+  high; if tuning buys you torque margin, spend it on lowering the current.
+- Position loss must be measured by an endstop, not inferred from sound —
+  silent slips exist.
 - A resonance scan must run on stock registers — a well-tuned chopper hides
   the very peak the scan is looking for (897 vs 2676 at the same speed).
 - Analytic bounds and hardware measurement are not competitors: the model draws

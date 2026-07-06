@@ -11,7 +11,7 @@ import statistics
 from datetime import datetime
 
 from . import __version__, tmc
-from .collect import (MOVE_MARGIN, Screen, capture_stream, default_dataset_root,
+from .collect import (MOVE_MARGIN, Screen, capture_stream, coupled_xy, default_dataset_root,
                       detect_hardware, enter_spreadcycle, exit_spreadcycle, make_parker,
                       measure_baseline, motor_label, now, park, refuse_if_printing,
                       run_measurement, run_restore, travel_for)
@@ -136,7 +136,7 @@ def head_velocity(kinematics, motor_a, motor_b):
     On CoreXY/H-Bot stepper_x = X+Y and stepper_y = X-Y, so a diagonal is needed to give the
     two motors different speeds. On CoreXZ the coupled pair is X/Z, which an X/Y move leaves
     alone (stepper_x follows X, stepper_y is plain Y) — identity, same as Cartesian."""
-    if kinematics in ('corexy', 'hbot'):
+    if coupled_xy(kinematics):
         return (motor_a + motor_b) / 2.0, (motor_a - motor_b) / 2.0
     return float(motor_a), float(motor_b)
 
