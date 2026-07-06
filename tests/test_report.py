@@ -20,6 +20,26 @@ def make_ranked():
     return rank(aggregates, DRIVER, audible_weight=0.25)
 
 
+def test_rank_prefers_clean_over_slightly_quieter_clicky(tmp_path, capsys):
+    from chopper_autotune.analyze import aggregate, print_table
+    from chopper_autotune.dataset import Dataset
+    ds = Dataset.create(tmp_path / 'ds', {})
+    # measured case: the clicky config wins the median by ~4% but clicks every move
+    for i, (combo, magnitude, clicks) in enumerate((
+            (tmc.Chopper(2, 1, 7, 11), 1180.0, 5),
+            (tmc.Chopper(2, 1, 7, 11), 1180.0, 6),
+            (tmc.Chopper(2, 1, 5, 3), 1227.0, 0),
+            (tmc.Chopper(2, 1, 5, 3), 1227.0, 0))):
+        ds.append({'id': 'm%d' % i, 'kind': 'move', 'status': 'ok', **combo.fields(),
+                   'score': {'median_magnitude': magnitude, 'clicks': clicks}})
+    ranked = rank(aggregate(ds, False, 0.1), DRIVER, audible_weight=0.25)
+    assert ranked[0]['chopper'] == tmc.Chopper(2, 1, 5, 3)          # clean wins
+    assert ranked[1]['clicks'] == 11
+    print_table(ranked, 5)
+    out = capsys.readouterr().out
+    assert 'clicks' in out
+
+
 def test_tbl_toff_matrix_medians_and_audible_mark():
     ranked = make_ranked()
     tbls, toffs, z, text = tbl_toff_matrix(ranked, DRIVER)

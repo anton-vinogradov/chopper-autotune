@@ -35,3 +35,23 @@ def vibration_score(data: np.ndarray, trim_fraction: float = 0.25) -> dict:
         'p95_magnitude': float(np.percentile(magnitude, 95)),
         'rms': float(np.sqrt((accel ** 2).sum(axis=1).mean())),
     }
+
+
+# Hardware-measured discrimination: real audible clicks peak at 22-69x the move's
+# median, threshold-noise events stay below ~13x (see docs/SCIENCE.md, clicks case).
+CLICK_RATIO = 15.0
+
+
+def transients(data: np.ndarray) -> dict:
+    """Click count over the WHOLE capture (ramps included): reversal clicks live outside
+    the steady window that vibration_score deliberately slices to."""
+    accel = data[:, 1:] - data[:, 1:].mean(axis=0)
+    magnitude = np.linalg.norm(accel, axis=1)
+    median = float(np.median(magnitude))
+    if median <= 0:
+        return {'clicks': 0, 'peak_ratio': None}
+    above = magnitude > CLICK_RATIO * median
+    return {
+        'clicks': int(np.sum(above[1:] & ~above[:-1])),
+        'peak_ratio': round(float(magnitude.max()) / median, 1),
+    }

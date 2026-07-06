@@ -3,7 +3,7 @@ import io
 import numpy as np
 import pytest
 
-from chopper_autotune.metrics import parse_accel_csv, trim, vibration_score
+from chopper_autotune.metrics import parse_accel_csv, transients, trim, vibration_score
 
 RATE = 3200.0
 AMP = 1000.0
@@ -36,3 +36,19 @@ def test_vibration_score_on_synthetic_sine():
     assert score['median_magnitude'] == pytest.approx(AMP * np.sin(np.pi / 4), rel=0.05)
     assert score['rms'] == pytest.approx(AMP / np.sqrt(2), rel=0.05)
     assert score['p95_magnitude'] < AMP * 1.01
+
+
+def test_transients_counts_real_clicks_only():
+    data = parse_accel_csv(make_csv())
+    clean = transients(data)
+    assert clean['clicks'] == 0
+    assert clean['peak_ratio'] < 2
+
+    # a real click: 40x the median for a few samples (hardware ones measure 22-69x);
+    # a weak 5x bump (threshold-noise territory) must NOT count
+    spiky = data.copy()
+    spiky[300:305, 1] += 40 * AMP
+    spiky[900:905, 1] += 5 * AMP
+    result = transients(spiky)
+    assert result['clicks'] == 1
+    assert result['peak_ratio'] > 15

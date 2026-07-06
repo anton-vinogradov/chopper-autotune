@@ -163,3 +163,27 @@ def test_dataset_history_groups_directions(tmp_path):
                    'score': {'median_magnitude': magnitude}})
     history = dataset_history(ds)
     assert history[tmc.Chopper(1, 5, 4, 4)] == [100.0, 200.0]
+
+
+def test_dataset_transients_sums_clicks(tmp_path):
+    from chopper_autotune.search import dataset_transients
+    ds = Dataset.create(tmp_path / 'ds', {})
+    ds.append({'id': 'a_fwd', 'kind': 'move', 'status': 'ok',
+               'tbl': 1, 'toff': 5, 'hstrt': 4, 'hend': 4,
+               'score': {'median_magnitude': 100.0, 'clicks': 2}})
+    ds.append({'id': 'a_rev', 'kind': 'move', 'status': 'ok',
+               'tbl': 1, 'toff': 5, 'hstrt': 4, 'hend': 4,
+               'score': {'median_magnitude': 100.0}})          # pre-clicks record
+    assert dataset_transients(ds)[tmc.Chopper(1, 5, 4, 4)] == 2
+
+
+def test_click_penalty_beats_a_small_median_win():
+    # measured case: h16 wins the median by ~4% but clicks ~5x per move;
+    # the penalty must hand the win to the clean config
+    clean = penalized_score(tmc.Chopper(2, 1, 5, 3), [1227.0], DRIVER, 0.25)
+    clicky = penalized_score(tmc.Chopper(2, 1, 7, 11), [1180.0], DRIVER, 0.25,
+                             clicks_per_move=5.5)
+    assert clean < clicky
+    # and a click-free score is unchanged by the new argument
+    assert clean == penalized_score(tmc.Chopper(2, 1, 5, 3), [1227.0], DRIVER, 0.25,
+                                    clicks_per_move=0.0)
