@@ -36,6 +36,7 @@ def latest_dataset(bases=(RESULTS_HOME / 'datasets', Path('datasets'))) -> str:
 
 def aggregate(ds: Dataset, recompute: bool, trim_fraction: float) -> 'list[dict]':
     groups = defaultdict(list)
+    clicks = defaultdict(int)
     for record in ds.records():
         if record.get('kind') != 'move' or record.get('status') != 'ok':
             continue
@@ -53,6 +54,7 @@ def aggregate(ds: Dataset, recompute: bool, trim_fraction: float) -> 'list[dict]
             score = record['score']
         key = (record['tbl'], record['toff'], record['hstrt'], record['hend'], record.get('tpfd'))
         groups[key].append(score['median_magnitude'])
+        clicks[key] += record['score'].get('clicks', 0)
     # mean across moves, not median: the fwd/rev (and iteration) difference is real
     # signal — a config that is quiet one way and loud the other should not win on
     # its lucky direction. Per-move sample noise is already tamed by the inner median.
@@ -61,6 +63,7 @@ def aggregate(ds: Dataset, recompute: bool, trim_fraction: float) -> 'list[dict]
         'magnitude': statistics.mean(values),
         'spread': max(values) - min(values),
         'n': len(values),
+        'clicks': clicks[key],
     } for key, values in groups.items()]
 
 
@@ -69,20 +72,22 @@ def rank(aggregates: 'list[dict]', driver: tmc.Driver, audible_weight: float) ->
     for a in aggregates:
         a['chopper_freq_hz'] = tmc.chopper_freq_hz(a['chopper'], driver)
         a['audible'] = tmc.is_audible(a['chopper'], driver)
-        a['score'] = penalized_score(a['chopper'], [a['magnitude']], driver, audible_weight)
+        a['score'] = penalized_score(a['chopper'], [a['magnitude']], driver, audible_weight,
+                                     a.get('clicks', 0) / a['n'])
     aggregates.sort(key=lambda a: a['score'])
     return aggregates
 
 
 def print_table(ranked: 'list[dict]', top: int):
-    print('%4s %4s %5s %6s %5s %5s %10s %8s %3s %7s %s'
-          % ('rank', 'tbl', 'toff', 'hstrt', 'hend', 'tpfd', 'magnitude', 'spread', 'n', 'f_chop', ''))
+    print('%4s %4s %5s %6s %5s %5s %10s %8s %3s %6s %7s %s'
+          % ('rank', 'tbl', 'toff', 'hstrt', 'hend', 'tpfd', 'magnitude', 'spread', 'n',
+             'clicks', 'f_chop', ''))
     for position, a in enumerate(ranked[:top], 1):
         c = a['chopper']
-        print('%4d %4d %5d %6d %5d %5s %10.1f %8.1f %3d %5.1fkHz %s'
+        print('%4d %4d %5d %6d %5d %5s %10.1f %8.1f %3d %6d %5.1fkHz %s'
               % (position, c.tbl, c.toff, c.hstrt, c.hend,
                  c.tpfd if c.tpfd is not None else '-',
-                 a['magnitude'], a['spread'], a['n'],
+                 a['magnitude'], a['spread'], a['n'], a.get('clicks', 0),
                  a['chopper_freq_hz'] / 1000, 'audible!' if a['audible'] else ''))
 
 

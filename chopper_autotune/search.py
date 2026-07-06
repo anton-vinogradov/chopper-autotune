@@ -99,11 +99,29 @@ def dataset_history(ds: Dataset) -> 'dict[tmc.Chopper, list[float]]':
     return history
 
 
+def dataset_transients(ds: Dataset) -> 'dict[tmc.Chopper, int]':
+    """Total click count per combo (pre-clicks datasets simply count zero)."""
+    clicks = defaultdict(int)
+    for record in ds.records():
+        if record.get('kind') == 'move' and record.get('status') == 'ok':
+            combo = tmc.Chopper(record['tbl'], record['toff'], record['hstrt'], record['hend'],
+                                record.get('tpfd'))
+            clicks[combo] += record['score'].get('clicks', 0)
+    return clicks
+
+
+# One audible click per move costs as much as doubling the vibration: sporadic
+# transients beat any few-percent median win (measured, see docs/SCIENCE.md).
+CLICK_WEIGHT = 1.0
+
+
 def penalized_score(combo: tmc.Chopper, magnitudes: 'list[float]', driver: tmc.Driver,
-                    audible_weight: float) -> float:
+                    audible_weight: float, clicks_per_move: float = 0.0) -> float:
     # mean across moves (see analyze.aggregate): direction asymmetry is signal
     magnitude = statistics.mean(magnitudes)
-    return magnitude * (1 + audible_weight) if tmc.is_audible(combo, driver) else magnitude
+    if tmc.is_audible(combo, driver):
+        magnitude *= 1 + audible_weight
+    return magnitude * (1 + CLICK_WEIGHT * clicks_per_move)
 
 
 def seed_start(ds: Dataset, driver: tmc.Driver, audible_weight: float) -> tmc.Chopper:

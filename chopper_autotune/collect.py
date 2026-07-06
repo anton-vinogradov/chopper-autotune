@@ -19,7 +19,7 @@ import numpy as np
 from . import __version__, tmc
 from .dataset import Dataset, RESULTS_HOME
 from .klippy import Klippy, KlippyError, find_socket
-from .metrics import parse_accel_csv, vibration_score, window
+from .metrics import parse_accel_csv, transients, vibration_score, window
 
 CSV_WAIT_SEC = 30.0
 MOVE_MARGIN = 0.4
@@ -349,6 +349,8 @@ def measure_move(hw: Hardware, ds: Dataset, args, record: dict, speed: float, cr
                 lost = hw.kl.overflows - overflows
                 if lost:
                     record['score']['overflows'] = lost
+            # transients over the full capture: reversal clicks live outside the steady slice
+            record['score'].update(transients(data))
             if not args.no_raw:
                 record['raw'] = ds.store_raw_samples(record['id'], data)
             record['status'] = 'ok'
@@ -392,11 +394,11 @@ def make_parker(kl: Klippy, hw: Hardware):
 
 def measure_combo(hw: Hardware, ds: Dataset, args, combo: tmc.Chopper, speeds: 'list[int]',
                   iterations: int, first_iteration: int, travel: float, accel: float,
-                  done: set, before_move) -> 'tuple[int, int, list[float]]':
+                  done: set, before_move) -> 'tuple[int, int, list[float], int]':
     """The one measurement loop shared by grid, descent and validation: applies the
     registers, measures every missing (speed, iteration, direction) and reports counts."""
     hw.kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
-    ok = failed = 0
+    ok = failed = clicks = 0
     magnitudes = []
     for speed in speeds:
         for iteration in range(first_iteration, first_iteration + iterations):
@@ -408,9 +410,10 @@ def measure_combo(hw: Hardware, ds: Dataset, args, combo: tmc.Chopper, speeds: '
                 if record['status'] == 'ok':
                     ok += 1
                     magnitudes.append(record['score']['median_magnitude'])
+                    clicks += record['score'].get('clicks', 0)
                 else:
                     failed += 1
-    return ok, failed, magnitudes
+    return ok, failed, magnitudes, clicks
 
 
 def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
@@ -447,13 +450,14 @@ def run_grid(kl: Klippy, hw: Hardware, ds: Dataset, args, plan, travel: float, a
         if all(measurement_id(combo, speed, i, d) in done
                for i in range(args.iterations) for d in (1, -1)):
             continue
-        combo_ok, combo_failed, magnitudes = measure_combo(
+        combo_ok, combo_failed, magnitudes, clicks = measure_combo(
             hw, ds, args, combo, [speed], args.iterations, 0, travel, accel, done, before_move)
         ok += combo_ok
         failed += combo_failed
         if magnitudes:
-            print('[%d/%d] %s v%d: median %.1f' % (index, len(plan), combo.label(), speed,
-                                                   sum(magnitudes) / len(magnitudes)))
+            print('[%d/%d] %s v%d: median %.1f%s'
+                  % (index, len(plan), combo.label(), speed,
+                     sum(magnitudes) / len(magnitudes), ' clicks %d!' % clicks if clicks else ''))
         if ok + failed:
             remaining = (len(plan) - index) * args.iterations * 2
             eta = remaining * (time.monotonic() - started) / (ok + failed)
@@ -485,7 +489,7 @@ def validate_top(kl: Klippy, hw: Hardware, ds: Dataset, args, speeds: 'list[int]
         print('Validating %d candidate(s) with %d extra iterations each'
               % (len(pending), VALIDATE_EXTRA_ITERATIONS))
         for combo in pending:
-            combo_ok, combo_failed, _ = measure_combo(
+            combo_ok, combo_failed, _, _ = measure_combo(
                 hw, ds, args, combo, speeds, VALIDATE_EXTRA_ITERATIONS, args.iterations,
                 travel, accel, done, before_move)
             ok += combo_ok
@@ -499,22 +503,29 @@ def validate_top(kl: Klippy, hw: Hardware, ds: Dataset, args, speeds: 'list[int]
 def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None',
                 speeds: 'list[int]', travel: float, accel: float, done: set,
                 before_move, screen: Screen) -> 'tuple[int, int]':
-    from .search import dataset_history, multi_start_descent, penalized_score, seed_start
+    from .search import (dataset_history, dataset_transients, multi_start_descent,
+                         penalized_score, seed_start)
 
     stats = {'ok': 0, 'failed': 0}
     history = dataset_history(ds)
-    cache = {combo: penalized_score(combo, magnitudes, hw.driver, args.audible_weight)
-             for combo, magnitudes in history.items()}
+    clicks = dataset_transients(ds)
+
+    def score_of(combo: tmc.Chopper) -> float:
+        return penalized_score(combo, history[combo], hw.driver, args.audible_weight,
+                               clicks[combo] / len(history[combo]))
+
+    cache = {combo: score_of(combo) for combo in history}
     if cache:
         print('Resuming: %d candidates already measured' % len(cache))
 
     def measure_candidate(combo: tmc.Chopper, iterations: int, first_iteration: int = 0):
-        combo_ok, combo_failed, magnitudes = measure_combo(
+        combo_ok, combo_failed, magnitudes, combo_clicks = measure_combo(
             hw, ds, args, combo, speeds, iterations, first_iteration, travel, accel,
             done, before_move)
         stats['ok'] += combo_ok
         stats['failed'] += combo_failed
         history[combo].extend(magnitudes)
+        clicks[combo] += combo_clicks
 
     def evaluate(combo: tmc.Chopper) -> float:
         if combo in cache:
@@ -523,10 +534,10 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
             cache[combo] = float('inf')
             return cache[combo]
         measure_candidate(combo, args.iterations)
-        score = (penalized_score(combo, history[combo], hw.driver, args.audible_weight)
-                 if history[combo] else float('inf'))
+        score = score_of(combo) if history[combo] else float('inf')
         cache[combo] = score
-        note = ' audible' if tmc.is_audible(combo, hw.driver) else ''
+        note = (' audible' if tmc.is_audible(combo, hw.driver) else '') \
+            + (' clicks %d!' % clicks[combo] if clicks[combo] else '')
         print('  %s -> %s' % (combo.label(),
                               'failed' if score == float('inf') else '%.1f%s' % (score, note)))
         if score != float('inf'):
