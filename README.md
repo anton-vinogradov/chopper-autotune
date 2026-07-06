@@ -6,7 +6,7 @@
 
 [![tests](https://github.com/anton-vinogradov/chopper-autotune/actions/workflows/ci.yml/badge.svg)](https://github.com/anton-vinogradov/chopper-autotune/actions/workflows/ci.yml)
 
-> **Status: v0.1.0, hardware-validated.** The full pipeline runs on a real printer (CoreXY, TMC2209, ADXL345); broader driver and printer coverage is still early.
+> **Status: hardware-validated.** The full pipeline — chopper tuning with click-aware scoring plus measured run-current tuning — runs on a real printer (CoreXY, TMC2209, ADXL345); broader driver and printer coverage is still early.
 
 ## Contents
 
@@ -23,9 +23,9 @@
 
 - **One command.** `CHOPPER_TUNE SAVE=1` finds each motor's resonance speed, searches the register space and writes the winner into `printer.cfg` in ~20 minutes — no graphs to read, no numbers to copy.
 - **Measured on *your* hardware, not guessed.** Every candidate is scored from real toolhead-accelerometer data on your motors, belts and supply voltage — not computed from a database.
-- **A real number.** On the reference printer (CoreXY, TMC2209): **−51% vibration** on motor A in **8 minutes** versus Klipper defaults, at the resonance speed.
-- **What tuning spreadCycle is for.** Lower vibration (measured at the toolhead), cooler motors, a bit more torque headroom — the margin the one-size-fits-all datasheet defaults leave on the table. It targets *vibration*, not perceived loudness — see the [caveat](#datasheet-driven-scoring-not-just-measurement).
-- **Won't trade silence for a whine.** The chopper frequency is derived from the registers, so configs that would slip into the audible band are penalised automatically.
+- **Real numbers.** On the reference printer (CoreXY, TMC2209): ~2× less measured vibration than Klipper defaults at the resonance speed, zero audible clicks — and the tuned chopper survives the worst-case torque test at **2.5× less current** than the default one. That margin let us drop `run_current` 1.8 → 1.0 A: motors 3.2× cooler, at the quietest state the rig has ever measured.
+- **What tuning spreadCycle is for.** Lower measured vibration and — the part nobody advertises — **torque margin**: on the reference rig the tuned chopper holds the worst-case stress at 0.42 A where the default needs ~1.1 A. Margin you can spend on a lower, cooler run current; `CHOPPER_CURRENT` measures exactly how much. It targets *vibration*, not perceived loudness — see the [caveat](#datasheet-driven-scoring-not-just-measurement).
+- **Won't trade silence for a whine — or for clicks.** The chopper frequency is derived from the registers, so configs that would slip into the audible band are penalised automatically; and every measurement counts transient clicks, so a "quiet on average, clicking in fact" config cannot win either.
 - **Built for a real printer.** Resumable runs, live progress on the KlipperScreen, a config backup before anything is written, and a `--csv` fallback if streaming misbehaves.
 
 ## The problem
@@ -45,11 +45,11 @@ Close the loop on real hardware: *apply registers → move the motor → measure
 
 `tune` chains everything below into a single command; each piece is also available separately:
 
-1. **`find-speed`** sweeps the speed range with the current registers, builds the magnitude(speed) curve, finds resonance peaks (prominence-based) and recommends the speed for the main run.
+1. **`find-speed`** sweeps the speed range on stock (Klipper default) registers — a well-tuned chopper suppresses the very resonance peak the scan is looking for, so the tuned registers are set aside and restored afterwards — builds the magnitude(speed) curve, finds resonance peaks (prominence-based) and recommends the speed for the main run.
 2. **`collect`** reads everything it needs from the printer config over the klippy API socket (driver type, current registers, accelerometer, kinematics, axis limits), builds a register/speed plan pruned by datasheet constraints, checks the travel length against the axis span, prints an ETA and asks for confirmation.
 3. The printer homes XY, parks at the bed center and disables motors. For every combination the tool applies registers via `SET_TMC_FIELD`, runs `FORCE_MOVE` back and forth, and streams accelerometer samples straight from the klippy socket. The end of each move is taken from `toolhead.print_time`, so the metric sees exactly the cruise phase — acceleration and deceleration transients are cut analytically, not by guesswork.
 4. Every measurement is appended to an on-disk dataset immediately; an interrupted run resumes from where it stopped.
-5. **`analyze`** aggregates the dataset (mean across directions/iterations/speeds — the fwd/rev difference is real, so a config must be quiet *both* ways to win), penalizes configurations whose chopper frequency falls into the audible range, prints a ranking table, writes an interactive plotly report and a ready-to-paste `printer.cfg` snippet; `--apply` sets the winner live without restarting Klipper.
+5. **`analyze`** aggregates the dataset (mean across directions/iterations/speeds — the fwd/rev difference is real, so a config must be quiet *both* ways to win), penalizes configurations whose chopper frequency falls into the audible range and configurations that produced transient clicks, prints a ranking table (with a clicks column), writes an interactive plotly report and a ready-to-paste `printer.cfg` snippet; `--apply` sets the winner live without restarting Klipper.
 
 Besides the default full-grid sweep, `--search descent` (`SEARCH=descent`) runs a **multi-start** coordinate descent in the AN-001 tuning order — `TBL`+`TOFF` jointly, then `HSTRT`, `HEND`, then `TPFD` — evaluating a few percent of the grid (minutes instead of hours), re-measuring the top candidates before recommending. Several seeds spread across the `TOFF`×`HEND` plane keep the greedy search from getting trapped: phase A sweeps `TOFF` at a fixed `HEND`, so a single low-`HEND` start hides the low-`TOFF`/high-`HEND` valley — starting from a few `HEND` levels lets some run find it. The objective includes the audible-chopper penalty, so the descent does not trade a barely lower vibration for a 15 kHz whine. For the second motor, `SEED_FROM=<dataset>` starts the descent from the winner of the first one — the seed only positions the search, every candidate is still measured on the target motor, so belt tension and mechanics differences are accounted for; a good seed converges in a couple of minutes, a bad one just costs the usual descent time. Any recorded grid dataset doubles as an offline benchmark: `simulate <dataset>` replays the descent against it and reports the gap to the true optimum.
 
@@ -59,23 +59,29 @@ The accelerometer cannot hear the chopper (ADXL345 samples at 3.2 kHz), but the 
 
 **It optimises vibration, not perceived loudness.** Sampling at 3.2 kHz, the accelerometer only sees vibration up to ~1.6 kHz — the low-frequency growl/resonance that causes ringing in prints, shakes the frame and tracks motor efficiency and heat. Your ear hears much higher (peak sensitivity ~2–5 kHz), a band the sensor is blind to. So "−N% vibration" means less *measured* low-frequency vibration; it usually but not always sounds quieter — a config can shake the toolhead less yet emit a higher-pitched hiss the ear reads as louder (no whine, since the chopper itself is ultrasonic). Optimising true acoustic loudness would need a microphone.
 
+**It refuses clicky winners.** The per-move median is blind to rare transients: a config can win the median while audibly clicking (measured — the datasheet-edge winner clicked ~5× per move at 65× the median). Every capture therefore also counts clicks over the whole move, with a hardware-calibrated threshold (15× the move median: real clicks measure 22–69×, threshold noise stays under ~13×), and one click per move costs as much as doubling the vibration.
+
 Also datasheet-driven:
 
 - search space constraints (effective `HSTRT`+`HEND` ≤ 16 per datasheet, `TOFF` = 0 forbidden, `TOFF` = 1 blank-time restrictions) — pruned before any motion;
-- per-driver capability matrix: `TPFD` enters the grid only on TMC2240/5160, clock frequencies match the Klipper driver code;
+- per-driver capability matrix: `TPFD` enters the grid only on TMC2240/5160, clock frequencies and blank-time tables match the driver datasheets;
 - when `stealthchop_threshold` is configured, spreadCycle is forced for the duration of the test and restored afterwards — chopper registers only act in spreadCycle, stealthChop would measure noise;
-- planned: StallGuard readout as a torque-margin proxy to auto-tune motor current.
+- run current is measured too: `CHOPPER_CURRENT` stresses one motor at a time and bisects to the skip threshold with an endstop referee — see the [command reference](#command-reference).
 
 ## The science
 
 Tuning is an experiment, and we keep the lab notebook public:
 [docs/SCIENCE.md](docs/SCIENCE.md) explains what each register physically does
 (the spreadCycle cycle, coil RL physics, why the optimum is per-motor), what the
-accelerometer can and cannot see, how the analytic model and hardware
-measurement complement each other — and hosts the open investigations, currently
-the *clicks-on-the-tuned-config* case: measured facts, the models built, the
-hypotheses they falsified, and the next steps. Updated as the investigation
-moves.
+accelerometer can and cannot see, and hosts the investigations *with their
+outcomes*: the clicks case (resolved — the click penalty came out of it, and the
+hysteresis **split** turned out to govern clicking), the cross-check against
+klipper_tmc_autotune's analytic model (bugs found on both sides, coil saturation
+≈2× measured in-situ, ongoing discussion in
+[their issue #339](https://github.com/andrewmcgr/klipper_tmc_autotune/issues/339)),
+and the run-current campaign (chopper tuning buys ~2.5× of torque margin —
+spend it on a lower current). Negative results included; updated as the
+investigation moves.
 
 ## Two runs by design
 
@@ -84,7 +90,7 @@ The tool is deliberately split into two commands sharing one on-disk dataset (`m
 1. **`collect`** — the slow hardware part. Streams samples from the klippy API socket (no CSV churn in `/tmp`, no SD-card wear; `--csv` falls back to the classic `ACCELEROMETER_MEASURE` path). Interrupted or extended runs resume from the same dataset directory: finished measurements are skipped.
 2. **`analyze`** — offline and instant. Raw data is kept in the dataset, so scoring can be reworked and replayed (`--recompute`) without touching the printer.
 
-Smarter search strategies will live inside `collect` and pick the next point online, but the dataset stays append-only and complete — analysis remains replayable offline.
+The multi-start descent already picks its next point online, and the dataset stays append-only and complete — analysis remains replayable offline.
 
 ## Usage
 
@@ -97,11 +103,12 @@ cd ~ && git clone https://github.com/anton-vinogradov/chopper-autotune && bash .
 ### The simple way — one command
 
 ```
-CHOPPER_TUNE            ; both motors: resonance speed + register descent, ~20 min
-CHOPPER_TUNE SAVE=1     ; ...and write the winners into the config (with a backup)
+CHOPPER_TUNE SAVE=1     ; both motors: resonance speed + register descent, ~20 min
+CHOPPER_CURRENT SAVE=1  ; measure the skip threshold, drop run_current with a 2x margin
+CHOPPER_TUNE SAVE=1     ; re-tune the chopper at the new current (its optimum depends on it)
 ```
 
-That is the whole workflow: the tool finds the resonance speed of each motor, runs the register descent at it, seeds the second motor with the first one's winner, prints both `printer.cfg` blocks and — with `SAVE=1` — persists them and restarts Klipper. Progress shows on the printer display; `CHOPPER_STATUS` prints it in the console.
+The first tune finds the resonance speed of each motor, runs the register descent at it, seeds the second motor with the first one's winner and persists the winners (with a backup). It also buys **torque margin** — which `CHOPPER_CURRENT` then converts into a lower, cooler `run_current` (measured skip threshold × safety margin). The final tune adapts the registers to the new current. Progress shows on the printer display; `CHOPPER_STATUS` prints it in the console. Just `CHOPPER_TUNE SAVE=1` alone is still a fine day one.
 
 ### From the touchscreen — KlipperScreen
 
@@ -113,7 +120,7 @@ If you run [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen), `ins
 - **Show** — set the defaults, then the tuned registers, on **both** motors and do coordinated moves (both run together, like printing) so you can *hear* the whole printer change; it reports the combined drop in vibration;
 - **Stop** — abort a running job; the tool restores the registers and re-homes before it exits.
 
-Every action confirms before it moves the printer. While a job runs the panel shows live progress; when idle it shows, per motor, the **default → tuned** registers and how much **less it vibrates** (measured by the last Show). The buttons drive the same `CHOPPER_*` macros, so anything you can do from the console you can do from the screen.
+Every action confirms before it moves the printer. While a job runs the panel shows live progress; when idle it shows, per motor, the **default → tuned** registers and how much **less it vibrates** (measured by the last Show). The buttons drive the same `CHOPPER_*` macros, so anything you can do from the console you can do from the screen. (`CHOPPER_CURRENT` is console-only for now.)
 
 ![The Chopper panel on KlipperScreen](docs/klipperscreen-panel.png)
 
@@ -130,6 +137,7 @@ CHOPPER_ANALYZE                      ; 3. rank the latest dataset, write the rep
 CHOPPER_ANALYZE APPLY=1              ; apply the winner live via SET_TMC_FIELD
 CHOPPER_ANALYZE SAVE=1               ; persist it into the config and restart Klipper
 CHOPPER_DEMO                         ; play defaults vs the tuned registers so you can hear it
+CHOPPER_CURRENT SAVE=1               ; 4. measured run-current: skip threshold x 2.0 margin
 ```
 
 The same over SSH: `chopper-autotune tune|collect|analyze|…`. Every macro parameter maps 1:1 to a CLI flag (`MEASURE_TIME=1.5` → `--measure-time 1.5`); boolean flags take `1`/`0`. Progress is reported two ways: `M117` sets `display_status.message` (the Mainsail/Fluidd header, LCDs, and the KlipperScreen status line), and a prefixed `RESPOND` echoes each update to the console (Mainsail/Fluidd/KlipperScreen console) — with a `Chopper:` prefix rather than `echo:`, so KlipperScreen does not raise a dismissable notification for every line and swallow taps on the panel. Each channel self-disables if the printer lacks it. The final recommendation stays in the display message.
@@ -151,7 +159,7 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 | `AUDIBLE_WEIGHT` | `0.25` | penalty multiplier for audible chopper frequency |
 | `DRY_RUN` | `0` | print the plan and ETA, do not move anything |
 
-**CHOPPER_FIND_SPEED** — resonance speed scan at the current registers.
+**CHOPPER_FIND_SPEED** — resonance speed scan on stock registers (the tuned ones are set aside for the sweep and restored afterwards).
 
 | parameter | default | meaning |
 |---|---|---|
@@ -211,7 +219,7 @@ CLI-only extras: `chopper-autotune simulate <grid-dataset>` (replay the descent 
 
 ## Stack
 
-Python 3.9+ on the printer host. The klippy API socket for orchestration and sample streaming (no Jinja macro loops; Moonraker HTTP only for `analyze --apply`), `numpy` for metrics, plotly for reports; `scipy` peak detection and Optuna search are planned.
+Python 3.9+ on the printer host. The klippy API socket for orchestration and sample streaming (no Jinja macro loops; Moonraker HTTP only for applying/saving configs), `numpy` for metrics, plotly for reports; peak picking and the search are self-contained — no scipy.
 
 ## Prerequisites
 
@@ -236,16 +244,19 @@ Python 3.9+ on the printer host. The klippy API socket for orchestration and sam
 - [x] Automatic resonance speed detection (`find-speed`, prominence-based peak picking)
 - [x] Forcing spreadCycle during the test when `stealthchop_threshold` is configured; `CHOPPER_STATUS` progress/ETA
 - [x] One-command `CHOPPER_TUNE` pipeline (speed scan → descent per motor → batched `SAVE=1`)
-- [x] Multi-start coordinate-descent search (`--search descent`: AN-001 order, TOFF×HEND-spread seeds to escape the non-separable blind spot, audible-penalty objective, offline `simulate` replay)
-- [ ] Optuna/TPE strategy, early abort of bad candidates mid-move
+- [x] Multi-start coordinate-descent search (`--search descent`: AN-001 order, TOFF×HEND-spread seeds to escape the non-separable blind spot, audible-penalty objective, offline `simulate` replay; measured within ~1% of the full-grid optimum, which retired the Optuna idea)
 - [x] Validation phase: top candidates re-measured with extra runs before recommending (grid and descent)
-- [ ] StallGuard-based current tuning
+- [x] Click-aware scoring: transient clicks counted per move and penalized — the median alone is blind to them (measured)
+- [x] Resonance scan on stock registers — a well-tuned chopper masks the very peak the scan needs
+- [x] Measured run-current tuning (`CHOPPER_CURRENT`): worst-case single-motor stress + endstop referee, bisection to the skip threshold — chosen over StallGuard, which on TMC2209 only works in stealthChop and would miss the (measured) silent slips
+- [ ] The split question: why hend-heavy hysteresis splits stay click-free where hstrt-first splits click (open science, see docs/SCIENCE.md)
+- [ ] Motors beyond `stepper_x`/`stepper_y` (dual Y, IDEX, extruder)
 
 ## Prior art & credits
 
 - [MRX8024/chopper-resonance-tuner](https://github.com/MRX8024/chopper-resonance-tuner) — the original measurement methodology
 - [anton-vinogradov/tmc-chopper-tune](https://github.com/anton-vinogradov/tmc-chopper-tune) — simplified fork, direct predecessor
-- [andrewmcgr/klipper_tmc_autotune](https://github.com/andrewmcgr/klipper_tmc_autotune) — the analytic (no-measurement) approach
+- [andrewmcgr/klipper_tmc_autotune](https://github.com/andrewmcgr/klipper_tmc_autotune) — the analytic (no-measurement) approach; our measured cross-check of its model (and the resulting exchange of bug reports and data) lives in [their issue #339](https://github.com/andrewmcgr/klipper_tmc_autotune/issues/339) and [docs/SCIENCE.md](docs/SCIENCE.md)
 - Trinamic [AN-001: Parameterization of spreadCycle](https://www.analog.com/en/app-notes/AN-001.html)
 
 ## Datasheets

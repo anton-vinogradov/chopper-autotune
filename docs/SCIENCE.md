@@ -3,7 +3,8 @@
 The physics behind chopper tuning, the models we build, and the open questions —
 kept current as the investigation moves. Each claim is tagged: **[datasheet]** comes
 from Trinamic documentation, **[measured]** was observed on the reference printer
-(Ender-6 CoreXY, TMC2209, 24 V, 1.8 A), **[model]** comes from our simulations,
+(Ender-6 CoreXY, TMC2209, 24 V; run current 1.8 A through the early campaigns,
+1.0 A since the current tuning), **[model]** comes from our simulations,
 **[hypothesis]** is the current best guess.
 
 ## What the registers physically do
