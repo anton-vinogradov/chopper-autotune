@@ -5,6 +5,58 @@ from chopper_autotune.find_speed import (build_curve, cruise_for, find_peaks, re
                                          scan_id, smooth)
 
 
+def test_scan_sweeps_on_stock_registers_and_restores(tmp_path, monkeypatch):
+    # a well-tuned config suppresses the very resonance peak the scan looks for,
+    # so the sweep must run on Klipper defaults and restore the tuning afterwards
+    import chopper_autotune.find_speed as fs
+    from chopper_autotune import tmc
+    from chopper_autotune.cli import build_parser
+    from chopper_autotune.collect import Hardware
+
+    class FakeKl:
+        path = '<sock>'
+
+        def __init__(self):
+            self.scripts = []
+
+        def gcode(self, script):
+            self.scripts.append(script)
+
+        def subscribe_accel(self, chip):
+            pass
+
+        def is_printing(self):
+            return False
+
+    kl = FakeKl()
+    baseline = {'tbl': 0, 'toff': 2, 'hstrt': 2, 'hend': 12}
+    hw = Hardware(kl=kl, stepper='stepper_x', driver=tmc.DRIVERS['2209'],
+                  accel_chip='adxl345', kinematics='corexy', axis_span=260,
+                  center=(130, 130), max_accel=10000, baseline=baseline)
+    monkeypatch.setattr(fs, 'detect_hardware', lambda kl_, axis: hw)
+    monkeypatch.setattr(fs, 'measure_baseline', lambda hw_, ds, args, done: None)
+
+    def fake_move(hw_, ds, args, record, speed, cruise, travel, direction, accel, before):
+        record['status'] = 'ok'
+        record['score'] = {'median_magnitude': 100.0}
+        ds.append(record)
+        return record
+
+    monkeypatch.setattr(fs, 'measure_move', fake_move)
+    args = build_parser().parse_args(
+        ['find-speed', '--axis', 'x', '--yes', '--min-speed', '58', '--max-speed', '58',
+         '--dataset', str(tmp_path / 'ds'), '--no-raw'])
+    code, recommended = fs.scan(kl, args)
+    assert code == 0 and recommended is None          # single flat point: no peaks
+
+    sweep_set = next(s for s in kl.scripts if 'FIELD=hend' in s and 'VALUE=0' in s)
+    restore_set = next(s for s in reversed(kl.scripts) if 'FIELD=hend' in s)
+    assert 'VALUE=0' in sweep_set                     # Klipper default hend for the sweep
+    assert 'VALUE=12' in restore_set                  # tuned baseline restored afterwards
+    assert Dataset.open(tmp_path / 'ds').manifest()['scan_registers'] == \
+        tmc.KLIPPER_DEFAULT.fields()
+
+
 def test_cruise_for_respects_travel_limit():
     assert cruise_for(50, 1000, 104, 1.0) == 1.0
     # 120 mm/s: accel path 14.4mm leaves 89.6mm -> 0.747s of cruise

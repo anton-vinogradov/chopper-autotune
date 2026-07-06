@@ -1,4 +1,4 @@
-"""Resonance speed scan: sweep speeds with the current registers, locate vibration peaks."""
+"""Resonance speed scan: sweep speeds with stock registers, locate vibration peaks."""
 from __future__ import annotations
 
 import statistics
@@ -7,7 +7,7 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-from . import __version__
+from . import __version__, tmc
 from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen,
                       default_dataset_root, detect_hardware, enter_spreadcycle,
                       exit_spreadcycle, make_parker, measure_baseline, measure_move, now, park,
@@ -158,6 +158,7 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
         'accel_chip': hw.accel_chip,
         'kinematics': hw.kinematics,
         'registers': hw.baseline,
+        'scan_registers': tmc.KLIPPER_DEFAULT.fields(),
         'accel': accel,
         'measure_time': args.measure_time,
         'trim': args.trim,
@@ -171,6 +172,11 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
     print('Preparing: home XY, park at center, disable motors')
     park(kl, hw)
     enter_spreadcycle(kl, hw)
+    # scan with the stock chopper: a well-tuned config suppresses the very resonance
+    # peaks the scan is looking for (measured: 897 vs 2676 at the same speed)
+    kl.gcode(tmc.set_fields_script(hw.stepper, tmc.KLIPPER_DEFAULT.fields()))
+    print('Scanning with Klipper default registers %s — the current tuning would mask the peaks'
+          % tmc.KLIPPER_DEFAULT.label())
     started = time.time()
     failed = 0
     screen = Screen(kl, hw.display)
@@ -199,8 +205,9 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
                                                         sum(magnitudes) / len(magnitudes)))
             screen.update('Chopper speed scan %d/%d' % (index, len(plan)))
     finally:
-        print('Homing')
+        print('Restoring registers, homing')
         run_restore(
+            lambda: hw.baseline and kl.gcode(tmc.set_fields_script(hw.stepper, hw.baseline)),
             lambda: exit_spreadcycle(kl, hw),
             lambda: kl.gcode('G28 X Y'))
 

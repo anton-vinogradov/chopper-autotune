@@ -65,7 +65,7 @@ candidate on the real machine. The two are complementary:
 A measured optimum that lands on the datasheet edge is a warning sign, not a
 triumph — see below.
 
-## Case study: clicks on the tuned config (July 2026, open)
+## Case study: clicks on the tuned config (July 2026 — resolved)
 
 The tuned configs won the median score convincingly (~2× less vibration than
 Klipper defaults **[measured]**), but motor A's winner sits at effective
@@ -92,18 +92,35 @@ wide-hysteresis current ripple (or a transient at direction reversal)
 occasionally excites a mechanical resonance that rings; a purely electrical
 chopper model cannot reproduce it by construction.
 
-Next steps (need the printer):
+### Resolution (2026-07-06, on hardware)
 
-1. **Click forensics** on raw accelerometer data: where clicks happen in the
-   stroke (reversal vs steady motion), inter-click timing vs the electrical
-   cycle, the ring frequency/decay (= which mechanical mode), and phase lock to
-   the electrical cycle. The analyzer is built and validated on synthetic data.
-2. Measure the motor's **L and R** (V and I are known) to replace the estimates
-   in the models and compute the analytic hysteresis bound for this motor.
-3. The engineering fix, mechanism-agnostic: **bound the hysteresis search** to
-   the model-derived window instead of the full 0..16, and add a **transient
-   penalty** (peak/median or click rate) to the scoring so the winner must be
-   clean, not just quiet on median. Then re-tune and verify.
+The forensics analyzer ran on the real machine, followed by a hysteresis
+ladder (their hstrt-first split, chopper fixed) and a retune:
+
+- **fingerprint [measured]**: no lock to the electrical phase (R ≈ 0.1–0.4), a
+  heavily damped broadband ~300 Hz thump (decay ~1 ms) — an electromechanical
+  kick, not a per-cycle electrical glitch (both models were right to find
+  nothing);
+- **ladder [measured]**: clean at h_eff ≤ 6, sporadic clicks from ≈ 8,
+  explosion at 16 (~5/move, peaks 65–69×); at h_eff −2 the chopper *chatters*
+  (the anti-chatter floor their formula guards — observed live);
+- **correction**: the earlier "their cap of 14 is vindicated" entry was wrong —
+  h_eff 14 with the hstrt-first split clicks too (0.6/stroke); motor B's h14
+  config had simply never been click-checked;
+- **the split matters, not just the total [measured/hypothesis]**: the retuned
+  winners with hend-heavy/balanced splits (A `0/2/2/12`, B `0/2/6/10`) measure
+  zero clicks at h_eff 12–14, where hstrt-first splits click — consistent with
+  the datasheet note that positive HEND improves the sine zero crossings.
+  Open sub-question;
+- **the fix (shipped)**: every measurement now counts transients (rising
+  crossings above 15× the move median, over the whole capture — reversal
+  clicks live outside the steady window) and one click per move is penalized
+  like doubling the vibration. The retune moved both motors to click-free
+  configs at **no vibration cost**: 1.86× less than defaults vs 1.81× of the
+  clicky pair **[measured]**.
+
+L/R refinement moved to the cross-check section (the chatter floor turned out
+to be an in-situ inductance probe).
 
 ## Cross-check: klipper_tmc_autotune's model vs our measured grid (July 2026)
 
@@ -118,8 +135,8 @@ TMC2209, 24 V, 1.8 A) how those predictions actually perform.
 | --- | --- |
 | vibration falls **monotonically** with effective hysteresis (chopper fixed at tbl2/toff1) | 3915 @ h_eff −2 → 1180 @ h_eff 16, a 3.3× span **[measured]** |
 | their formula + their own DB (Creality 42-xx, 24 V, 1.8 A) yields h_eff **−2…+1** | measured 2800–3915 — *worse than Klipper defaults* (2922), bottom 5 % of the grid **[measured]** |
-| their hstrt-first **split** of a given total is near-optimal | at h_eff 14 their split (regs hstrt7/hend9) is the best same-chopper combo (1227); motor B's independently measured winner is *exactly* that config **[measured]** |
-| their **cap** (h_eff 14) is vindicated | h_eff 16 wins the median by ~4 % (1180 vs 1227) but is the config that clicks (see the case study) **[measured]** |
+| their hstrt-first **split** of a given total is near-optimal *on the median* | at h_eff 14 their split (regs hstrt7/hend9) is the best same-chopper combo (1227); motor B's independently measured winner was *exactly* that config **[measured]** |
+| ~~their cap (h_eff 14) is vindicated~~ **corrected 2026-07-06**: the hstrt-first split clicks from h_eff ≈ 8 regardless of the cap | the click ladder (see the case study) shows the *split*, not only the total, governs clicking; hend-heavy splits measure clean at h_eff 12–14 **[measured]** |
 
 Reading: their formula computes the **anti-chatter minimum** — just enough
 hysteresis to cover the unavoidable current ripple — and then uses it as *the*
@@ -170,25 +187,40 @@ does not close the 2–6× gap, it widens it. That leaves **saturation** (a 42-4
 driven at 1.8 A against a 1.0 A rating is deep in saturation; L can drop
 severalfold) and the **objective difference** as the live explanations.
 
-Open questions handed back to us, with the experiments that answer them:
+### Measured answers (2026-07-06, on hardware)
 
-1. *Can saturation be modeled?* We will **measure L at operating current** on
-   our motors (V and I known) and report the small-signal vs saturated ratio —
-   one calibrated data point for a derate curve in their DB.
-2. *Does back-EMF change the chosen values?* Measurable: sweep the
-   vibration-vs-h_eff curve at several speeds; if the optimum shifts with speed
-   (bemf ∝ speed), the static formula needs a speed term. Physics predicts it
-   should: bemf eats drive voltage exactly near the sine zero-crossings where
-   spreadCycle struggles most.
-3. *Is high hysteresis worth its downsides?* The missing measurement is motor
-   **temperature** at floor-vs-cap configs at equal duty — our tool can hold a
-   config and run repeatable moves for that.
+1. *Can saturation be modeled?* **Measured: saturation factor ≈ 2×.** The
+   chatter floor turned out to be an in-situ inductance probe: at 1.8 A the
+   chopper chatters at h_eff −2 and is clean from −1, which implies a natural
+   ripple of ≈ 24 mA — their formula with the small-signal DB inductance
+   predicts ≈ 12 mA. Effective L at 1.8 A on a 1.0 A-rated 42-40 is roughly
+   **half the datasheet figure** (crude: ± half a hysteresis step; R taken
+   from their DB — a multimeter measurement would refine it). A saturated-L
+   field or derate factor in their motor DB would carry this.
+2. *Does back-EMF change the chosen values?* **Second order.** The chatter
+   floor does not visibly shift across 30/58/90 mm/s and the curve keeps its
+   shape; what changes with speed is the *stakes* (at resonance hysteresis
+   spans 3× of vibration, off resonance the curve is nearly flat).
+3. *Is high hysteresis worth its downsides?* Partially answered by the click
+   ladder: past h_eff ≈ 7 the hstrt-first split buys ~10 % of median at the
+   price of audible clicks. The temperature comparison (copper losses) is
+   protocoled but deferred — available on request.
+4. Bonus **[measured]**: at 1.0 A the whole vibration-vs-hysteresis ladder is
+   flat (~940 everywhere) and the audible clicks vanish — both the tuning
+   gains and the clicks are *run-current* phenomena; tune at the current you
+   print with.
 
 ## Practical rules distilled so far
 
 - A winner on the edge of the datasheet-allowed region (effective hysteresis 16)
   is suspect — prefer the interior even at a small median cost.
 - A median-based score needs a transient companion metric; “quiet on average”
-  is not “clean”.
+  is not “clean”. (Implemented: clicks are counted per move and penalized.)
+- The hysteresis **split** matters, not only the total: hend-heavy splits
+  measured clean where hstrt-first splits click, at the same effective total.
+- Tune at the run current and at the resonance speed you actually print with:
+  at 1.0 A the whole hysteresis ladder is flat and the clicks vanish.
+- A resonance scan must run on stock registers — a well-tuned chopper hides
+  the very peak the scan is looking for (897 vs 2676 at the same speed).
 - Analytic bounds and hardware measurement are not competitors: the model draws
   the fence, the measurement picks the spot inside it.
