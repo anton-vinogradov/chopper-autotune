@@ -151,6 +151,39 @@ What we took from their code **[model]**:
   chopper chatters), the datasheet cap is the **ceiling** — the search should
   live between them, not centered on the model value as we first assumed.
 
+### Upstream response ([issue #339](https://github.com/andrewmcgr/klipper_tmc_autotune/issues/339), 2026-07-06)
+
+The maintainer confirmed:
+
+- the motor database carries **datasheet units**: RMS current and *small-signal*
+  inductance — so saturation at run current is indeed un-modelled physics;
+- **TOFF=1/TBL, the fclk fallback and the ×32/32 are bugs** (three of our six
+  questions resolved on the spot);
+- the formula deliberately targets the **minimum recommended hysteresis** —
+  the floor reading is correct — because "there is a downside to too much
+  hysteresis" (higher current ripple → copper losses/motor heating, and our
+  clicks case at the very edge).
+
+Note on units: with RMS current confirmed, converting to peak (×1.414) in the
+counts term makes the predicted floor *lower* still — the RMS/peak convention
+does not close the 2–6× gap, it widens it. That leaves **saturation** (a 42-40
+driven at 1.8 A against a 1.0 A rating is deep in saturation; L can drop
+severalfold) and the **objective difference** as the live explanations.
+
+Open questions handed back to us, with the experiments that answer them:
+
+1. *Can saturation be modeled?* We will **measure L at operating current** on
+   our motors (V and I known) and report the small-signal vs saturated ratio —
+   one calibrated data point for a derate curve in their DB.
+2. *Does back-EMF change the chosen values?* Measurable: sweep the
+   vibration-vs-h_eff curve at several speeds; if the optimum shifts with speed
+   (bemf ∝ speed), the static formula needs a speed term. Physics predicts it
+   should: bemf eats drive voltage exactly near the sine zero-crossings where
+   spreadCycle struggles most.
+3. *Is high hysteresis worth its downsides?* The missing measurement is motor
+   **temperature** at floor-vs-cap configs at equal duty — our tool can hold a
+   config and run repeatable moves for that.
+
 ## Practical rules distilled so far
 
 - A winner on the edge of the datasheet-allowed region (effective hysteresis 16)
