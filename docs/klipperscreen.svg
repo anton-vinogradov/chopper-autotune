@@ -11,7 +11,7 @@
   <rect x="40" y="92" width="720" height="56" fill="#12293f"/>
   <circle cx="76" cy="120" r="11" fill="none" stroke="#7fb3e3" stroke-width="2"/>
   <path d="M70 128 l-4 7 l10 -4" fill="#12293f" stroke="#7fb3e3" stroke-width="2" stroke-linejoin="round"/>
-  <text x="102" y="128" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="21" fill="#cfe4f7">Chopper 65%  2095/3210  ETA 1:29</text>
+  <text x="102" y="128" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="21" fill="#cfe4f7">Chopper cand 128: 864</text>
 
   <g font-family="system-ui, sans-serif">
     <rect x="60" y="168" width="330" height="70" rx="8" fill="#232329"/>
