@@ -199,6 +199,25 @@ def build_parser() -> argparse.ArgumentParser:
     sv = sub.add_parser('save', help='save the latest tuning result for each motor into the config')
     sv.add_argument('--audible-weight', type=float, default=0.25)
     sv.add_argument('--url', default='http://127.0.0.1:7125')
+
+    cur = sub.add_parser('current', help='find the minimal safe run current per motor '
+                                         '(worst-case stress, endstop referee)')
+    cur.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y', 'xy'),
+                     default='xy', help='motor a/b/ab (a=stepper_x, b=stepper_y); default ab')
+    cur.add_argument('--margin', type=float, default=2.0,
+                     help='recommended current = skip threshold x this margin, default 2.0')
+    cur.add_argument('--min-current', type=float, default=0.3,
+                     help='search floor in amps, default 0.3')
+    cur.add_argument('--resolution', type=float, default=0.05,
+                     help='threshold resolution in amps, default 0.05')
+    cur.add_argument('--accel', type=float, default=None,
+                     help='stress acceleration, default printer max_accel (the worst case)')
+    cur.add_argument('--save', action='store_true',
+                     help='write the recommended run_current into the config and restart')
+    cur.add_argument('--socket', default=None)
+    cur.add_argument('--url', default='http://127.0.0.1:7125')
+    cur.add_argument('--dry-run', action='store_true')
+    cur.add_argument('-y', '--yes', action='store_true')
     return parser
 
 
@@ -216,6 +235,9 @@ def main(argv=None) -> int:
     if args.command == 'save':
         from .analyze import run_save_latest
         return run_save_latest(args)
+    if args.command == 'current':
+        from .current import run_current_tune
+        return run_current_tune(args)
     if args.command == 'tune':
         from .tune import run_tune
         return run_tune(args)

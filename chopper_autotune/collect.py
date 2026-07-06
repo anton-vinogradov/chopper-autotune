@@ -55,6 +55,12 @@ def motor_label(axis: str) -> str:
     return {'x': 'A', 'y': 'B'}.get(axis.lower(), axis.upper())
 
 
+def coupled_xy(kinematics: str) -> bool:
+    """True when stepper_x/stepper_y jointly drive X and Y (CoreXY/H-Bot): a pure X
+    move splits the load between both motors, and per-motor speeds need a diagonal."""
+    return kinematics in ('corexy', 'hbot')
+
+
 @dataclass
 class Hardware:
     kl: Klippy

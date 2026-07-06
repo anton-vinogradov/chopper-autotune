@@ -72,7 +72,7 @@ def test_run_save_backs_up_edits_and_restarts(capsys):
     assert mk.files['printer.chopper-backup.cfg'] == CFG
     assert 'driver_TOFF: 8' in mk.files['printer.cfg']
     assert mk.scripts == ['RESTART']
-    assert 'Saved to printer.cfg' in capsys.readouterr().out
+    assert 'Saved the new registers to printer.cfg' in capsys.readouterr().out
 
 
 def test_run_save_refuses_when_printing():

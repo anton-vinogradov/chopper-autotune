@@ -184,6 +184,19 @@ def write_report(ranked: 'list[dict]', driver: tmc.Driver, title: str, path: str
         f.write('\n'.join(parts))
 
 
+def _section_span(lines: 'list[str]', section: str) -> 'tuple[int, int]':
+    header = re.compile(r'^\[%s\]\s*(?:[#;].*)?$' % re.escape(section))
+    starts = [i for i, line in enumerate(lines) if header.match(line.strip('\r\n'))]
+    if not starts:
+        raise SystemExit('section [%s] not found' % section)
+    if len(starts) > 1:
+        raise SystemExit('section [%s] found %d times' % (section, len(starts)))
+    start = starts[0]
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith('[')),
+               len(lines))
+    return start, end
+
+
 def updated_config(text: str, section: str, fields: dict) -> str:
     """Rewrite the driver_* options of one config section, keeping everything else intact.
 
@@ -191,19 +204,21 @@ def updated_config(text: str, section: str, fields: dict) -> str:
     as history), the new values are inserted right under the section header.
     """
     lines = text.splitlines(keepends=True)
-    header = re.compile(r'^\[%s\]\s*(?:[#;].*)?$' % re.escape(section))
-    starts = [i for i, line in enumerate(lines) if header.match(line.strip('\r\n'))]
-    if not starts:
-        raise SystemExit('section [%s] not found' % section)
-    if len(starts) > 1:
-        raise SystemExit('section [%s] found %d times' % (section, len(starts)))
-
-    start = starts[0]
-    end = next((i for i in range(start + 1, len(lines)) if lines[i].lstrip().startswith('[')),
-               len(lines))
+    start, end = _section_span(lines, section)
     drop = re.compile(r'^\s*driver_(%s)\s*[:=]' % '|'.join(fields), re.IGNORECASE)
     body = [line for line in lines[start + 1:end] if not drop.match(line)]
     inserted = ['driver_%s: %d\n' % (name.upper(), value) for name, value in fields.items()]
+    return ''.join(lines[:start + 1] + inserted + body + lines[end:])
+
+
+def updated_scalars(text: str, section: str, entries: 'dict[str, str]') -> str:
+    """Rewrite plain options of one config section (e.g. run_current), same rules
+    as updated_config: active lines dropped, new values under the header."""
+    lines = text.splitlines(keepends=True)
+    start, end = _section_span(lines, section)
+    drop = re.compile(r'^\s*(%s)\s*[:=]' % '|'.join(map(re.escape, entries)), re.IGNORECASE)
+    body = [line for line in lines[start + 1:end] if not drop.match(line)]
+    inserted = ['%s: %s\n' % (name, value) for name, value in entries.items()]
     return ''.join(lines[:start + 1] + inserted + body + lines[end:])
 
 
@@ -235,14 +250,12 @@ def active_config_files(mk, root: str = 'printer.cfg') -> 'dict[str, str]':
     return active
 
 
-def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]'):
-    """Persist winners into the Klipper config through the Moonraker files API.
-
-    All edits are applied in memory first, then every touched file is backed up,
+def _persist(mk, edits: 'list[tuple[str, object]]', what: str):
+    """Apply per-section edit functions to the live config through the Moonraker
+    files API: all edits in memory first, then every touched file is backed up,
     then the edits are uploaded and Klipper restarted once. A failure mid-upload
     can leave files from different items out of sync, but the originals are
-    already backed up by that point.
-    """
+    already backed up by that point."""
     if mk.is_printing():
         raise SystemExit('printer is busy printing, not touching the config')
     files = {name: content for name, content in active_config_files(mk).items()
@@ -251,8 +264,7 @@ def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]'):
         raise SystemExit('could not read printer.cfg via Moonraker')
     originals = dict(files)
     edited = []
-    for manifest, combo in items:
-        section = 'tmc%s %s' % (manifest['driver'], manifest['stepper'])
+    for section, edit in edits:
         matches = [name for name in files
                    if re.search(r'^\[%s\]' % re.escape(section), files[name], re.MULTILINE)]
         if not matches:
@@ -261,7 +273,7 @@ def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]'):
             raise SystemExit('section [%s] found in several files: %s'
                              % (section, ', '.join(matches)))
         name = matches[0]
-        files[name] = updated_config(files[name], section, combo.fields())
+        files[name] = edit(files[name], section)
         if name not in edited:
             edited.append(name)
 
@@ -270,8 +282,24 @@ def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]'):
     for name in edited:
         mk.upload_config(name, files[name])
     mk.gcode('RESTART')
-    print('\nSaved to %s (backups: *%s), Klipper is restarting with the new registers'
-          % (', '.join(edited), BACKUP_SUFFIX))
+    print('\nSaved %s to %s (backups: *%s), Klipper is restarting'
+          % (what, ', '.join(edited), BACKUP_SUFFIX))
+
+
+def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]'):
+    """Persist chopper winners into the Klipper config, one restart for the batch."""
+    _persist(mk, [('tmc%s %s' % (manifest['driver'], manifest['stepper']),
+                   lambda text, section, combo=combo: updated_config(text, section,
+                                                                     combo.fields()))
+                  for manifest, combo in items], 'the new registers')
+
+
+def run_save_currents(mk, items: 'list[tuple[str, str, float]]'):
+    """Persist (driver, stepper, amps) run currents, one restart for the batch."""
+    _persist(mk, [('tmc%s %s' % (driver, stepper),
+                   lambda text, section, amps=amps: updated_scalars(text, section,
+                                                                    {'run_current': '%.2f' % amps}))
+                  for driver, stepper, amps in items], 'the new run currents')
 
 
 def run_save_latest(args) -> int:
