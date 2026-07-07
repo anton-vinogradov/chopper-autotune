@@ -234,6 +234,23 @@ motor is not the limit here." (The referee's unit test was rebuilt around a
 physical-position model so the non-monotonic back-off is checked honestly — the
 old path-length fake only passed by luck.)
 
+**Jul 8 — the resonance map, and a real print-speed answer (`CHOPPER_MAP`).** The
+envelope's companion: a wide vibration-vs-speed sweep on the *current* (tuned)
+registers — the vibration you actually feel, unlike `find-speed`, which scans on
+stock to expose the peak it needs. On motor A at 1.0 A the map is quiet below
+~90 mm/s, then rings in two bands: peaks around **130–140** and **200–210**, with
+a quiet dip near **170** and a descent past **240**. The first output framing was
+wrong — its "quietest band" collapsed to the slowest speed, because vibration
+rises monotonically off the noise floor, so the global minimum is always at the
+low end. Fixed by picking **local minima** (the mirror of the peak finder) as the
+good cruise speeds, and by naming the defect: cruising on a motor resonance is
+what makes **VFAs** (fine vertical banding). With `PRINT_SPEED=200` the tool now
+says it straight: *"200 mm/s measures 1659 — quieter nearby: 160 mm/s (−24 %),
+240 mm/s (−26 %)."* So the printer's usual speed sits on a bump, and there are
+measurably quieter speeds a step away — an honest answer to "which speed should I
+print at" that stays inside what the accelerometer can claim (peaks to avoid, not
+a speed limit; that limit is flow and the shaper).
+
 </details>
 
 ---
@@ -248,10 +265,12 @@ old path-length fake only passed by luck.)
 - **Optional measurements.** Phase R with a multimeter (would sharpen the
   saturation number); floor-vs-cap temperature — *cancelled*, at 1.0 A the
   hysteresis heat effect sinks below the noise.
-- **The resonance map.** `CHOPPER_ENVELOPE` shipped (the torque ceiling, with a
-  fast referee — see Direction IV). Its natural companion is a wide `find-speed`
-  giving vibration-vs-speed, so one report shows both the motor's quiet speed band
-  and its hard ceiling. Not built yet.
+- **More from the same instrument.** The accelerometer measures one thing —
+  vibration — so what's left to improve is the rest of the vibration-source
+  catalog. Open and accelerometer-native: **belt-tension match** (resonance-compare
+  the two CoreXY belts, say which to tighten) and a **ringing-vs-acceleration
+  ceiling** (the surface-quality accel limit the envelope defers to the shaper).
+  Input shaping itself stays Klipper's job — we're orthogonal to it.
 - **Real-print verification.** Motor temperature (1.0 A vs 1.8 A, thermal
   camera), a defaults-vs-tuned surface A/B, and no layer shifts at 200 mm/s.
 

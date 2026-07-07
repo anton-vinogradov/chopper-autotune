@@ -257,6 +257,8 @@ Python 3.9+ on the printer host. The klippy API socket for orchestration and sam
 - [x] Measured run-current tuning (`CHOPPER_CURRENT`): worst-case single-motor stress + endstop referee, bisection to the skip threshold — chosen over StallGuard, which on TMC2209 only works in stealthChop and would miss the (measured) silent slips
 - [x] Motor torque envelope (`CHOPPER_ENVELOPE`): speed and acceleration ceilings before skipped steps, same endstop referee — caps the top of the resonance map and separates the motor limit from the (usually binding) hotend-flow limit
 - [x] Resonance map (`CHOPPER_MAP`): wide vibration-vs-speed sweep on the current registers — which speeds ring vs stay quiet, framed honestly as the motor's vibration signature rather than a print-speed limit (flow and the shaper set that)
+- [ ] Belt-tension match (CoreXY): resonance-compare the two belts/motors and say which to tighten — accelerometer-native, complements the per-motor chopper work
+- [ ] Ringing-vs-acceleration ceiling: the surface-quality accel limit the envelope defers to the shaper, measured as residual vibration vs acceleration — pairs with the torque ceiling
 - [ ] The split question: why hend-heavy hysteresis splits stay click-free where hstrt-first splits click (open science, see docs/SCIENCE.md)
 - [ ] Motors beyond `stepper_x`/`stepper_y` (dual Y, IDEX, extruder)
 

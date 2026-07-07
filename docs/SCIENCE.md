@@ -258,5 +258,9 @@ path-length model would only pass by luck.)
   motor.
 - A resonance scan must run on stock registers — a well-tuned chopper hides
   the very peak the scan is looking for (897 vs 2676 at the same speed).
+- VFAs (fine vertical banding) are a *speed* symptom, not a register one: they
+  come from cruising on a motor resonance. Map the vibration vs speed on the
+  registers you print with and cruise in the dips, not on the peaks — on this rig
+  200 mm/s sat on a bump with 160/240 mm/s measurably quieter.
 - Analytic bounds and hardware measurement are not competitors: the model draws
   the fence, the measurement picks the spot inside it.
