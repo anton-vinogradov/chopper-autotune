@@ -1,11 +1,15 @@
 # The science
 
-The physics behind chopper tuning, the models we build, and the open questions —
-kept current as the investigation moves. Each claim is tagged: **[datasheet]** comes
-from Trinamic documentation, **[measured]** was observed on the reference printer
-(Ender-6 CoreXY, TMC2209, 24 V; run current 1.8 A through the early campaigns,
-1.0 A since the current tuning), **[model]** comes from our simulations,
-**[hypothesis]** is the current best guess.
+The physics behind chopper tuning and the conclusions we've measured — the
+topical reference. For *how and when* each result was found (the models tried,
+the dead ends, the dates, the upstream exchange), see the companion dated
+[CHRONICLE.md](CHRONICLE.md).
+
+Each claim is tagged: **[datasheet]** comes from Trinamic documentation,
+**[measured]** was observed on the reference printer (Ender-6 CoreXY, TMC2209,
+24 V; run current 1.8 A through the early campaigns, 1.0 A since the current
+tuning), **[model]** comes from our simulations, **[hypothesis]** is the current
+best guess.
 
 ## What the registers physically do
 
@@ -47,7 +51,7 @@ One spreadCycle chopper cycle **[datasheet]**:
   *computed* from the registers instead and penalised when audible.
 - Per-move score = **median** magnitude: robust against sample noise, but
   **blind to rare transients** — a config can win the median while producing
-  audible clicks (see the case study) **[measured]**.
+  audible clicks (see below) **[measured]**.
 - The forward/reverse difference is real signal, not noise: configs are ranked
   by the **mean across directions**, so a config must be quiet both ways **[measured]**.
 
@@ -66,156 +70,98 @@ candidate on the real machine. The two are complementary:
 A measured optimum that lands on the datasheet edge is a warning sign, not a
 triumph — see below.
 
-## Case study: clicks on the tuned config (July 2026 — resolved)
+## The clicks: the split governs them, not the total
 
-The tuned configs won the median score convincingly (~2× less vibration than
-Klipper defaults **[measured]**), but motor A's winner sits at effective
-hysteresis **16 — the datasheet maximum** — and produces sporadic audible clicks
-the scoring never saw.
+A config can win the median while producing sporadic **audible clicks** the
+median never sees. On the reference rig the datasheet-edge winner (effective
+hysteresis 16) peaked ~65× the median, ~2 clicks per one-second move, and
+clicked even under a single-motor `FORCE_MOVE` — so it is the *config*, not the
+showcase trajectory; Klipper defaults are clean under the identical move
+**[measured]**.
 
-Facts **[measured]**:
+It is **electromechanical, not electrical.** Neither electrical mechanism
+reproduces it — both were modeled and ruled out (the modeling is in the
+[chronicle](CHRONICLE.md)): the current overshoot at the sine zero crossing is
+the same across configs, and the chopper loop is stable by construction (fixed
+off-time; Floquet multipliers ≈ 1) **[model]**. On hardware the click has no
+lock to the electrical phase (R ≈ 0.1–0.4) and rings as a heavily damped
+broadband ~300 Hz thump (decay ~1 ms) — a mechanical kick **[measured]**.
 
-- clicks: accelerometer peak ~65× the median, ~2 clicks per 1 s move ≈ one per
-  ~36 electrical cycles — rare and intermittent, not per-cycle;
-- Klipper defaults are clean under the identical move;
-- single-motor `FORCE_MOVE` clicks too → it is the *config*, not the diagonal
-  showcase trajectory.
+**The split governs it, not the total [measured].** Sweeping effective
+hysteresis with the hstrt-first split: clean at h_eff ≤ 6, sporadic clicks from
+≈ 8, explosion at 16 (~5/move, peaks 65–69×); yet hend-heavy/balanced splits —
+the retuned winners A `0/2/2/12`, B `0/2/6/10` — measure zero clicks at the same
+h_eff 12–14. Consistent with the datasheet note that positive HEND improves the
+sine zero crossings; *why* is an open sub-question **[hypothesis]**. (This
+corrected an earlier guess that the datasheet cap of 14 was inherently clean — it
+clicks too, with the wrong split.)
 
-Models built, hypotheses falsified:
+**The fix.** Every capture counts transients — rising crossings above 15× the
+move median, over the whole capture, since reversal clicks live outside the
+steady window — and one click per move is penalized like doubling the vibration.
+The retune landed both motors click-free at **no vibration cost**: 1.86× less
+than defaults, vs 1.81× for the clicky pair **[measured]**.
 
-| model | question | outcome |
-| --- | --- | --- |
-| time-domain RL + spreadCycle state machine | is the current overshoot at the sine zero-crossing bigger on the tuned config? | reproduces the vibration ordering (tuned < default ripple), but the zero-crossing overshoot is the same across configs → **zero-crossing hypothesis rejected [model]** |
-| cycle-to-cycle stability (Floquet multiplier at constant current) | does the chopper loop go subharmonic at high hysteresis? | multipliers ≈ 1.0 for all configs, no config-specific instability; a fixed-off-time regulator is stable by construction → **loop-instability hypothesis rejected [model]** |
+## Cross-check against the analytic model
 
-Working hypothesis **[hypothesis]**: the click is *electromechanical* — the
-wide-hysteresis current ripple (or a transient at direction reversal)
-occasionally excites a mechanical resonance that rings; a purely electrical
-chopper model cannot reproduce it by construction.
-
-### Resolution (2026-07-06, on hardware)
-
-The forensics analyzer ran on the real machine, followed by a hysteresis
-ladder (their hstrt-first split, chopper fixed) and a retune:
-
-- **fingerprint [measured]**: no lock to the electrical phase (R ≈ 0.1–0.4), a
-  heavily damped broadband ~300 Hz thump (decay ~1 ms) — an electromechanical
-  kick, not a per-cycle electrical glitch (both models were right to find
-  nothing);
-- **ladder [measured]**: clean at h_eff ≤ 6, sporadic clicks from ≈ 8,
-  explosion at 16 (~5/move, peaks 65–69×); at h_eff −2 the chopper *chatters*
-  (the anti-chatter floor their formula guards — observed live);
-- **correction**: the earlier "their cap of 14 is vindicated" entry was wrong —
-  h_eff 14 with the hstrt-first split clicks too (0.6/stroke); motor B's h14
-  config had simply never been click-checked;
-- **the split matters, not just the total [measured/hypothesis]**: the retuned
-  winners with hend-heavy/balanced splits (A `0/2/2/12`, B `0/2/6/10`) measure
-  zero clicks at h_eff 12–14, where hstrt-first splits click — consistent with
-  the datasheet note that positive HEND improves the sine zero crossings.
-  Open sub-question;
-- **the fix (shipped)**: every measurement now counts transients (rising
-  crossings above 15× the move median, over the whole capture — reversal
-  clicks live outside the steady window) and one click per move is penalized
-  like doubling the vibration. The retune moved both motors to click-free
-  configs at **no vibration cost**: 1.86× less than defaults vs 1.81× of the
-  clicky pair **[measured]**.
-
-L/R refinement moved to the cross-check section (the chatter floor turned out
-to be an in-situ inductance probe).
-
-## Cross-check: klipper_tmc_autotune's model vs our measured grid (July 2026)
-
-We transcribed the hysteresis formula from
-[klipper_tmc_autotune](https://github.com/andrewmcgr/klipper_tmc_autotune)
-(`motor_constants.hysteresis()`: hysteresis sized to the natural current change
-over one blank + two slow-decay intervals) verbatim, fed it their own motor
-database entries, and asked our measured 3540-combo grid (motor A, 58 mm/s,
-TMC2209, 24 V, 1.8 A) how those predictions actually perform.
+`motor_constants.hysteresis()` in
+[klipper_tmc_autotune](https://github.com/andrewmcgr/klipper_tmc_autotune) sizes
+the hysteresis to the natural current change over one blank + two slow-decay
+intervals, from L, R, V and the run current. Transcribed verbatim, fed its own
+motor-database entries, and run against our measured 3540-combo grid (motor A,
+58 mm/s, 24 V, 1.8 A):
 
 | finding | data |
 | --- | --- |
 | vibration falls **monotonically** with effective hysteresis (chopper fixed at tbl2/toff1) | 3915 @ h_eff −2 → 1180 @ h_eff 16, a 3.3× span **[measured]** |
-| their formula + their own DB (Creality 42-xx, 24 V, 1.8 A) yields h_eff **−2…+1** | measured 2800–3915 — *worse than Klipper defaults* (2922), bottom 5 % of the grid **[measured]** |
-| their hstrt-first **split** of a given total is near-optimal *on the median* | at h_eff 14 their split (regs hstrt7/hend9) is the best same-chopper combo (1227); motor B's independently measured winner was *exactly* that config **[measured]** |
-| ~~their cap (h_eff 14) is vindicated~~ **corrected 2026-07-06**: the hstrt-first split clicks from h_eff ≈ 8 regardless of the cap | the click ladder (see the case study) shows the *split*, not only the total, governs clicking; hend-heavy splits measure clean at h_eff 12–14 **[measured]** |
+| the formula + its own DB (Creality 42-xx, 24 V, 1.8 A) yields h_eff **−2…+1** | measured 2800–3915 — *worse than Klipper defaults* (2922), bottom 5 % of the grid **[measured]** |
+| the hstrt-first **split** of a given total is near-optimal on the median | at h_eff 14 the split (regs hstrt7/hend9) is the best same-chopper combo (1227); motor B's independent winner was exactly it **[measured]** |
+| the datasheet cap alone is not the clean/clicky boundary | the hstrt-first split clicks from h_eff ≈ 8 regardless of the cap; the *split* governs clicking (see above), not the total **[measured]** |
 
-Reading: their formula computes the **anti-chatter minimum** — just enough
-hysteresis to cover the unavoidable current ripple — and then uses it as *the*
-setting. The measured **vibration optimum sits near the cap**, 2–6× above that
-minimum (for their formula to output h_eff 14 at 1.8 A the natural ripple would
-have to be ~78 mA; their DB values for a 42-40 give ~12 mA). Plausible missing
-pieces: small-signal DB inductance (saturation at run current lowers L and
-raises the real ripple), peak-vs-RMS current convention, back-EMF at speed —
-or simply a different objective (minimum viable ≠ minimum vibration). We are
-taking these to the community as questions.
+The formula computes the **anti-chatter floor** — just enough hysteresis to
+cover the unavoidable ripple — and uses it as the setting; the measured
+**vibration optimum sits near the cap**, 2–6× above that floor (for the formula
+to output h_eff 14 at 1.8 A the natural ripple would have to be ~78 mA; its DB
+gives ~12 mA for a 42-40).
 
-Caveats: their exact 2209 default chopper (tbl1/toff1) is not in our grid — we
-exclude `TOFF=1` with `TBL<2` per the datasheet note (their code only bumps
-TBL 0→1, another upstream question); the nearest tbl2/toff1 cells were used.
-Grid cells are n=2, but the trend spans 19 hysteresis levels smoothly.
+**The gap is saturation, and it is ~2× [measured].** The chatter floor is an
+in-situ inductance probe: at 1.8 A the chopper chatters at h_eff −2 and is clean
+from −1, implying a natural ripple ≈ 24 mA against the ≈ 12 mA the small-signal
+DB inductance predicts — effective L at run current is about **half** the
+datasheet figure (a 42-40 rated 1.0 A driven at 1.8 A RMS is deep in
+saturation). The maintainer confirmed the DB carries datasheet units (RMS
+current, small-signal L), so this is genuinely un-modelled physics; a
+saturated-L / derate field would carry it. The RMS→peak convention would only
+*widen* the gap, and **back-EMF is second order** (the chatter floor does not
+shift across 30/58/90 mm/s — what changes with speed is the stakes, not the
+choice). The full exchange — including three of our six questions acknowledged
+as bugs (the TOFF=1/TBL guard, the fclk fallback, the cancelling ×32/32) — is in
+[issue #339](https://github.com/andrewmcgr/klipper_tmc_autotune/issues/339) and
+walked through in the [chronicle](CHRONICLE.md).
 
-What we took from their code **[model]**:
+Caveat: the exact 2209 default chopper (tbl1/toff1) is not in our grid — we
+exclude `TOFF=1` with `TBL<2` per the datasheet — so the nearest tbl2/toff1 cells
+were used; cells are n=2 but the trend spans 19 hysteresis levels smoothly.
 
-- **our blank-time table was wrong for TMC2208/2209** (16/24/32/40 clocks, not
-  16/24/36/54) — found by diffing their `_tblank_cycles()` against ours; fixed
-  in `tmc.py` (slightly shifts the audible-frequency estimate);
+What the cross-check put into our own code **[model]**:
+
+- **the blank-time table was wrong for TMC2208/2209** (16/24/32/40 clocks, not
+  16/24/36/54) — found by diffing their `_tblank_cycles()`; fixed in `tmc.py`
+  (slightly shifts the audible-frequency estimate);
 - our simulator modeled one slow-decay phase per chopper cycle; the real
   spreadCycle sequence is on → slow decay → fast decay → **second slow decay**
   — a refinement for the next model iteration;
-- a cheaper search: since vibration is near-monotonic in h_eff and their split
-  is near-optimal, the hysteresis plane can first be swept as a **single h_eff
-  line** (parametrized by their split), then refined locally;
-- click-fix bounds sharpened: their formula is a **floor** (below it the
-  chopper chatters), the datasheet cap is the **ceiling** — the search should
-  live between them, not centered on the model value as we first assumed.
+- a cheaper search: since vibration is near-monotonic in h_eff and the split is
+  near-optimal, the hysteresis plane can be swept first as a **single h_eff
+  line** (parametrized by the split), then refined locally;
+- the click-fix bounds: the analytic formula is a **floor** (below it the
+  chopper chatters), the datasheet cap is the **ceiling** — the search lives
+  between them.
 
-### Upstream response ([issue #339](https://github.com/andrewmcgr/klipper_tmc_autotune/issues/339), 2026-07-06)
+## Run current: the master knob
 
-The maintainer confirmed:
-
-- the motor database carries **datasheet units**: RMS current and *small-signal*
-  inductance — so saturation at run current is indeed un-modelled physics;
-- **TOFF=1/TBL, the fclk fallback and the ×32/32 are bugs** (three of our six
-  questions resolved on the spot);
-- the formula deliberately targets the **minimum recommended hysteresis** —
-  the floor reading is correct — because "there is a downside to too much
-  hysteresis" (higher current ripple → copper losses/motor heating, and our
-  clicks case at the very edge).
-
-Note on units: with RMS current confirmed, converting to peak (×1.414) in the
-counts term makes the predicted floor *lower* still — the RMS/peak convention
-does not close the 2–6× gap, it widens it. That leaves **saturation** (a 42-40
-driven at 1.8 A against a 1.0 A rating is deep in saturation; L can drop
-severalfold) and the **objective difference** as the live explanations.
-
-### Measured answers (2026-07-06, on hardware)
-
-1. *Can saturation be modeled?* **Measured: saturation factor ≈ 2×.** The
-   chatter floor turned out to be an in-situ inductance probe: at 1.8 A the
-   chopper chatters at h_eff −2 and is clean from −1, which implies a natural
-   ripple of ≈ 24 mA — their formula with the small-signal DB inductance
-   predicts ≈ 12 mA. Effective L at 1.8 A on a 1.0 A-rated 42-40 is roughly
-   **half the datasheet figure** (crude: ± half a hysteresis step; R taken
-   from their DB — a multimeter measurement would refine it). A saturated-L
-   field or derate factor in their motor DB would carry this.
-2. *Does back-EMF change the chosen values?* **Second order.** The chatter
-   floor does not visibly shift across 30/58/90 mm/s and the curve keeps its
-   shape; what changes with speed is the *stakes* (at resonance hysteresis
-   spans 3× of vibration, off resonance the curve is nearly flat).
-3. *Is high hysteresis worth its downsides?* Partially answered by the click
-   ladder: past h_eff ≈ 7 the hstrt-first split buys ~10 % of median at the
-   price of audible clicks. The temperature comparison (copper losses) is
-   protocoled but deferred — available on request.
-4. Bonus **[measured]**: at 1.0 A the whole vibration-vs-hysteresis ladder is
-   flat (~940 everywhere) and the audible clicks vanish — both the tuning
-   gains and the clicks are *run-current* phenomena; tune at the current you
-   print with.
-
-## Run current: the master knob (July 2026)
-
-The clicks campaign ended at a bigger question: why 1.8 A on 1.0 A-rated motors?
-Because at lower currents the printer used to skip steps. We built a
-skipped-step detector and measured instead of believing:
+Why 1.8 A on 1.0 A-rated motors? Because at lower currents the printer used to
+skip steps — so we measured the skip threshold instead of guessing at it:
 
 - **The referee.** A skipped step is quantized — one electrical cycle = 4 full
   steps ≈ 0.8 mm of belt — and always lands as a position offset. Creeping
