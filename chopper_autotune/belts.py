@@ -20,6 +20,7 @@ from .klippy import Klippy, find_socket
 
 SEGMENT = 1024              # Welch window; ~0.3 s at the ADXL's ~3.2 kHz -> ~3 Hz resolution
 MATCH_TOLERANCE = 5.0       # percent apart below which the belts count as matched
+MAX_HZ_PER_SEC = 2.0        # Klipper caps the sweep rate here
 
 
 def welch_peak(path: str, band: 'tuple[float, float]') -> 'tuple[float, float]':
@@ -76,6 +77,9 @@ def belts(kl: Klippy, args) -> int:
                          'input-shaper calibration) — TEST_RESONANCES drives the excitation')
 
     band = (float(args.min_freq), float(args.max_freq))
+    hz_per_sec = min(args.hz_per_sec, MAX_HZ_PER_SEC)   # Klipper rejects a faster sweep
+    if hz_per_sec < args.hz_per_sec:
+        print('Capping sweep rate to %g Hz/s (Klipper maximum)' % MAX_HZ_PER_SEC)
     print('Belt-tension match on %s: swept-sine %g-%g Hz per belt (motor A = head 1,1, '
           'motor B = head 1,-1), response spectrum computed here.'
           % (hw.kinematics, band[0], band[1]))
@@ -101,7 +105,7 @@ def belts(kl: Klippy, args) -> int:
             print(' exciting belt %s (head diagonal %s)...' % (label, axis))
             kl.gcode('TEST_RESONANCES AXIS=%s OUTPUT=raw_data NAME=belt%s '
                      'FREQ_START=%g FREQ_END=%g HZ_PER_SEC=%g\nM400'
-                     % (axis, label, band[0], band[1], args.hz_per_sec))
+                     % (axis, label, band[0], band[1], hz_per_sec))
             path = (max(glob.glob('/tmp/raw_data_*belt%s*.csv' % label), key=os.path.getmtime, default=None))
             if path is None:
                 raise SystemExit('TEST_RESONANCES produced no raw capture for belt %s — '
