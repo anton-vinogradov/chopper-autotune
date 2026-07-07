@@ -200,8 +200,11 @@ depends on the current.
 
 ## Practical rules distilled so far
 
-- A winner on the edge of the datasheet-allowed region (effective hysteresis 16)
-  is suspect — prefer the interior even at a small median cost.
+- A winner on the edge (max hysteresis, or a chopper frequency barely above the
+  audible band) is suspect. The score carries a small tie-breaker toward interior
+  hysteresis and frequency margin, so when the vibration ladder is flat — typically
+  at a low run current, where the chopper barely affects vibration — the tuner picks
+  the safe config on its own instead of landing on an edge at random.
 - A median-based score needs a transient companion metric; “quiet on average”
   is not “clean”. (Implemented: clicks are counted per move and penalized.)
 - The hysteresis **split** matters, not only the total: hend-heavy splits
