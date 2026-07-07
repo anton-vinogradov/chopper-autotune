@@ -83,6 +83,10 @@ and the run-current campaign (chopper tuning buys ~2.5× of torque margin —
 spend it on a lower current). Negative results included; updated as the
 investigation moves.
 
+For the story rather than the physics, [docs/CHRONICLE.md](docs/CHRONICLE.md) is
+the same research as a dated log — three directions, each with a spoiler that
+walks from the first symptom to the shipped result.
+
 ## Two runs by design
 
 The tool is deliberately split into two commands sharing one on-disk dataset (`manifest.json` + `measurements.jsonl` + gzipped raw accelerometer CSVs):
