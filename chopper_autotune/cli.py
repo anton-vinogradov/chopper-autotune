@@ -173,7 +173,8 @@ def build_parser() -> argparse.ArgumentParser:
                                      'say which to tighten')
     b.add_argument('--min-freq', type=float, default=30.0, help='sweep start in Hz, default 30')
     b.add_argument('--max-freq', type=float, default=200.0, help='sweep end in Hz, default 200')
-    b.add_argument('--hz-per-sec', type=float, default=3.0, help='sweep rate, default 3 Hz/s')
+    b.add_argument('--hz-per-sec', type=float, default=2.0,
+                   help='sweep rate in Hz/s, default 2 (Klipper maximum)')
     b.add_argument('--tolerance', type=float, default=5.0,
                    help='percent apart below which the belts count as matched, default 5')
     b.add_argument('--socket', default=None)
