@@ -32,60 +32,76 @@ def test_bisect_threshold_converges():
     assert len(calls) <= 5                         # log2(0.7 / 0.05) rungs
 
 
-class FakeKl:
-    """Endstop triggers after the head physically travels `trigger_after` mm of creep."""
+ENDSTOP_POS = 260.0
 
-    def __init__(self, trigger_after):
-        self.trigger_after = trigger_after
-        self.travelled = 0.0
-        self.last_target = None
+
+class FakeKl:
+    """Position model of the X gantry + endstop, so the coarse+fine creep (which backs
+    off and re-approaches, i.e. non-monotonic) is measured faithfully.
+
+    Tracks the true physical position and Klipper's belief separately: G1 moves both by
+    the commanded delta, SET_KINEMATIC_POSITION rewrites the belief without moving the
+    head (the lie), G28 snaps both to the endstop. The endstop triggers on the *physical*
+    position; `slip` mm of lost steps toward the endstop shifts that trigger point earlier."""
+
+    def __init__(self, slip=0.0):
+        self.slip = slip
+        self.phys = None
+        self.belief = None
         self.scripts = []
 
     def gcode(self, script):
         self.scripts.append(script)
         for line in script.splitlines():
-            if line.startswith('G1 X') or line.startswith('G1 Y'):
+            if line.startswith('G1 X'):
                 target = float(line.split()[1][1:])
-                if self.last_target is not None:
-                    self.travelled += abs(target - self.last_target)
-                self.last_target = target
-            if line.startswith('SET_KINEMATIC_POSITION'):
-                self.last_target = None            # position lie resets tracking
-            if line.startswith('G28'):
-                self.travelled = 0.0
-                self.last_target = None
+                if self.phys is None:
+                    self.phys = target             # first move: head is where it goes
+                elif self.belief is not None:
+                    self.phys += target - self.belief
+                self.belief = target
+            elif line.startswith('SET_KINEMATIC_POSITION'):
+                self.belief = float(line.split('X=')[1].split()[0])
+            elif line.startswith('G28'):
+                self.phys = self.belief = ENDSTOP_POS
 
     def request(self, method):
         assert method == 'query_endstops/status'
-        state = 'TRIGGERED' if self.travelled >= self.trigger_after else 'open'
-        return {'stepper_x': state, 'stepper_y': 'open'}
+        triggered = self.phys is not None and self.phys >= ENDSTOP_POS - self.slip
+        return {'stepper_x': 'TRIGGERED' if triggered else 'open', 'stepper_y': 'open'}
 
 
-SETTINGS = {'stepper_x': {'position_endstop': 260.0, 'position_min': 0.0,
-                          'position_max': 260.0}}
+SETTINGS = {'stepper_x': {'position_endstop': ENDSTOP_POS, 'position_min': 0.0,
+                          'position_max': ENDSTOP_POS}}
 
 
 def test_referee_measures_offset_and_bias():
-    # trigger exactly where expected (CREEP_START of creep) -> offset ~0
-    kl = FakeKl(trigger_after=CREEP_START)
+    # no lost steps: trigger exactly where expected -> offset ~0 (fine-creep resolution)
+    kl = FakeKl(slip=0.0)
     ref = Referee(kl, 'x', SETTINGS, park_other=130.0)
     ref.calibrate()
     assert abs(ref.bias) <= 0.21
 
     # steps lost TOWARD the endstop: trigger 2mm early -> slipped ~ +2
-    kl = FakeKl(trigger_after=CREEP_START - 2.0)
+    kl = FakeKl(slip=2.0)
     ref2 = Referee(kl, 'x', SETTINGS, park_other=130.0)
     ref2.bias = ref.bias
-    assert ref2.slipped() == pytest.approx(2.0, abs=0.3)
+    assert ref2.slipped() == pytest.approx(2.0, abs=0.25)
+
+    # steps lost AWAY from the endstop: trigger late -> slipped ~ -3
+    kl = FakeKl(slip=-3.0)
+    ref3 = Referee(kl, 'x', SETTINGS, park_other=130.0)
+    ref3.bias = ref.bias
+    assert ref3.slipped() == pytest.approx(-3.0, abs=0.25)
 
     # slipped beyond the creep range -> None (huge slip)
-    kl = FakeKl(trigger_after=1000.0)
-    ref3 = Referee(kl, 'x', SETTINGS, park_other=130.0)
-    assert ref3.slipped() is None
+    kl = FakeKl(slip=-1000.0)
+    ref4 = Referee(kl, 'x', SETTINGS, park_other=130.0)
+    assert ref4.slipped() is None
 
 
 def test_referee_calibration_rejects_broken_endstop():
-    kl = FakeKl(trigger_after=1000.0)
+    kl = FakeKl(slip=-1000.0)
     with pytest.raises(SystemExit, match='calibration failed'):
         Referee(kl, 'x', SETTINGS, park_other=130.0).calibrate()
 

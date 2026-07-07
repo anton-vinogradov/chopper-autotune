@@ -213,6 +213,8 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 
 **CHOPPER_CURRENT** — find the minimal safe `run_current` per motor: a worst-case single-motor stress pattern (full machine accel, belt speeds through 200 mm/s) with an **endstop referee** — skipped steps land as a position offset that an endstop creep measures deterministically, because a stall can be nearly silent (measured; see [docs/SCIENCE.md](docs/SCIENCE.md)). Bisects to the skip threshold and recommends `threshold × MARGIN` (default `2.0`); `SAVE=1` writes `run_current` (backup first) and restarts. Re-run `CHOPPER_TUNE` afterwards — the chopper optimum depends on the current. Parameters: `MOTOR`, `MARGIN`, `MIN_CURRENT`, `RESOLUTION`, `ACCEL`, `SAVE`, `DRY_RUN`.
 
+**CHOPPER_ENVELOPE** — the motor's **torque ceiling** at the configured current: how fast and how hard each motor can be pushed before it skips a step. Climbs a speed ladder (default `150→350` mm/s at full accel) and an acceleration ladder (`1–4×` `max_accel` at a moderate speed), same single-motor stress and **endstop referee** as `CHOPPER_CURRENT`; the safe ceiling is the last rung before the first skip, reported with a `1.3×` margin. This is the *motor* limit only — which speeds are quiet vs ringy is `CHOPPER_FIND_SPEED` (the resonance map this caps), and the real top-speed limit is usually hotend flow, not the motor. Read-only (nothing to save). Parameters: `MOTOR`, `MIN_SPEED`, `MAX_SPEED`, `STEP`, `ACCEL_PROBE_SPEED`, `ACCEL`, `DRY_RUN`.
+
 **CHOPPER_STOP** — abort a running tuning/show job; the tool restores the registers, leaves spreadCycle and re-homes before it exits.
 
 **CHOPPER_STATUS** — progress of the most recent (or `DATASET=`) run; `TOTAL=` supplies the planned move count for old datasets.
@@ -251,6 +253,7 @@ Python 3.9+ on the printer host. The klippy API socket for orchestration and sam
 - [x] Click-aware scoring: transient clicks counted per move and penalized — the median alone is blind to them (measured)
 - [x] Resonance scan on stock registers — a well-tuned chopper masks the very peak the scan needs
 - [x] Measured run-current tuning (`CHOPPER_CURRENT`): worst-case single-motor stress + endstop referee, bisection to the skip threshold — chosen over StallGuard, which on TMC2209 only works in stealthChop and would miss the (measured) silent slips
+- [x] Motor torque envelope (`CHOPPER_ENVELOPE`): speed and acceleration ceilings before skipped steps, same endstop referee — caps the top of the resonance map and separates the motor limit from the (usually binding) hotend-flow limit
 - [ ] The split question: why hend-heavy hysteresis splits stay click-free where hstrt-first splits click (open science, see docs/SCIENCE.md)
 - [ ] Motors beyond `stepper_x`/`stepper_y` (dual Y, IDEX, extruder)
 

@@ -16,10 +16,11 @@ from .klippy import Klippy, find_socket
 
 BELT_SPEEDS = (100, 150, 200)
 STROKES_PER_SPEED = 3
-CREEP_STEP = 0.2
-CREEP_START = 15.0          # true distance from the endstop before a creep
-CREEP_RANGE = 28.0          # how far the SET_KINEMATIC_POSITION lie lets us travel
-SLIP_HEAD_MM = 0.3          # threshold on the head offset; one slip quantum is ~0.4
+COARSE_STEP = 2.0          # fast approach step; the fine creep only covers the last one
+CREEP_STEP = 0.2          # fine step near the trigger, for the actual precision
+CREEP_START = 12.0         # true distance from the endstop before a creep
+CREEP_RANGE = 28.0         # how far the SET_KINEMATIC_POSITION lie lets us travel
+SLIP_HEAD_MM = 0.3         # threshold on the head offset; one slip quantum is ~0.8
 
 
 def stress_vector(kinematics: str, motor: str) -> 'tuple[float, float]':
@@ -64,6 +65,19 @@ class Referee:
         self.park_other = park_other
         self.bias = 0.0
 
+    def _triggered(self) -> bool:
+        return self.kl.request('query_endstops/status').get('stepper_' + self.axis) == 'TRIGGERED'
+
+    def _creep(self, lie: float, step: float, feed: int, travelled: float) -> 'float | None':
+        """Step toward the endstop until it triggers; returns the travel at the trigger."""
+        while travelled < CREEP_RANGE - 1.0:
+            travelled += step
+            self.kl.gcode('G1 %s%.3f F%d\nM400' % (self.axis.upper(),
+                                                   lie + self.home_dir * travelled, feed))
+            if self._triggered():
+                return travelled
+        return None
+
     def _measure(self) -> 'float | None':
         a = self.axis
         other = 'y' if a == 'x' else 'x'
@@ -72,17 +86,16 @@ class Referee:
         self.kl.gcode('G90\nG1 %s%.2f %s%.2f F6000\nM400'
                       % (a.upper(), start, other.upper(), self.park_other))
         self.kl.gcode('SET_KINEMATIC_POSITION %s=%.3f' % (a.upper(), lie))
-        travelled = 0.0
-        offset = None
-        while travelled < CREEP_RANGE - 1.0:
-            travelled += CREEP_STEP
-            self.kl.gcode('G1 %s%.3f F1200\nM400' % (a.upper(), lie + self.home_dir * travelled))
-            state = self.kl.request('query_endstops/status').get('stepper_' + a)
-            if state == 'TRIGGERED':
-                offset = CREEP_START - travelled
-                break
+        # fast coarse approach, then back off one coarse step and creep in fine steps
+        coarse = self._creep(lie, COARSE_STEP, 3000, 0.0)
+        if coarse is None:
+            self.kl.gcode('G28 %s' % a.upper())
+            return None
+        back = max(0.0, coarse - COARSE_STEP)
+        self.kl.gcode('G1 %s%.3f F1800\nM400' % (a.upper(), lie + self.home_dir * back))
+        travelled = self._creep(lie, CREEP_STEP, 1200, back)
         self.kl.gcode('G28 %s' % a.upper())
-        return offset
+        return None if travelled is None else CREEP_START - travelled
 
     def calibrate(self):
         offset = self._measure()
