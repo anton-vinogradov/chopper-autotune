@@ -21,6 +21,8 @@ Tags: **[measured]** on the reference printer (Ender-6 CoreXY, TMC2209, 24 V),
 | Jul 7 | Print speed | tune verified at 200 mm/s: flat, neutral, click-free |
 | Jul 8 | Tuner | flat-region blind spot found → safety tie-breaker → auto re-tune off the edge |
 | Jul 8 | Print speed | motion envelope: no skip to 350 mm/s / 40k accel — the motor isn't the limit |
+| Jul 8 | Print speed | resonance map: 200 mm/s sits on a bump, 160/240 quieter — a print-speed answer |
+| Jul 8 | Mechanics | belt-tension match: the two CoreXY belts are ~15% apart — belt B is looser |
 
 ---
 
@@ -255,6 +257,46 @@ a speed limit; that limit is flow and the shaper).
 
 ---
 
+## Direction V — Beyond the motor: the drive mechanics
+
+**Outcome.** Stepping back — the accelerometer measures one thing, vibration, so
+what's left to improve is the catalog of vibration sources. The motor's electrical
+and mid-band resonances are ours (chopper tuning, the map); frame ringing is
+Klipper's (the input shaper); that leaves the **drive mechanics**. First one
+shipped: a **belt-tension match** for CoreXY, which found the reference rig's two
+belts **~15 % apart** — belt B looser.
+
+<details>
+<summary>How we got there</summary>
+
+**Jul 8 — the bird's-eye.** Asked what else the accelerometer can improve, the
+honest framing is that it measures exactly one thing — toolhead vibration — so the
+improvement space is the list of vibration sources and their remedies: motor
+electrical (chopper, done), mid-band motor resonance (the map, done), frame
+resonance from acceleration (the input shaper — Klipper's, and we stay out of it),
+belt tension, mechanical wear, rotating imbalance. The motor half was done; the
+mechanics half was open.
+
+**Jul 8 — belt tension, a frequency problem.** Unlike everything else in the tool
+(time-domain magnitude), belt tension is a *frequency*: a belt is a string,
+f ∝ √tension. Each belt is isolated by driving one motor's diagonal (the same
+1,1 / 1,-1 split as the chopper stress test) with Klipper's swept-sine
+`TEST_RESONANCES`; we take the raw capture and compute the response PSD ourselves
+(Welch, numpy in our own venv — keeping the "no numpy in klippy-env" principle).
+
+**Jul 8 — validate before trusting, again.** A first narrow sweep band clipped one
+belt's real peak at the edge and read both belts at the same clipped frequency — a
+false "balanced". Widening it told the truth: **belt A ≈ 155 Hz, belt B ≈ 133 Hz,
+~15 % apart** (tension ∝ f², so ~36 % more in A). Our Welch peaks matched Klipper's
+own `OUTPUT=resonances` to within one FFT bin. Two hardware bugs surfaced and were
+fixed on the way — a sweep rate above Klipper's 2 Hz/s cap, and reading the raw CSV
+before its background writer had flushed it. `CHOPPER_BELTS` now prints the two
+frequencies and a verdict: which belt is looser, and by how much.
+
+</details>
+
+---
+
 ## Still open
 
 - **The split question [hypothesis].** Why do hend-heavy splits stay clean where
@@ -265,12 +307,11 @@ a speed limit; that limit is flow and the shaper).
 - **Optional measurements.** Phase R with a multimeter (would sharpen the
   saturation number); floor-vs-cap temperature — *cancelled*, at 1.0 A the
   hysteresis heat effect sinks below the noise.
-- **More from the same instrument.** The accelerometer measures one thing —
-  vibration — so what's left to improve is the rest of the vibration-source
-  catalog. Open and accelerometer-native: **belt-tension match** (resonance-compare
-  the two CoreXY belts, say which to tighten) and a **ringing-vs-acceleration
-  ceiling** (the surface-quality accel limit the envelope defers to the shaper).
-  Input shaping itself stays Klipper's job — we're orthogonal to it.
+- **More from the same instrument.** Belt-tension match shipped (Direction V).
+  Still open on the mechanics side: a **ringing-vs-acceleration ceiling** (the
+  surface-quality accel limit the envelope defers to the shaper), and lighter
+  ideas — a noise-floor trend for wear, fan-imbalance isolation. Input shaping
+  itself stays Klipper's job.
 - **Real-print verification.** Motor temperature (1.0 A vs 1.8 A, thermal
   camera), a defaults-vs-tuned surface A/B, and no layer shifts at 200 mm/s.
 
