@@ -235,6 +235,39 @@ test for it models the head's *physical* position separately from Klipper's
 belief, so the non-monotonic back-off-and-re-approach is checked faithfully; a
 path-length model would only pass by luck.)
 
+## Belt tension: matching the two CoreXY belts
+
+The chopper work tunes the *motor*; the belts are the *mechanics* between the
+motor and the toolhead, and on CoreXY there are two of them that must be
+tensioned alike. A belt is a string: its transverse resonance frequency goes as
+**f ∝ √(T/μ)/L**, so tension shows up directly as frequency — a looser belt
+resonates lower.
+
+Measuring it needs the frequency domain, not the magnitude-vs-speed sweep the
+rest of the tool uses. Each belt is excited **alone** by driving one motor's
+diagonal (motor A = head 1,1, motor B = head 1,-1 — the same single-motor split
+as the chopper stress test), using Klipper's swept-sine `TEST_RESONANCES`. We
+take its **raw** capture and compute the response spectrum here (a Welch PSD in
+the tool's own venv), so nothing needs numpy inside klippy-env — the same
+principle as the streaming capture. The dominant peak of each diagonal is that
+belt's resonance; matched belts give matched peaks.
+
+Two things the hardware taught us [measured]:
+
+- **Sweep wide enough or you lie to yourself.** A first, narrow band clipped one
+  belt's real peak at the band edge and reported both belts at the same clipped
+  frequency — a false "balanced". Widening the sweep showed the truth: **belt A
+  ≈ 155 Hz, belt B ≈ 133 Hz, ~15 % apart** (tension ∝ f², so ~36 % more tension
+  in A). The tool now warns when a peak lands near the sweep edge.
+- **Our PSD matches Klipper's.** Against Klipper's own `OUTPUT=resonances`, our
+  Welch peaks land within one FFT bin (155 vs 155, 132 vs 133 Hz) — the analysis
+  is honest, and it stays in our venv.
+
+`CHOPPER_BELTS` reports the two frequencies and a verdict: balanced within a
+tolerance, or which belt is looser and by how much. It changes nothing — you
+tighten a belt by hand and re-run — and then re-tune, because the per-motor
+chopper optimum is measured against the mechanics you leave in place.
+
 ## Practical rules distilled so far
 
 - A winner on the edge (max hysteresis, or a chopper frequency barely above the
