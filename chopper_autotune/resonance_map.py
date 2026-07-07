@@ -23,40 +23,44 @@ from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen
                       default_dataset_root, detect_hardware, enter_spreadcycle, exit_spreadcycle,
                       make_parker, now, park, refuse_if_printing, run_restore)
 from .dataset import Dataset
-from .find_speed import build_curve, build_speed_plan, find_peaks, run_sweep, smooth, write_report
+from .find_speed import (build_curve, build_speed_plan, find_peaks, find_valleys, run_sweep,
+                         smooth, write_report)
 from .klippy import Klippy, find_socket
 
-QUIET_RATIO = 1.25          # a speed is "quiet" if its vibration is within this of the floor
 BAR_WIDTH = 32
-
-
-def quiet_band(curve: 'list[tuple[int, float]]', ratio: float = QUIET_RATIO) -> 'tuple[int, int] | None':
-    """Widest contiguous speed span whose vibration stays within `ratio` of the minimum."""
-    if not curve:
-        return None
-    floor = min(magnitude for _, magnitude in curve)
-    threshold = floor * ratio
-    best = run = None
-    for speed, magnitude in curve:
-        run = (run[0] if run else speed, speed) if magnitude <= threshold else None
-        if run and (best is None or run[1] - run[0] > best[1] - best[0]):
-            best = run
-    return best
+NEAR_WINDOW = 40            # mm/s around a target speed to look for a quieter alternative
+QUIETER_MARGIN = 0.05       # an alternative must be at least this much quieter to bother suggesting
 
 
 def render_map(curve: 'list[tuple[int, float]]', peaks: 'list[int]',
-               quiet: 'tuple[int, int] | None') -> 'list[str]':
-    """A speed/vibration table with bars; peaks flagged 'ring', the quiet band flagged."""
+               valleys: 'list[int]') -> 'list[str]':
+    """A speed/vibration table with bars; resonance peaks flagged (VFA risk), quiet dips flagged."""
     ceiling = max(magnitude for _, magnitude in curve)
     peak_speeds = {curve[i][0] for i in peaks}
+    valley_speeds = {curve[i][0] for i in valleys}
     lines = ['  speed   vibration']
     for speed, magnitude in curve:
         bar = '#' * max(1, round(magnitude / ceiling * BAR_WIDTH))
-        tag = '  <- resonance (avoid cruising here)' if speed in peak_speeds else ''
-        if not tag and quiet and quiet[0] <= speed <= quiet[1]:
-            tag = '  quiet'
+        tag = ''
+        if speed in peak_speeds:
+            tag = '  <- resonance (VFA risk — avoid cruising)'
+        elif speed in valley_speeds:
+            tag = '  <- quiet dip'
         lines.append('  %4d   %-*s %5.0f%s' % (speed, BAR_WIDTH, bar, magnitude, tag))
     return lines
+
+
+def quieter_alternatives(curve: 'list[tuple[int, float]]', target: int,
+                         window: int = NEAR_WINDOW, margin: float = QUIETER_MARGIN):
+    """For a target print speed, return (at, below, above): the nearest sampled point and the
+    quietest speed within `window` on each side that runs at least `margin` quieter. Each is a
+    (speed, magnitude) pair or None. Answers "is my print speed on a bump, and what's quieter?"."""
+    at = min(curve, key=lambda point: abs(point[0] - target))
+    limit = at[1] * (1 - margin)
+    below = [p for p in curve if at[0] - window <= p[0] < at[0] and p[1] <= limit]
+    above = [p for p in curve if at[0] < p[0] <= at[0] + window and p[1] <= limit]
+    best = lambda points: min(points, key=lambda p: p[1]) if points else None
+    return at, best(below), best(above)
 
 
 def run_resonance_map(args) -> int:
@@ -136,23 +140,35 @@ def resonance_map(kl: Klippy, args) -> int:
     curve = build_curve(ds)
     if not curve:
         raise SystemExit('no successful measurements')
-    peaks = find_peaks(smooth([magnitude for _, magnitude in curve]))
-    quiet = quiet_band(curve)
+    smoothed = smooth([magnitude for _, magnitude in curve])
+    peaks = find_peaks(smoothed)
+    valleys = find_valleys(smoothed)
 
     path = str(root / 'report.html')
     write_report(curve, peaks, 'resonance map: motor %s (%s), current registers %s'
                  % (hw.motor, hw.stepper, hw.baseline), path)
 
     print('\n=== Resonance map: motor %s @ current registers ===' % hw.motor)
-    print('\n'.join(render_map(curve, peaks, quiet)))
+    print('\n'.join(render_map(curve, peaks, valleys)))
     if peaks:
-        print('\nResonance peaks (avoid steady cruising here): %s'
+        print('\nResonance peaks (cause VFAs — avoid steady cruising here): %s'
               % ', '.join('%d mm/s' % curve[i][0] for i in peaks))
-    if quiet:
-        print('Quietest band: %d-%d mm/s' % quiet)
-    print('\nThis is the motor/chopper vibration signature vs speed — not your top print '
-          'speed. The motor holds torque far past any commanded speed (run CHOPPER_ENVELOPE); '
-          'the real ceiling is hotend flow, and accel-driven ringing is the input shaper '
-          '(SHAPER_CALIBRATE). Use this to avoid cruising on a resonance, not to pick a limit.')
+    if valleys:
+        print('Quiet cruise speeds (dips between resonances): %s'
+              % ', '.join('%d mm/s' % curve[i][0] for i in valleys))
+    if args.print_speed:
+        at, below, above = quieter_alternatives(curve, args.print_speed)
+        alts = ['%d mm/s (%.0f, %+.0f%%)' % (s, m, (m / at[1] - 1) * 100)
+                for s, m in (below, above) if s is not None]
+        if alts:
+            print('\nYour print speed %d mm/s measures %.0f — quieter nearby: %s'
+                  % (args.print_speed, at[1], ', '.join(alts)))
+        else:
+            print('\nYour print speed %d mm/s (%.0f) is already in a quiet spot — no nearby '
+                  'speed runs meaningfully quieter.' % (args.print_speed, at[1]))
+    print('\nVFAs (fine vertical banding) come from cruising on a motor resonance — that is what '
+          'this map catches, so avoid the peaks above. It is NOT your top print speed: the motor '
+          'holds torque far past any commanded speed (CHOPPER_ENVELOPE), the real ceiling is '
+          'hotend flow, and corner ringing is the input shaper (SHAPER_CALIBRATE).')
     print('Report: %s (done in %dm)' % (path, (time.time() - started) // 60))
     return 0 if failed == 0 else 2

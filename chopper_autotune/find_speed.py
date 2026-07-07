@@ -57,6 +57,11 @@ def find_peaks(magnitudes: 'list[float]', prominence_ratio: float = 0.15) -> 'li
     return peaks
 
 
+def find_valleys(magnitudes: 'list[float]', prominence_ratio: float = 0.15) -> 'list[int]':
+    """Indices of local minima — the mirror of find_peaks — the quiet dips between resonances."""
+    return find_peaks([-magnitude for magnitude in magnitudes], prominence_ratio)
+
+
 def recommend(curve: 'list[tuple[int, float]]', peaks: 'list[int]') -> 'int | None':
     """Lowest peak speed that is at least half as strong as the strongest peak.
 
