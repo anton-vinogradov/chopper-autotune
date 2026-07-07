@@ -76,6 +76,51 @@ def scan_id(speed: int, iteration: int, direction: int) -> str:
     return 'v%03d_i%d_%s' % (speed, iteration, 'fwd' if direction > 0 else 'rev')
 
 
+def build_speed_plan(args, accel: float, limit: float) -> 'list[tuple[int, float]]':
+    """(speed, cruise) pairs whose whole move fits the travel limit, over the requested range."""
+    plan = []
+    for speed in range(args.min_speed, args.max_speed + 1, args.step):
+        cruise = cruise_for(speed, accel, limit, args.measure_time)
+        if cruise >= MIN_CRUISE_SEC:
+            plan.append((speed, cruise))
+    if not plan:
+        raise SystemExit('no speeds fit into %.0fmm travel; lower --min-speed or raise --accel' % limit)
+    if plan[-1][0] < args.max_speed:
+        print('Warning: speeds above %d mm/s skipped, cruise would drop below %.2fs within %.0fmm'
+              % (plan[-1][0], MIN_CRUISE_SEC, limit))
+    return plan
+
+
+def run_sweep(hw, ds: Dataset, args, plan: 'list[tuple[int, float]]', accel: float,
+              screen: Screen, before_move, done: set) -> int:
+    """Measure vibration at every planned speed, both directions, into ds; return the failed
+    count. Whatever chopper registers the caller left in effect are what gets measured."""
+    failed = 0
+    measure_baseline(hw, ds, args, done)
+    for index, (speed, cruise) in enumerate(plan, 1):
+        travel = travel_for(speed, accel, cruise)
+        magnitudes = []
+        for iteration in range(args.iterations):
+            for direction in (1, -1):
+                mid = scan_id(speed, iteration, direction)
+                if mid in done:
+                    continue
+                record = {'id': mid, 'kind': 'speed', 'source': args.source, 'speed': speed,
+                          'cruise': round(cruise, 3), 'direction': direction,
+                          'iteration': iteration, 'ts': now()}
+                measure_move(hw, ds, args, record, speed, cruise, travel, direction, accel,
+                             before_move)
+                if record['status'] == 'ok':
+                    magnitudes.append(record['score']['median_magnitude'])
+                else:
+                    failed += 1
+        if magnitudes:
+            print('[%d/%d] %d mm/s: median %.1f' % (index, len(plan), speed,
+                                                    sum(magnitudes) / len(magnitudes)))
+        screen.update('Chopper speed scan %d/%d' % (index, len(plan)))
+    return failed
+
+
 def build_curve(ds: Dataset) -> 'list[tuple[int, float]]':
     by_speed = defaultdict(list)
     for record in ds.records():
@@ -117,16 +162,7 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
 
     accel = args.accel or hw.max_accel / 10
     limit = hw.axis_span * MOVE_MARGIN
-    plan = []
-    for speed in range(args.min_speed, args.max_speed + 1, args.step):
-        cruise = cruise_for(speed, accel, limit, args.measure_time)
-        if cruise >= MIN_CRUISE_SEC:
-            plan.append((speed, cruise))
-    if not plan:
-        raise SystemExit('no speeds fit into %.0fmm travel; lower --min-speed or raise --accel' % limit)
-    if plan[-1][0] < args.max_speed:
-        print('Warning: speeds above %d mm/s skipped, cruise would drop below %.2fs within %.0fmm'
-              % (plan[-1][0], MIN_CRUISE_SEC, limit))
+    plan = build_speed_plan(args, accel, limit)
 
     n_moves = len(plan) * args.iterations * 2
     overhead = OVERHEAD_CSV_SEC if args.csv else OVERHEAD_STREAM_SEC
@@ -178,32 +214,10 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
     print('Scanning with Klipper default registers %s — the current tuning would mask the peaks'
           % tmc.KLIPPER_DEFAULT.label())
     started = time.time()
-    failed = 0
     screen = Screen(kl, hw.display)
     before_move = make_parker(kl, hw)
     try:
-        measure_baseline(hw, ds, args, done)
-        for index, (speed, cruise) in enumerate(plan, 1):
-            travel = travel_for(speed, accel, cruise)
-            magnitudes = []
-            for iteration in range(args.iterations):
-                for direction in (1, -1):
-                    mid = scan_id(speed, iteration, direction)
-                    if mid in done:
-                        continue
-                    record = {'id': mid, 'kind': 'speed', 'source': args.source, 'speed': speed,
-                              'cruise': round(cruise, 3), 'direction': direction,
-                              'iteration': iteration, 'ts': now()}
-                    measure_move(hw, ds, args, record, speed, cruise, travel, direction, accel,
-                                 before_move)
-                    if record['status'] == 'ok':
-                        magnitudes.append(record['score']['median_magnitude'])
-                    else:
-                        failed += 1
-            if magnitudes:
-                print('[%d/%d] %d mm/s: median %.1f' % (index, len(plan), speed,
-                                                        sum(magnitudes) / len(magnitudes)))
-            screen.update('Chopper speed scan %d/%d' % (index, len(plan)))
+        failed = run_sweep(hw, ds, args, plan, accel, screen, before_move, done)
     finally:
         print('Restoring registers, homing')
         run_restore(

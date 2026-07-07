@@ -29,7 +29,7 @@ def latest_dataset(bases=(RESULTS_HOME / 'datasets', Path('datasets'))) -> str:
     for path in reversed(dataset_dirs(bases)):
         # scans and demos are not tuning results: analyzing (worse, SAVE-ing) a
         # two-combo demo dataset as "the latest run" would persist nonsense
-        if Dataset(path).manifest().get('mode') not in ('find-speed', 'demo'):
+        if Dataset(path).manifest().get('mode') not in ('find-speed', 'demo', 'resonance-map'):
             return str(path)
     raise SystemExit('no chopper datasets found, pass the dataset directory explicitly')
 

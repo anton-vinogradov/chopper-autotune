@@ -145,6 +145,27 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument('--dry-run', action='store_true')
     f.add_argument('-y', '--yes', action='store_true')
 
+    mp = sub.add_parser('map', help='resonance map: vibration vs speed on the current registers '
+                                    '(which speeds ring vs stay quiet)')
+    mp.add_argument('--socket', default=None, help='klippy unix socket path, default: auto-detect')
+    mp.add_argument('--csv', action='store_true',
+                    help='fallback capture via ACCELEROMETER_MEASURE and /tmp CSV instead of streaming')
+    mp.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y'), default='x',
+                    help='motor a or b (a=stepper_x, b=stepper_y); x/y also accepted')
+    mp.add_argument('--min-speed', type=int, default=20)
+    mp.add_argument('--max-speed', type=int, default=250)
+    mp.add_argument('--step', type=int, default=10, help='speed increment in mm/s, default 10')
+    mp.add_argument('--iterations', type=int, default=1)
+    mp.add_argument('--measure-time', type=float, default=1.0,
+                    help='target cruise time per move; shrinks at high speeds to fit the axis')
+    mp.add_argument('--accel', type=float, default=None,
+                    help='acceleration, default printer max_accel / 4 (reaches print speeds)')
+    mp.add_argument('--trim', type=float, default=None)
+    mp.add_argument('--dataset', default=None, help='dataset directory; pass an existing one to resume')
+    mp.add_argument('--no-raw', action='store_true')
+    mp.add_argument('--dry-run', action='store_true')
+    mp.add_argument('-y', '--yes', action='store_true')
+
     d = sub.add_parser('demo', help='play the driver defaults against the tuned registers so you can hear the gain')
     d.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y', 'xy'), default='xy',
                    help='motor a/b/ab (a=stepper_x, b=stepper_y); default ab = both; x/y/xy also accepted')
@@ -265,6 +286,9 @@ def main(argv=None) -> int:
     if args.command == 'find-speed':
         from .find_speed import run_find_speed
         return run_find_speed(args)
+    if args.command == 'map':
+        from .resonance_map import run_resonance_map
+        return run_resonance_map(args)
     if args.command == 'demo':
         from .demo import run_demo
         return run_demo(args)
