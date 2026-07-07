@@ -198,6 +198,43 @@ the ladder — endstop referee, bisection to the threshold, a safety margin
 (default 2×), optional save — followed by a chopper retune, since the optimum
 depends on the current.
 
+## The motor envelope: where the torque ceiling actually is
+
+The current ladder answers "how low can the current go before it skips." The
+mirror question is "at the current I chose, how fast and how hard can I push
+before it skips" — the **torque ceiling**. Same referee, same worst-case
+single-motor stress, walked up two ladders instead of down one: a speed ladder
+at full acceleration, and an acceleration ladder at a moderate speed.
+
+Measured at the tuned 1.0 A, both motors on this rig held with **no skip
+through the whole tested range** — belt speed to 350 mm/s (the sweep's own
+step-rate limit, not the motor's) and acceleration to 40 000 mm/s² (4× the
+configured maximum). The motor is simply **not the binding limit here**. That
+reframes "what's my top print speed":
+
+- the **torque** ceiling is above anything the rig commands — the tuned chopper
+  at a modest current has that much headroom [measured];
+- the **real** top-speed limit is the **hotend flow rate** — a thermal limit
+  (roughly 10–15 mm³/s stock, so ~200 mm/s on a 0.4 mm line), not a motion one,
+  and not something an accelerometer or an endstop can measure;
+- high-acceleration **ringing** is a separate axis — that is the input shaper's
+  job (`SHAPER_CALIBRATE`), not the chopper's.
+
+So the envelope's value is a negative result stated with confidence: it rules
+the motor *out* as the bottleneck, so you stop chasing current/register tweaks
+for speed and look at flow and the shaper instead. `CHOPPER_ENVELOPE` reports
+the ceiling (or "not the limit") per motor; it is read-only.
+
+**Making the referee fast enough to sweep.** The original endstop creep stepped
+0.2 mm at a time over ~12 mm — deterministic but slow, and it looks like the
+head is idle. A full envelope sweep would be dozens of such creeps. The fix is a
+two-phase approach: a coarse 2 mm stride until the endstop first trips, then back
+off one stride and creep the last 2 mm at 0.2 mm for the precision. Same trigger
+resolution, ~4× fewer moves — and it speeds up `CHOPPER_CURRENT` too. (The unit
+test for it models the head's *physical* position separately from Klipper's
+belief, so the non-monotonic back-off-and-re-approach is checked faithfully; a
+path-length model would only pass by luck.)
+
 ## Practical rules distilled so far
 
 - A winner on the edge (max hysteresis, or a chopper frequency barely above the
@@ -215,6 +252,10 @@ depends on the current.
   high; if tuning buys you torque margin, spend it on lowering the current.
 - Position loss must be measured by an endstop, not inferred from sound —
   silent slips exist.
+- Before blaming the motor for a speed ceiling, measure it: on this rig the
+  torque envelope holds with no skip past every speed and acceleration the
+  machine can command, so the real limit is hotend flow and the shaper, not the
+  motor.
 - A resonance scan must run on stock registers — a well-tuned chopper hides
   the very peak the scan is looking for (897 vs 2676 at the same speed).
 - Analytic bounds and hardware measurement are not competitors: the model draws
