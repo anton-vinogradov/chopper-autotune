@@ -218,6 +218,21 @@ def build_parser() -> argparse.ArgumentParser:
     cur.add_argument('--url', default='http://127.0.0.1:7125')
     cur.add_argument('--dry-run', action='store_true')
     cur.add_argument('-y', '--yes', action='store_true')
+
+    env = sub.add_parser('envelope', help='motor torque ceiling: top speed and acceleration '
+                                          'before skipped steps, at the configured run current')
+    env.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y', 'xy'),
+                     default='xy', help='motor a/b/ab (a=stepper_x, b=stepper_y); default ab')
+    env.add_argument('--min-speed', type=int, default=150, help='speed ladder start in mm/s, default 150')
+    env.add_argument('--max-speed', type=int, default=350, help='speed ladder end in mm/s, default 350')
+    env.add_argument('--step', type=int, default=50, help='speed ladder increment in mm/s, default 50')
+    env.add_argument('--accel-probe-speed', type=int, default=150,
+                     help='fixed speed for the acceleration sweep in mm/s, default 150')
+    env.add_argument('--accel', type=float, default=None,
+                     help='speed-sweep acceleration and accel-ladder base, default printer max_accel')
+    env.add_argument('--socket', default=None)
+    env.add_argument('--dry-run', action='store_true')
+    env.add_argument('-y', '--yes', action='store_true')
     return parser
 
 
@@ -238,6 +253,9 @@ def main(argv=None) -> int:
     if args.command == 'current':
         from .current import run_current_tune
         return run_current_tune(args)
+    if args.command == 'envelope':
+        from .envelope import run_envelope
+        return run_envelope(args)
     if args.command == 'tune':
         from .tune import run_tune
         return run_tune(args)
