@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import glob
 import os
+import time
 
 import numpy as np
 
@@ -21,6 +22,29 @@ from .klippy import Klippy, find_socket
 SEGMENT = 1024              # Welch window; ~0.3 s at the ADXL's ~3.2 kHz -> ~3 Hz resolution
 MATCH_TOLERANCE = 5.0       # percent apart below which the belts count as matched
 MAX_HZ_PER_SEC = 2.0        # Klipper caps the sweep rate here
+
+
+def wait_for_capture(pattern: str, timeout: float = 20.0) -> str:
+    """Wait for Klipper's raw-accel CSV to appear and finish flushing. TEST_RESONANCES
+    returns before its background writer has flushed the file (with OUTPUT=resonances the
+    PSD step masked this; with raw_data alone we would read an empty file), so poll until
+    a matching file exists and its size stops growing."""
+    deadline = time.time() + timeout
+    last = -1
+    path = None
+    while time.time() < deadline:
+        files = glob.glob(pattern)
+        if files:
+            path = max(files, key=os.path.getmtime)
+            size = os.path.getsize(path)
+            if size > 0 and size == last:
+                return path
+            last = size
+        time.sleep(0.3)
+    if path and os.path.getsize(path) > 0:
+        return path
+    raise SystemExit('TEST_RESONANCES produced no usable capture (%s) — check the '
+                     '[resonance_tester] output path' % pattern)
 
 
 def welch_peak(path: str, band: 'tuple[float, float]') -> 'tuple[float, float]':
@@ -106,10 +130,7 @@ def belts(kl: Klippy, args) -> int:
             kl.gcode('TEST_RESONANCES AXIS=%s OUTPUT=raw_data NAME=belt%s '
                      'FREQ_START=%g FREQ_END=%g HZ_PER_SEC=%g\nM400'
                      % (axis, label, band[0], band[1], hz_per_sec))
-            path = (max(glob.glob('/tmp/raw_data_*belt%s*.csv' % label), key=os.path.getmtime, default=None))
-            if path is None:
-                raise SystemExit('TEST_RESONANCES produced no raw capture for belt %s — '
-                                 'check the [resonance_tester] output path' % label)
+            path = wait_for_capture('/tmp/raw_data_*belt%s*.csv' % label)
             peak, binwidth = welch_peak(path, band)
             peaks[label] = peak
             edge = '  (near the sweep edge — raise MAX_FREQ)' if peak >= band[1] - 2 * binwidth else ''

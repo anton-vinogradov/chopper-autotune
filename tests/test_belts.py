@@ -1,6 +1,7 @@
+import pytest
 import numpy as np
 
-from chopper_autotune.belts import verdict, welch_peak
+from chopper_autotune.belts import verdict, wait_for_capture, welch_peak
 
 
 def _raw_csv(path, freq, fs=3200.0, seconds=1.5):
@@ -41,6 +42,17 @@ def test_verdict_tolerance_is_configurable():
     # 8% apart: matched under a 10% tolerance, a mismatch under the 5% default
     assert 'balanced' in verdict(104.0, 96.0, tolerance=10.0)
     assert 'MISMATCH' in verdict(104.0, 96.0, tolerance=5.0)
+
+
+def test_wait_for_capture_returns_a_settled_file(tmp_path):
+    csv = tmp_path / 'raw_data_beltA.csv'
+    csv.write_text('#time,accel_x,accel_y,accel_z\n0.0,1,0,0\n')
+    assert wait_for_capture(str(tmp_path / 'raw_data_*beltA*.csv'), timeout=5.0) == str(csv)
+
+
+def test_wait_for_capture_times_out_on_nothing(tmp_path):
+    with pytest.raises(SystemExit, match='no usable capture'):
+        wait_for_capture(str(tmp_path / 'raw_data_*.csv'), timeout=0.5)
 
 
 def test_belts_macro_args_translate():
