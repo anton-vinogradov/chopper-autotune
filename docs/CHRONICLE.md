@@ -18,7 +18,9 @@ Tags: **[measured]** on the reference printer (Ender-6 CoreXY, TMC2209, 24 V),
 | Jul 6 | Current | saturation ≈2×; back-EMF second order; endstop referee; skip thresholds; current 1.8→1.0 A |
 | Jul 6 | Clicks | resolution on hardware: the **split** governs it; click penalty; clean retune |
 | Jul 6 | Everything | data reply to the maintainer; **v0.2.0 release** |
-| Jul 7 | — | this chronicle; awaiting the upstream move |
+| Jul 7 | Print speed | tune verified at 200 mm/s: flat, neutral, click-free |
+| Jul 8 | Tuner | flat-region blind spot found → safety tie-breaker → auto re-tune off the edge |
+| Jul 8 | Print speed | motion envelope: no skip to 350 mm/s / 40k accel — the motor isn't the limit |
 
 ---
 
@@ -174,6 +176,59 @@ current could make you.** Productized as `CHOPPER_CURRENT` (PR #46).
 
 ---
 
+## Direction IV — Print speed and the flat-region blind spot
+
+**Outcome.** Verifying the tune at the real print speed (200 mm/s) showed the
+chopper landscape is **flat** there — nothing to gain, nothing lost. That
+flatness exposed a tuner blind spot: at a low run current the vibration objective
+is nearly flat, so with nothing to distinguish configs the descent had landed
+motor A on a datasheet-edge config *at random*. A small **safety tie-breaker** in
+the score now makes the tuner pick the safe config on its own. A motion-envelope
+tool measures where the motor actually runs out of torque, in speed and
+acceleration.
+
+<details>
+<summary>How we got there</summary>
+
+**Jul 7 — the worry.** The user prints at 200 mm/s; we tuned at resonance
+(58/34). Legitimate question: did we optimise a regime the printer never cruises
+in? Torque and skipping were already validated to 200 (Direction III); vibration
+was not. A two-point check (default vs tuned) at 200 came out equal (1521 vs
+1526), zero clicks — suggestive but not proof.
+
+**Jul 8 — the full landscape at 200 [measured].** Swept 16 configs (4 chopper
+frequencies × 4 hysteresis levels) directly at 200 mm/s: spread **9 %**, within
+measurement noise, zero clicks everywhere. So at print speed the chopper choice
+genuinely does not matter — flat. Resonance tuning is the right target (the
+machine crosses 58/34 on every accel/decel); the print-speed "gain" is nil
+because there is nothing to gain.
+
+**Jul 8 — the blind spot.** That flatness (also the rule at 1.0 A generally)
+means the tuner's vibration objective is nearly flat, so the descent had picked
+motor A's `0/8/3/15` — effective hysteresis 16 (the datasheet edge) and 21 kHz
+(barely ultrasonic) — essentially at random. It does not click, but it is exactly
+the edge our own practical rules say to avoid.
+
+**Jul 8 — the fix, automatic (not a user choice).** `tmc.edge_penalty()` adds a
+small tie-breaker toward safe configs: a chopper frequency comfortably above the
+audible band, and interior hysteresis. Weighted ≤10 %, so any real vibration win
+overrides it; it only decides when the field is flat. The re-tune then moved
+motor A off the edge on its own — `0/8/3/15` (h16, 21 kHz) → `0/2/4/7` (h9,
+65 kHz); motor B stayed at its already-interior `1/6/4/0` (PR #53).
+
+**Jul 8 — the motion envelope [measured].** A skip-threshold sweep in speed and
+acceleration (the same endstop referee, at the saved 1.0 A) found **no skip on
+either motor** through the whole testable range — belt to 350 mm/s (near the MCU
+step-rate limit) and acceleration to 40 000 mm/s² (4× the configured max, far past
+any print use). So at the chosen current the motors are nowhere near their torque
+ceiling: the print-speed limit is not the motion system but the hotend's flow
+rate — which is not a motion measurement. (Prototype; the referee's fine creep
+makes it slow, to be sped up before shipping as `CHOPPER_ENVELOPE`.)
+
+</details>
+
+---
+
 ## Still open
 
 - **The split question [hypothesis].** Why do hend-heavy splits stay clean where
@@ -184,6 +239,12 @@ current could make you.** Productized as `CHOPPER_CURRENT` (PR #46).
 - **Optional measurements.** Phase R with a multimeter (would sharpen the
   saturation number); floor-vs-cap temperature — *cancelled*, at 1.0 A the
   hysteresis heat effect sinks below the noise.
+- **`CHOPPER_ENVELOPE`.** Productize the motion envelope (speed + acceleration
+  torque ceilings) with a *fast* endstop referee — the prototype's 0.2 mm creep
+  is correct but slow. Pair it with a wide `find-speed` for the resonance map, so
+  one report gives the motor's usable speed band and its hard ceiling.
+- **Real-print verification.** Motor temperature (1.0 A vs 1.8 A, thermal
+  camera), a defaults-vs-tuned surface A/B, and no layer shifts at 200 mm/s.
 
 ## Tooling lessons along the way
 
