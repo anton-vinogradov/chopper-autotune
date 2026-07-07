@@ -169,6 +169,17 @@ def build_parser() -> argparse.ArgumentParser:
     mp.add_argument('--dry-run', action='store_true')
     mp.add_argument('-y', '--yes', action='store_true')
 
+    b = sub.add_parser('belts', help='CoreXY belt-tension match: resonance-compare the two belts, '
+                                     'say which to tighten')
+    b.add_argument('--min-freq', type=float, default=30.0, help='sweep start in Hz, default 30')
+    b.add_argument('--max-freq', type=float, default=200.0, help='sweep end in Hz, default 200')
+    b.add_argument('--hz-per-sec', type=float, default=3.0, help='sweep rate, default 3 Hz/s')
+    b.add_argument('--tolerance', type=float, default=5.0,
+                   help='percent apart below which the belts count as matched, default 5')
+    b.add_argument('--socket', default=None)
+    b.add_argument('--dry-run', action='store_true')
+    b.add_argument('-y', '--yes', action='store_true')
+
     d = sub.add_parser('demo', help='play the driver defaults against the tuned registers so you can hear the gain')
     d.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y', 'xy'), default='xy',
                    help='motor a/b/ab (a=stepper_x, b=stepper_y); default ab = both; x/y/xy also accepted')
@@ -292,6 +303,9 @@ def main(argv=None) -> int:
     if args.command == 'map':
         from .resonance_map import run_resonance_map
         return run_resonance_map(args)
+    if args.command == 'belts':
+        from .belts import run_belts
+        return run_belts(args)
     if args.command == 'demo':
         from .demo import run_demo
         return run_demo(args)
