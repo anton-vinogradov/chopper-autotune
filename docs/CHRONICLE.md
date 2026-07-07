@@ -222,8 +222,17 @@ either motor** through the whole testable range — belt to 350 mm/s (near the M
 step-rate limit) and acceleration to 40 000 mm/s² (4× the configured max, far past
 any print use). So at the chosen current the motors are nowhere near their torque
 ceiling: the print-speed limit is not the motion system but the hotend's flow
-rate — which is not a motion measurement. (Prototype; the referee's fine creep
-makes it slow, to be sped up before shipping as `CHOPPER_ENVELOPE`.)
+rate — which is not a motion measurement.
+
+**Jul 8 — shipped as `CHOPPER_ENVELOPE`.** Productized (PR #55) with a *fast*
+referee: the prototype's 0.2 mm creep over ~12 mm was correct but slow (the head
+looks idle), so the referee now takes a coarse 2 mm stride to the trigger, then
+backs off and creeps the last stride at 0.2 mm — same resolution, ~4× fewer
+moves, and it speeds up `CHOPPER_CURRENT` too. The full run on hardware reproduced
+the prototype exactly: both motors hold every speed and acceleration rung, "the
+motor is not the limit here." (The referee's unit test was rebuilt around a
+physical-position model so the non-monotonic back-off is checked honestly — the
+old path-length fake only passed by luck.)
 
 </details>
 
@@ -239,10 +248,10 @@ makes it slow, to be sped up before shipping as `CHOPPER_ENVELOPE`.)
 - **Optional measurements.** Phase R with a multimeter (would sharpen the
   saturation number); floor-vs-cap temperature — *cancelled*, at 1.0 A the
   hysteresis heat effect sinks below the noise.
-- **`CHOPPER_ENVELOPE`.** Productize the motion envelope (speed + acceleration
-  torque ceilings) with a *fast* endstop referee — the prototype's 0.2 mm creep
-  is correct but slow. Pair it with a wide `find-speed` for the resonance map, so
-  one report gives the motor's usable speed band and its hard ceiling.
+- **The resonance map.** `CHOPPER_ENVELOPE` shipped (the torque ceiling, with a
+  fast referee — see Direction IV). Its natural companion is a wide `find-speed`
+  giving vibration-vs-speed, so one report shows both the motor's quiet speed band
+  and its hard ceiling. Not built yet.
 - **Real-print verification.** Motor temperature (1.0 A vs 1.8 A, thermal
   camera), a defaults-vs-tuned surface A/B, and no layer shifts at 200 mm/s.
 
