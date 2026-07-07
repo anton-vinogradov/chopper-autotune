@@ -147,8 +147,6 @@ CHOPPER_CURRENT SAVE=1               ; 4. измеренный run_current: по
 
 То же самое по SSH: `chopper-autotune tune|collect|analyze|…`. Каждый параметр макроса отображается 1:1 во флаг CLI (`MEASURE_TIME=1.5` → `--measure-time 1.5`); булевы флаги принимают `1`/`0`. Прогресс идёт двумя путями: `M117` пишет в `display_status.message` (шапка Mainsail/Fluidd, LCD, строка статуса KlipperScreen), а `RESPOND` дублирует каждое обновление в консоль (Mainsail/Fluidd/KlipperScreen) — с префиксом `Chopper:`, а не `echo:`, чтобы KlipperScreen не всплывал уведомление на каждую строку и не перехватывал тапы по панели. Каждый канал сам отключается, если его на принтере нет. Финальная рекомендация остаётся в сообщении дисплея.
 
-![Прогресс тюнинга на экране KlipperScreen](docs/klipperscreen.svg)
-
 Датасеты и HTML-отчёты складываются в `~/printer_data/config/chopper-autotune/datasets/` — видны в файловом менеджере веб-интерфейса. `collect`/`tune` должны запускаться на хосте принтера (общаются с unix-сокетом klippy); `analyze` — где угодно. `uninstall.sh` убирает интеграцию, датасеты остаются.
 
 ### Справочник команд
