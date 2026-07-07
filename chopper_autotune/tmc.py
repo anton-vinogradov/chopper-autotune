@@ -8,6 +8,12 @@ BLANK_TIME_CLOCKS = (16, 24, 36, 54)
 # TMC2208/2209 use a different blank-time table than the rest of the family
 BLANK_TIME_CLOCKS_220X = (16, 24, 32, 40)
 AUDIBLE_LIMIT_HZ = 20000.0
+# below this the chopper is ultrasonic but with little margin; a config is nudged
+# toward more headroom when nothing else distinguishes it
+CAUTION_FREQ_HZ = 30000.0
+HYST_CAP = 16.0                 # datasheet max effective hysteresis
+FREQ_MARGIN_WEIGHT = 0.05       # tie-breaker only: a real vibration win always overrides
+HYST_EDGE_WEIGHT = 0.05
 
 
 @dataclass(frozen=True)
@@ -92,6 +98,26 @@ def chopper_freq_hz(c: Chopper, driver: Driver) -> float:
 
 def is_audible(c: Chopper, driver: Driver) -> bool:
     return chopper_freq_hz(c, driver) < AUDIBLE_LIMIT_HZ
+
+
+def effective_hysteresis(c: Chopper) -> int:
+    """Datasheet effective hysteresis (HSTRT+1) + (HEND-3); ≤ 16 is the legal range."""
+    return (c.hstrt + 1) + (c.hend - 3)
+
+
+def edge_penalty(c: Chopper, driver: Driver) -> float:
+    """A small preference — used as a tie-breaker in the score — for configs away from
+    two edges: a chopper frequency comfortably above the audible band, and interior
+    hysteresis (further from the datasheet cap = less current ripple/heat, no latent
+    clicking if the run current is later raised). Weighted low, so any real vibration
+    difference overrides it; it only decides when the measurement is otherwise flat
+    (e.g. the whole hysteresis ladder is nearly flat at a low run current)."""
+    freq = chopper_freq_hz(c, driver)
+    penalty = 0.0
+    if AUDIBLE_LIMIT_HZ <= freq < CAUTION_FREQ_HZ:
+        penalty += FREQ_MARGIN_WEIGHT * (CAUTION_FREQ_HZ - freq) / (CAUTION_FREQ_HZ - AUDIBLE_LIMIT_HZ)
+    penalty += HYST_EDGE_WEIGHT * max(0, effective_hysteresis(c)) / HYST_CAP
+    return penalty
 
 
 def cfg_snippet(driver: Driver, stepper: str, c: Chopper) -> str:

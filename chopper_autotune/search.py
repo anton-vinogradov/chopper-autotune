@@ -121,7 +121,10 @@ def penalized_score(combo: tmc.Chopper, magnitudes: 'list[float]', driver: tmc.D
     magnitude = statistics.mean(magnitudes)
     if tmc.is_audible(combo, driver):
         magnitude *= 1 + audible_weight
-    return magnitude * (1 + CLICK_WEIGHT * clicks_per_move)
+    # the edge penalty is a tie-breaker toward safe configs (chopper-frequency margin,
+    # interior hysteresis) — small enough that any real vibration win overrides it, so
+    # it decides only when the field is flat (e.g. the ladder at a low run current)
+    return magnitude * (1 + CLICK_WEIGHT * clicks_per_move) * (1 + tmc.edge_penalty(combo, driver))
 
 
 def seed_start(ds: Dataset, driver: tmc.Driver, audible_weight: float) -> tmc.Chopper:

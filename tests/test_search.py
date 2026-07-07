@@ -187,3 +187,26 @@ def test_click_penalty_beats_a_small_median_win():
     # and a click-free score is unchanged by the new argument
     assert clean == penalized_score(tmc.Chopper(2, 1, 5, 3), [1227.0], DRIVER, 0.25,
                                     clicks_per_move=0.0)
+
+
+def test_edge_tiebreaker_prefers_safe_when_vibration_ties():
+    # flat ladder (low run current): the tie-breaker must pick the config away from
+    # the edges, not one sitting at max hysteresis / near the audible chopper band
+    edge = tmc.Chopper(0, 8, 3, 15)      # h_eff 16, 21 kHz — both edges
+    safe = tmc.Chopper(2, 1, 4, 4)       # h_eff 6, 79 kHz — interior, high freq
+    assert penalized_score(safe, [900.0], DRIVER, 0.25) < \
+        penalized_score(edge, [891.0], DRIVER, 0.25)      # safe wins despite being louder
+
+    # same total hysteresis, higher chopper frequency wins the tie
+    low_freq = tmc.Chopper(0, 8, 6, 12)      # h16, 21 kHz
+    high_freq = tmc.Chopper(0, 6, 6, 12)     # h16, 27 kHz
+    assert penalized_score(high_freq, [890.0], DRIVER, 0.25) < \
+        penalized_score(low_freq, [884.0], DRIVER, 0.25)
+
+
+def test_edge_tiebreaker_never_overrides_a_real_vibration_win():
+    # a config that is meaningfully quieter must win even if it sits at an edge
+    quiet_edge = tmc.Chopper(2, 1, 4, 14)    # h16 but 30% quieter
+    loud_interior = tmc.Chopper(2, 1, 5, 3)  # h6, interior, but much louder
+    assert penalized_score(quiet_edge, [1180.0], DRIVER, 0.25) < \
+        penalized_score(loud_interior, [1650.0], DRIVER, 0.25)
