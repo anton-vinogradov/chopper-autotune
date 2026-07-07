@@ -155,6 +155,9 @@ def build_parser() -> argparse.ArgumentParser:
     mp.add_argument('--min-speed', type=int, default=20)
     mp.add_argument('--max-speed', type=int, default=250)
     mp.add_argument('--step', type=int, default=10, help='speed increment in mm/s, default 10')
+    mp.add_argument('--print-speed', type=int, default=None,
+                    help='your usual print speed (mm/s): flags whether it sits on a resonance '
+                         'and names the quieter speeds nearby')
     mp.add_argument('--iterations', type=int, default=1)
     mp.add_argument('--measure-time', type=float, default=1.0,
                     help='target cruise time per move; shrinks at high speeds to fit the axis')
