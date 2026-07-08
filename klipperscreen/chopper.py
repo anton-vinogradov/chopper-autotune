@@ -41,6 +41,8 @@ class Panel(ScreenPanel):
              _("Save the latest tuning result for each motor into the config and restart Klipper?")),
             ("resume", _("Show"), "color2", "CHOPPER_DEMO MOTOR=AB ROUNDS=2 REPEATS=2",
              _("Play the driver defaults against the tuned registers on both motors so you can hear the difference?")),
+            ("move", _("Belts"), "color3", "CHOPPER_BELTS",
+             _("Match the two CoreXY belts? ~3 min: it measures both, then jogs the looser belt so you can see which one to tighten.")),
         ]
 
         grid = Gtk.Grid(column_homogeneous=True, row_homogeneous=True, vexpand=False)
@@ -50,7 +52,7 @@ class Panel(ScreenPanel):
             grid.attach(button, index % 3, index // 3, 1, 1)
         stop = self._gtk.Button("stop", _("Stop"), "color4")
         stop.connect("clicked", self.stop)
-        grid.attach(stop, 2, 1, 1, 1)
+        grid.attach(stop, len(actions) % 3, len(actions) // 3, 1, 1)
 
         self.status = Gtk.Label(hexpand=True, vexpand=True, halign=Gtk.Align.CENTER,
                                 valign=Gtk.Align.CENTER, wrap=True,
