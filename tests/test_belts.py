@@ -1,7 +1,9 @@
 import pytest
 import numpy as np
 
-from chopper_autotune.belts import verdict, wait_for_capture, welch_peak
+from chopper_autotune import belts as belts_mod
+from chopper_autotune.belts import (gap_pct, load_state, progress_message, save_state, verdict,
+                                    wait_for_capture, welch_peak)
 
 
 def _raw_csv(path, freq, fs=3200.0, seconds=1.5):
@@ -63,6 +65,34 @@ def test_belts_macro_args_translate():
         boolean_flags(parser)))
     assert (args.min_freq == 40 and args.max_freq == 180 and args.tolerance == 8
             and args.dry_run)
+
+
+def test_progress_message_first_run_and_delta():
+    # first run: no previous state -> gap and which to tighten, no delta
+    first = progress_message(156.0, 132.0, prev=None)
+    assert 'Tighten B' in first and 'gap 16.7%' in first and 'A 156 / B 132 Hz' in first
+    assert '->' not in first
+    # second run: B came up 9 Hz -> show the change per belt and the closing gap
+    second = progress_message(156.0, 141.0, prev={'A': 156.0, 'B': 132.0})
+    assert 'B+9' in second and 'A+0' in second
+    assert '16.7->' in second and 'Tighten B' in second
+
+
+def test_progress_message_matched():
+    msg = progress_message(156.0, 154.0, prev={'A': 156.0, 'B': 141.0})
+    assert msg.startswith('Belts matched') and 'B+13' in msg
+
+
+def test_gap_pct():
+    assert gap_pct(156.0, 132.0) == pytest.approx(16.67, abs=0.1)
+    assert gap_pct(150.0, 150.0) == 0.0
+
+
+def test_state_round_trips(tmp_path, monkeypatch):
+    monkeypatch.setattr(belts_mod, 'STATE', str(tmp_path / 'belts.json'))
+    assert load_state() is None                      # nothing yet
+    save_state(156.0, 132.0)
+    assert load_state() == {'A': 156.0, 'B': 132.0}
 
 
 def test_belts_show_and_identify_args():
