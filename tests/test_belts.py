@@ -63,3 +63,14 @@ def test_belts_macro_args_translate():
         boolean_flags(parser)))
     assert (args.min_freq == 40 and args.max_freq == 180 and args.tolerance == 8
             and args.dry_run)
+
+
+def test_belts_show_and_identify_args():
+    from chopper_autotune.cli import _gcode_args, boolean_flags, build_parser
+    parser = build_parser()
+    # SHOW=B -> just jog belt B; case-insensitive
+    args = parser.parse_args(_gcode_args(['belts', 'SHOW=B'], boolean_flags(parser)))
+    assert args.show == 'b' and not args.no_identify
+    # NO_IDENTIFY=1 -> skip the post-measurement jog
+    args = parser.parse_args(_gcode_args(['belts', 'NO_IDENTIFY=1'], boolean_flags(parser)))
+    assert args.no_identify and args.show is None
