@@ -10,6 +10,7 @@ inside klippy-env; only a configured [resonance_tester] (as for input-shaper cal
 from __future__ import annotations
 
 import glob
+import json
 import os
 import time
 
@@ -22,6 +23,45 @@ from .klippy import Klippy, find_socket
 SEGMENT = 1024              # Welch window; ~0.3 s at the ADXL's ~3.2 kHz -> ~3 Hz resolution
 MATCH_TOLERANCE = 5.0       # percent apart below which the belts count as matched
 MAX_HZ_PER_SEC = 2.0        # Klipper caps the sweep rate here
+STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/belts.json')
+
+
+def gap_pct(freq_a: float, freq_b: float) -> float:
+    return abs(freq_a - freq_b) / ((freq_a + freq_b) / 2) * 100
+
+
+def load_state() -> 'dict | None':
+    try:
+        with open(STATE) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
+
+
+def save_state(freq_a: float, freq_b: float):
+    try:
+        os.makedirs(os.path.dirname(STATE), exist_ok=True)
+        with open(STATE, 'w') as handle:
+            json.dump({'A': freq_a, 'B': freq_b}, handle)
+    except OSError:
+        pass
+
+
+def progress_message(freq_a: float, freq_b: float, prev: 'dict | None',
+                     tolerance: float = MATCH_TOLERANCE) -> str:
+    """A one-line status for the display: the gap now, how it changed since the previous run
+    (per belt), and which belt to tighten — so you can gauge how much more to turn."""
+    gap = gap_pct(freq_a, freq_b)
+    now = 'A %.0f / B %.0f Hz' % (freq_a, freq_b)
+    if prev and 'A' in prev and 'B' in prev:
+        change = 'gap %.1f->%.1f%% (A%+.0f B%+.0f)' % (
+            gap_pct(prev['A'], prev['B']), gap, freq_a - prev['A'], freq_b - prev['B'])
+    else:
+        change = 'gap %.1f%%' % gap
+    if gap < tolerance:
+        return 'Belts matched · %s · %s' % (change, now)
+    looser = 'A' if freq_a < freq_b else 'B'
+    return 'Tighten %s · %s · %s' % (looser, change, now)
 
 
 def wait_for_capture(pattern: str, timeout: float = 20.0) -> str:
@@ -101,7 +141,6 @@ def identify_belt(kl: Klippy, hw, motor: str, screen: Screen, cycles: int = 4):
     kl.gcode('\n'.join(moves) + '\nM400\n'
              'SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=0\n'
              'SET_STEPPER_ENABLE STEPPER=stepper_y ENABLE=0')
-    screen.update('Motors off — tighten belt %s, then re-measure' % label, force=True)
 
 
 def run_belts(args) -> int:
@@ -122,8 +161,10 @@ def belts(kl: Klippy, args) -> int:
     if args.show:                                   # just point at a belt, no measurement
         screen = Screen(kl, hw.display)
         refuse_if_printing(kl)
+        motor = 'x' if args.show == 'a' else 'y'
         kl.gcode('G28 X Y\nM400')
-        identify_belt(kl, hw, 'x' if args.show == 'a' else 'y', screen)
+        identify_belt(kl, hw, motor, screen)
+        screen.update('Motors off — tighten belt %s, then re-measure' % motor_label(motor), force=True)
         return 0                                     # leaves the motors off on purpose
 
     tester = settings.get('resonance_tester') or {}
@@ -169,15 +210,23 @@ def belts(kl: Klippy, args) -> int:
     finally:
         run_restore(lambda: kl.gcode('G28 X Y'))
 
+    prev = load_state()                             # the previous run, to show what changed
+    save_state(peaks['A'], peaks['B'])
     print('\n=== Belt-tension match ===')
     print('Belt A %.1f Hz  |  Belt B %.1f Hz' % (peaks['A'], peaks['B']))
     print(verdict(peaks['A'], peaks['B'], args.tolerance))
-    apart = abs(peaks['A'] - peaks['B']) / ((peaks['A'] + peaks['B']) / 2) * 100
-    if apart < args.tolerance:
-        screen.update('Belts matched: A %.0f / B %.0f Hz' % (peaks['A'], peaks['B']), force=True)
-    elif not args.no_identify:
+    if prev and 'A' in prev and 'B' in prev:
+        print('Since last run: gap %.1f%% -> %.1f%%  (A %+.1f, B %+.1f Hz)'
+              % (gap_pct(prev['A'], prev['B']), gap_pct(peaks['A'], peaks['B']),
+                 peaks['A'] - prev['A'], peaks['B'] - prev['B']))
+
+    message = progress_message(peaks['A'], peaks['B'], prev, args.tolerance)
+    apart = gap_pct(peaks['A'], peaks['B'])
+    identified = apart >= args.tolerance and not args.no_identify
+    if identified:
         looser = 'x' if peaks['A'] < peaks['B'] else 'y'
         identify_belt(kl, hw, looser, screen)       # jogs, then leaves the motors off
+    screen.update(message + (' · motors off' if identified else ''), force=True)
     print('\nBelt resonance goes as sqrt(tension); match the two, then re-run CHOPPER_TUNE — '
           'the per-motor chopper optimum is measured against the mechanics you leave in place.')
     return 0
