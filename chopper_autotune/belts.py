@@ -81,14 +81,15 @@ def verdict(freq_a: float, freq_b: float, tolerance: float = MATCH_TOLERANCE) ->
             'tension). Tighten belt %s a little and re-run.' % (apart, looser, slack, looser))
 
 
-def identify_belt(kl: Klippy, hw, motor: str, screen: Screen, cycles: int = 10):
+def identify_belt(kl: Klippy, hw, motor: str, screen: Screen, cycles: int = 4):
     """Jog the head along this belt's diagonal so ONLY its loop moves — on CoreXY a 1,-1
-    move is pure motor B, leaving belt A still — so the user can see which belt to adjust."""
+    move is pure motor B, leaving belt A still — so the user can see which belt to adjust —
+    then release the gantry motors so the belt is easy to reach and tension."""
     cx, cy = hw.center
     vec = stress_vector(hw.kinematics, motor)
     span = min(40.0, hw.axis_span / 6)
     label = motor_label(motor)
-    print('Jogging belt %s so you can see which one to tighten...' % label)
+    print('Jogging belt %s so you can see which one to tighten, then releasing the motors...' % label)
     screen.update('Tighten belt %s — the moving one' % label, force=True)
     kl.gcode('G90\nG1 X%.1f Y%.1f F6000\nM400' % (cx, cy))
     moves = []
@@ -96,7 +97,11 @@ def identify_belt(kl: Klippy, hw, motor: str, screen: Screen, cycles: int = 10):
         moves += ['G1 X%.1f Y%.1f F4800' % (cx + span * vec[0], cy + span * vec[1]),
                   'G1 X%.1f Y%.1f F4800' % (cx - span * vec[0], cy - span * vec[1])]
     moves.append('G1 X%.1f Y%.1f F6000' % (cx, cy))
-    kl.gcode('\n'.join(moves) + '\nM400')
+    # release the gantry motors (not Z) so the loosened belt is easy to reach and tension
+    kl.gcode('\n'.join(moves) + '\nM400\n'
+             'SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=0\n'
+             'SET_STEPPER_ENABLE STEPPER=stepper_y ENABLE=0')
+    screen.update('Motors off — tighten belt %s, then re-measure' % label, force=True)
 
 
 def run_belts(args) -> int:
@@ -117,12 +122,9 @@ def belts(kl: Klippy, args) -> int:
     if args.show:                                   # just point at a belt, no measurement
         screen = Screen(kl, hw.display)
         refuse_if_printing(kl)
-        try:
-            kl.gcode('G28 X Y\nM400')
-            identify_belt(kl, hw, 'x' if args.show == 'a' else 'y', screen)
-        finally:
-            run_restore(lambda: kl.gcode('G28 X Y'))
-        return 0
+        kl.gcode('G28 X Y\nM400')
+        identify_belt(kl, hw, 'x' if args.show == 'a' else 'y', screen)
+        return 0                                     # leaves the motors off on purpose
 
     tester = settings.get('resonance_tester') or {}
     if not tester.get('probe_points'):
@@ -175,10 +177,7 @@ def belts(kl: Klippy, args) -> int:
         screen.update('Belts matched: A %.0f / B %.0f Hz' % (peaks['A'], peaks['B']), force=True)
     elif not args.no_identify:
         looser = 'x' if peaks['A'] < peaks['B'] else 'y'
-        try:
-            identify_belt(kl, hw, looser, screen)
-        finally:
-            run_restore(lambda: kl.gcode('G28 X Y'))
+        identify_belt(kl, hw, looser, screen)       # jogs, then leaves the motors off
     print('\nBelt resonance goes as sqrt(tension); match the two, then re-run CHOPPER_TUNE — '
           'the per-motor chopper optimum is measured against the mechanics you leave in place.')
     return 0
