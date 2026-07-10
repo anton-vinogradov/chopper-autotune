@@ -14,6 +14,8 @@ not "how fast should I print?".
 """
 from __future__ import annotations
 
+import json
+import os
 import time
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +32,24 @@ from .klippy import Klippy, find_socket
 BAR_WIDTH = 32
 NEAR_WINDOW = 40            # mm/s around a target speed to look for a quieter alternative
 QUIETER_MARGIN = 0.05       # an alternative must be at least this much quieter to bother suggesting
+STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/map.json')
+
+
+def save_state(motor: str, peaks: 'list[int]', dips: 'list[int]', advice: 'str | None'):
+    """Remember the map per motor so the panel's Results can show where it rings."""
+    try:
+        state = {}
+        try:
+            with open(STATE) as handle:
+                state = json.load(handle)
+        except (OSError, ValueError):
+            pass
+        state[motor] = {'peaks': peaks, 'dips': dips, 'advice': advice}
+        os.makedirs(os.path.dirname(STATE), exist_ok=True)
+        with open(STATE, 'w') as handle:
+            json.dump(state, handle)
+    except OSError:
+        pass
 
 
 def render_map(curve: 'list[tuple[int, float]]', peaks: 'list[int]',
@@ -156,6 +176,7 @@ def resonance_map(kl: Klippy, args) -> int:
     if valleys:
         print('Quiet cruise speeds (dips between resonances): %s'
               % ', '.join('%d mm/s' % curve[i][0] for i in valleys))
+    advice = None
     if args.print_speed:
         at, below, above = quieter_alternatives(curve, args.print_speed)
         alts = ['%d mm/s (%.0f, %+.0f%%)' % (s, m, (m / at[1] - 1) * 100)
@@ -163,9 +184,20 @@ def resonance_map(kl: Klippy, args) -> int:
         if alts:
             print('\nYour print speed %d mm/s measures %.0f — quieter nearby: %s'
                   % (args.print_speed, at[1], ', '.join(alts)))
+            advice = '%d→%s' % (args.print_speed,
+                                '/'.join(str(s) for s, _ in (below, above) if s is not None))
         else:
             print('\nYour print speed %d mm/s (%.0f) is already in a quiet spot — no nearby '
                   'speed runs meaningfully quieter.' % (args.print_speed, at[1]))
+            advice = '%d ok' % args.print_speed
+    peak_speeds = [curve[i][0] for i in peaks]
+    dip_speeds = [curve[i][0] for i in valleys]
+    save_state(hw.motor, peak_speeds, dip_speeds, advice)   # the panel's Results shows these
+    screen.final('Map %s: peaks %s · dips %s%s' % (
+        hw.motor,
+        ','.join(str(s) for s in peak_speeds) or '—',
+        ','.join(str(s) for s in dip_speeds) or '—',
+        ' · %s' % advice if advice else ''))
     print('\nVFAs (fine vertical banding) come from cruising on a motor resonance — that is what '
           'this map catches, so avoid the peaks above. It is NOT your top print speed: the motor '
           'holds torque far past any commanded speed (CHOPPER_ENVELOPE), the real ceiling is '

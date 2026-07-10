@@ -57,3 +57,12 @@ def test_winner_state_round_trips(tmp_path, monkeypatch):
     state = load_winner_state()
     assert state == {'driver': '2209',
                      'fields': {'tbl': 3, 'toff': 7, 'hstrt': 6, 'hend': 0}}
+
+
+def test_extruder_demo_arg_translates():
+    from chopper_autotune.cli import _gcode_args, boolean_flags, build_parser
+    parser = build_parser()
+    # named DEMO (not SHOW): a boolean --show here would collide with belts' SHOW=A/B
+    # through the cross-subcommand boolean_flags collection
+    args = parser.parse_args(_gcode_args(['extruder', 'DEMO=1'], boolean_flags(parser)))
+    assert args.demo and not args.save_last

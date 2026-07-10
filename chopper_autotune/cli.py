@@ -283,6 +283,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help='write the winner into [tmcXXXX extruder] (backup first) and restart')
     e.add_argument('--save-last', action='store_true',
                    help='persist the previously tuned winner immediately, without re-tuning')
+    e.add_argument('--demo', action='store_true',
+                   help='audible before/after: alternate Klipper defaults and the saved '
+                        'registers at the E resonance (heats the hotend)')
     e.add_argument('--socket', default=None)
     e.add_argument('--url', default='http://127.0.0.1:7125')
     e.add_argument('--dry-run', action='store_true')
