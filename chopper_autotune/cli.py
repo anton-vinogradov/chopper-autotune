@@ -180,6 +180,15 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument('--show', type=str.lower, choices=('a', 'b'), default=None,
                    help='skip the measurement and just jog belt A or B so you can see it '
                         '(for re-checking which belt while you tighten)')
+    b.add_argument('--pluck', action='store_true',
+                   help='guided pluck test: you pluck each belt on the display cue, the '
+                        'accelerometer listens — the transverse string mode that IS tension')
+    b.add_argument('--span', type=float, default=None,
+                   help='pluck: plucked span length in cm -> report absolute newtons')
+    b.add_argument('--mu', type=float, default=7.7,
+                   help='pluck: belt linear density in g/m, default 7.7 (GT2 6 mm)')
+    b.add_argument('--plucks', type=int, default=4,
+                   help='pluck: capture windows per belt, default 4 (stops after 2 agree)')
     b.add_argument('--socket', default=None)
     b.add_argument('--dry-run', action='store_true')
     b.add_argument('-y', '--yes', action='store_true')

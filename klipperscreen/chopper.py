@@ -45,6 +45,9 @@ class Panel(ScreenPanel):
              _("Jog motor A (stepper_x) briefly so you can see which motor and belt it is, then release the motors?")),
             ("move", _("Motor B"), "color3", "CHOPPER_BELTS SHOW=B",
              _("Jog motor B (stepper_y) briefly so you can see which motor and belt it is, then release the motors?")),
+            # row 3 — the real tension measurement (you pluck, the accelerometer listens)
+            ("resume", _("Pluck"), "color4", "CHOPPER_BELTS PLUCK=1",
+             _("Measure belt tension by plucking? Follow the display: pluck each belt's span hard, like a guitar string — the accelerometer hears the tension.")),
             # row 3 — save / demo / (stop is added after)
             ("complete", _("Save"), "color1", "CHOPPER_SAVE",
              _("Save the latest tuning result for each motor into the config and restart Klipper?")),
