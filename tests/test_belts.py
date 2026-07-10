@@ -3,7 +3,7 @@ import numpy as np
 
 from chopper_autotune import belts as belts_mod
 from chopper_autotune.belts import (capture_span, fundamental, gap_pct, insensitive,
-                                    load_state, progress_message, save_state, sides_agree,
+                                    load_state, progress_message, save_state,
                                     tension_newtons, verdict, wait_for_capture, welch_peak)
 
 
@@ -190,13 +190,6 @@ def test_pluck_tones_excludes_the_ambient_line():
     tones = belts_mod.pluck_tones(samples, ambient=ambient)
     assert tones and abs(tones[0][0] - 246.0) < 3.0
     assert all(abs(f - 600.0) > 6.0 for f, _ in tones)
-
-
-def test_sides_agree_is_the_structural_control():
-    # one loop, equal spans at center park -> the two sides must match within 3%
-    assert sides_agree(104.6, 105.0)
-    assert not sides_agree(105.0, 240.0)     # an obstructed/mismeasured span must flag
-    assert not sides_agree(105.0, 109.0)     # 3.8% apart -> outside the 3% control
 
 
 def test_pluck_macro_args_translate():

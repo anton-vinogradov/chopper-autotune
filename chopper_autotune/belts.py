@@ -408,24 +408,16 @@ def tension_newtons(freq: float, span_cm: float, mu_g_per_m: float = GT2_MU) -> 
     return (mu_g_per_m / 1000.0) * wave_speed * wave_speed
 
 
-def sides_agree(freq_left: float, freq_right: float, tolerance: float = 0.03) -> bool:
-    """The two spans beside the head belong to ONE belt loop (one tension) and are equal
-    length with the head parked at center — so their fundamentals must match. A mismatch
-    means the reading is contaminated (head off-center, an obstructed span) and the
-    measurement should not be trusted as tension."""
-    return abs(freq_left - freq_right) <= tolerance * max(freq_left, freq_right)
-
-
 def pluck_mode(kl: Klippy, hw, args) -> int:
-    """Guided pluck with a built-in structural control: for each belt the user plucks the
-    span LEFT of the head, then RIGHT of it — same loop, same tension, equal lengths at
-    the center park, so the two must agree before A is compared to B. Motors stay enabled
-    so the pulley is held and the spans have defined ends."""
+    """Guided pluck on each belt's LONGEST free span (across the front on most CoreXY —
+    field-tested: near-head spans are too short and stiff to ring usefully). A belt is
+    accepted once two plucks agree on the paired fundamental within 2% — repeatability is
+    the control. Motors stay enabled so the pulley is held and the span has defined ends."""
     from .collect import capture_stream
-    print('Pluck test: on the display cue, pluck the named span BESIDE THE HEAD like a '
-          'guitar string — pull ~5 mm sideways, release sharply. Pluck HARD: weak plucks '
-          'show only harmonics. Left/right of the SAME belt must agree — that is the '
-          'built-in check against structural artifacts.')
+    print('Pluck test: on the display cue, pluck the LONGEST free span of each belt (across '
+          'the front on most CoreXY) mid-span, like a guitar string — pull ~5 mm sideways, '
+          'release sharply. Pluck HARD; the same span on both belts. Each belt needs two '
+          'agreeing plucks.')
     if args.dry_run:
         return 0
     refuse_if_printing(kl)
@@ -444,42 +436,39 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
     if ambient:
         print('   ambient lines excluded: %s' % ', '.join('%.0f Hz' % f for f, _ in ambient))
 
-    def measure_side(label, side):
+    def measure_belt(label):
+        agreed = []
         for attempt in range(1, args.plucks + 1):
-            cue('Ready: %s %s in 3s' % (label, side))
+            cue('Ready: belt %s in 3s' % label)
             kl.gcode('G4 P3000')
-            cue('PLUCK %s %s now!' % (label, side))
+            cue('PLUCK belt %s now!' % label)
             _, samples = capture_stream(hw, 'G4 P5000', 4.8)
             tones = pluck_tones(samples, ambient=ambient)
             freq, paired = fundamental(tones)
             if freq is None:
-                cue('%s %s: nothing heard — again' % (label, side))
-                print('   belt %s %s try %d: nothing heard' % (label, side, attempt))
+                cue('Belt %s: nothing heard — again' % label)
+                print('   belt %s try %d: nothing heard' % (label, attempt))
                 continue
             note = 'f=%.1f Hz %s  [%s]' % (freq, 'paired f+2f' if paired else
                                            'UNPAIRED — may be a harmonic, pluck harder',
                                            ', '.join('%.0f(x%.0f)' % t for t in tones[:3]))
-            print('   belt %s %s try %d: %s' % (label, side, attempt, note))
-            if paired:
-                return freq
-            cue('%s %s: unclear tone — pluck HARDER' % (label, side))
-        cue('FAILED: %s %s gave no clean tone' % (label, side))    # the display must say why
-        raise SystemExit('belt %s (%s of head): no paired fundamental in %d plucks — pluck '
-                         'harder, mid-span, and re-run' % (label, side, args.plucks))
+            print('   belt %s try %d: %s' % (label, attempt, note))
+            if not paired:
+                cue('Belt %s: unclear tone — pluck HARDER' % label)
+                continue
+            agreed.append(freq)
+            if len(agreed) >= 2 and abs(agreed[-1] - agreed[-2]) <= 0.02 * agreed[-1]:
+                print('   belt %s: %.1f / %.1f Hz agree — accepted' % (label, agreed[-2], agreed[-1]))
+                return (agreed[-1] + agreed[-2]) / 2
+            cue('Belt %s heard %.0f Hz — once more' % (label, freq))
+        cue('FAILED: belt %s gave no stable tone' % label)         # the display must say why
+        raise SystemExit('belt %s: no two agreeing plucks in %d tries — pluck harder, '
+                         'mid-span, and re-run' % (label, args.plucks))
 
     fundamentals = {}
     try:
         for label in ('A', 'B'):
-            left = measure_side(label, 'LEFT')
-            right = measure_side(label, 'RIGHT')
-            if not sides_agree(left, right):
-                print('   WARNING belt %s: left %.1f vs right %.1f Hz disagree (>3%%) — same '
-                      'loop and equal spans must match. Head off-center or a span is '
-                      'obstructed; the A/B verdict below is low-confidence.' % (label, left, right))
-            else:
-                print('   belt %s: left %.1f / right %.1f Hz agree — structural control OK'
-                      % (label, left, right))
-            fundamentals[label] = (left + right) / 2
+            fundamentals[label] = measure_belt(label)
     finally:
         run_restore(lambda: kl.gcode('G28 X Y'))
 

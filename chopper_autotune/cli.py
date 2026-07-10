@@ -189,8 +189,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help='pluck: plucked span length in cm -> report absolute newtons')
     b.add_argument('--mu', type=float, default=7.7,
                    help='pluck: belt linear density in g/m, default 7.7 (GT2 6 mm)')
-    b.add_argument('--plucks', type=int, default=4,
-                   help='pluck: capture windows per belt, default 4 (stops after 2 agree)')
+    b.add_argument('--plucks', type=int, default=6,
+                   help='pluck: capture windows per belt, default 6 (stops after 2 agree)')
     b.add_argument('--socket', default=None)
     b.add_argument('--dry-run', action='store_true')
     b.add_argument('-y', '--yes', action='store_true')

@@ -305,11 +305,13 @@ inverted the axial-sweep scare: **A = 101.6 Hz, B = 105.0 Hz — tensions matche
 within ~7 %** (T ∝ f²), confirming that the 15 % diagonal gap was structural.
 `CHOPPER_BELTS PLUCK=1` productizes this: display-cued plucks, automatic f/2f
 pairing (lone lines are flagged as suspect harmonics), tension ratio from f²,
-and absolute newtons from T = μ·(2·L·f)² when the span length is given. The
-protocol carries a **structural control**: each belt is plucked left of the head
-and right of it — one loop, one tension, equal spans at the center park — so the
-two sides must agree before belts are compared, and a disagreement flags the
-reading (head off-center, an obstructed span) instead of being trusted.
+and absolute newtons from T = μ·(2·L·f)² when the span length is given. The protocol
+settled on the **longest free span** of each belt, with **repeatability as the
+control** (two plucks must agree within 2 % before a belt is accepted). A
+left/right-of-head variant — one loop, equal spans, a built-in cross-check —
+looked more elegant but failed in the field: near-head spans are too short and
+stiff to pluck usefully, ringing weakly and briefly (measured: one faint
+~246 Hz line, then nothing) [measured].
 
 ## Practical rules distilled so far
 
