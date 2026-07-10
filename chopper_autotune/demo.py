@@ -125,7 +125,7 @@ def showcase_together(kl, args) -> int:
         raise SystemExit('show failed to collect measurements')
     d, t = statistics.mean(results['default']), statistics.mean(results['tuned'])
     print('\nboth motors together: %.2fx less vibration overall' % (d / t))
-    screen.update('Chopper: both motors %.1fx less vibration' % (d / t), force=True)
+    screen.final('Chopper: both motors %.1fx less vibration' % (d / t))
     for axis in MOTORS:
         write_state(axis, tuned[axis], d / t)   # combined factor, shown per motor by the panel
     return 0
@@ -259,7 +259,7 @@ def demo(kl: Klippy, args) -> int:
     print('\n  %.2fx less vibration overall' % (d / t))
     if noise and t > noise and d > noise:
         print('  %.2fx less vibration above the %.0f noise floor' % ((d - noise) / (t - noise), noise))
-    screen.update('Chopper demo: %.1fx less vibration' % (d / t), force=True)
+    screen.final('Chopper demo: %.1fx less vibration' % (d / t))
     write_state(args.axis, tuned, d / t)
     return 0
 

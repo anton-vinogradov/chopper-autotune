@@ -222,8 +222,7 @@ def extruder_tune(kl: Klippy, args) -> int:
         print('[tmc%s extruder]' % driver_name)
         for key, value in winner.fields().items():
             print('driver_%s: %d' % (key, value))
-        screen.update('Chopper E: %s score %.0f' % (winner.label(), rescored[winner]),
-                      force=True)
+        screen.final('Chopper E: %s score %.0f' % (winner.label(), rescored[winner]))
 
         if args.save:
             from .analyze import _persist, updated_config

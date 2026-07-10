@@ -59,10 +59,11 @@ class Panel(ScreenPanel):
         for index, (icon, label, style, command, confirm) in enumerate(actions):
             button = self._gtk.Button(icon, label, style)
             button.connect("clicked", self.run, command, confirm)
-            grid.attach(button, index % 3, index // 3, 1, 1)
+            grid.attach(button, index % 4, index // 4, 1, 1)
         stop = self._gtk.Button("stop", _("Stop"), "color4")
         stop.connect("clicked", self.stop)
-        grid.attach(stop, len(actions) % 3, len(actions) // 3, 1, 1)
+        # 4 columns keep the buttons to three rows, leaving the status area its height
+        grid.attach(stop, len(actions) % 4, len(actions) // 4, 1, 1)
 
         self.status = Gtk.Label(hexpand=True, vexpand=True, halign=Gtk.Align.CENTER,
                                 valign=Gtk.Align.CENTER, wrap=True,
