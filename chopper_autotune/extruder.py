@@ -12,6 +12,8 @@ heater is switched off on every exit path.
 """
 from __future__ import annotations
 
+import json
+import os
 import statistics
 
 import numpy as np
@@ -25,6 +27,26 @@ from .search import penalized_score
 AMP_CAP = 3.0               # max half-stroke, mm of filament (a retraction-scale swing)
 CRUISE_SEC = 2.4            # oscillation time per measurement
 VALIDATE_TOP = 3            # re-measure the best candidates before recommending
+STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/extruder.json')
+
+
+def save_winner_state(driver_name: str, winner: tmc.Chopper):
+    """The extruder has no dataset like the axes do; remember the winner so SAVE_LAST=1
+    can persist it later without re-running the whole heated tune."""
+    try:
+        os.makedirs(os.path.dirname(STATE), exist_ok=True)
+        with open(STATE, 'w') as handle:
+            json.dump({'driver': driver_name, 'fields': winner.fields()}, handle)
+    except OSError:
+        pass
+
+
+def load_winner_state() -> 'dict | None':
+    try:
+        with open(STATE) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return None
 
 
 def extruder_context(settings) -> 'tuple[tmc.Driver, str, dict, tuple | None, float]':
@@ -108,6 +130,19 @@ def run_extruder(args) -> int:
 
 
 def extruder_tune(kl: Klippy, args) -> int:
+    if args.save_last:                              # persist the stored winner, no re-tune
+        state = load_winner_state()
+        if not state:
+            raise SystemExit('no stored extruder winner — run CHOPPER_EXTRUDER first')
+        from .analyze import _persist, updated_config
+        from .moonraker import Moonraker
+        print('Persisting the stored extruder winner: %s' % state['fields'])
+        _persist(Moonraker(args.url),
+                 [('tmc%s extruder' % state['driver'],
+                   lambda text, section: updated_config(text, section, state['fields']))],
+                 'the extruder registers')
+        return 0
+
     settings = kl.settings()
     driver, driver_name, baseline_regs, stealth, min_temp = extruder_context(settings)
     temp = float(args.temp)
@@ -177,6 +212,7 @@ def extruder_tune(kl: Klippy, args) -> int:
             rescored[combo] = statistics.mean(scores)
             print('  validate %s: %.0f' % (combo.label(), rescored[combo]))
         winner = min(rescored, key=rescored.get)
+        save_winner_state(driver_name, winner)
 
         print('\n=== Extruder winner ===')
         print('%s  score %.0f  (f_chop %.1f kHz, h_eff %d)'
@@ -197,7 +233,7 @@ def extruder_tune(kl: Klippy, args) -> int:
                        lambda text, section: updated_config(text, section, winner.fields()))],
                      'the extruder registers')
         else:
-            print('Re-run with SAVE=1 to persist into the config')
+            print('SAVE_LAST=1 persists this winner into the config without re-tuning')
         return 0
     finally:
         run_restore(
