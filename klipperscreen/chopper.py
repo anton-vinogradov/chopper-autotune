@@ -27,8 +27,9 @@ class Panel(ScreenPanel):
         super().__init__(screen, title or _("Chopper Autotune"))
 
         # the chopper is a property of the motor: A = stepper_x, B = stepper_y on any
-        # kinematics (on CoreXY those two steppers literally are motors A and B)
-        self.motors = (("stepper_x", "A"), ("stepper_y", "B"))
+        # kinematics (on CoreXY those two steppers literally are motors A and B);
+        # the extruder's TMC section is "tmcXXXX extruder", so the same lookup works
+        self.motors = (("stepper_x", "A"), ("stepper_y", "B"), ("extruder", "E"))
 
         actions = [
             # row 1 — tuning
@@ -45,9 +46,11 @@ class Panel(ScreenPanel):
              _("Jog motor A (stepper_x) briefly so you can see which motor and belt it is, then release the motors?")),
             ("move", _("Motor B"), "color3", "CHOPPER_BELTS SHOW=B",
              _("Jog motor B (stepper_y) briefly so you can see which motor and belt it is, then release the motors?")),
-            # row 3 — save / demo / (stop is added after)
+            # row 3 — extruder / save / demo (stop is added after)
+            ("fine-tune", _("Extruder"), "color4", "CHOPPER_EXTRUDER",
+             _("Tune the extruder chopper? The hotend will HEAT to 200C (filament stays in), then ~10 minutes of measurement; the heater turns off when done.")),
             ("complete", _("Save"), "color1", "CHOPPER_SAVE",
-             _("Save the latest tuning result for each motor into the config and restart Klipper?")),
+             _("Save the latest tuning result for each motor (and the extruder's last winner) into the config and restart Klipper?")),
             ("resume", _("Show"), "color2", "CHOPPER_DEMO MOTOR=AB ROUNDS=2 REPEATS=2",
              _("Play the driver defaults against the tuned registers on both motors so you can hear the difference?")),
         ]

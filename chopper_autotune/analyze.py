@@ -286,12 +286,18 @@ def _persist(mk, edits: 'list[tuple[str, object]]', what: str):
           % (what, ', '.join(edited), BACKUP_SUFFIX))
 
 
-def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]'):
-    """Persist chopper winners into the Klipper config, one restart for the batch."""
-    _persist(mk, [('tmc%s %s' % (manifest['driver'], manifest['stepper']),
-                   lambda text, section, combo=combo: updated_config(text, section,
-                                                                     combo.fields()))
-                  for manifest, combo in items], 'the new registers')
+def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]', extruder_state: 'dict | None' = None):
+    """Persist chopper winners into the Klipper config, one restart for the batch;
+    the extruder's stored winner (see extruder.save_winner_state) rides along."""
+    edits = [('tmc%s %s' % (manifest['driver'], manifest['stepper']),
+              lambda text, section, combo=combo: updated_config(text, section,
+                                                                combo.fields()))
+             for manifest, combo in items]
+    if extruder_state:
+        edits.append(('tmc%s extruder' % extruder_state['driver'],
+                      lambda text, section: updated_config(text, section,
+                                                           extruder_state['fields'])))
+    _persist(mk, edits, 'the new registers')
 
 
 def run_save_currents(mk, items: 'list[tuple[str, str, float]]'):
@@ -307,6 +313,7 @@ def run_save_latest(args) -> int:
     one restart. Backs the panel's Save button: save what the last tuning achieved, whether
     the motors were tuned separately (Tune A, Tune B) or together (Tune both)."""
     from .collect import motor_label
+    from .extruder import load_winner_state
     from .tune import winner_of
     seen, items = set(), []
     for path in reversed(dataset_dirs()):
@@ -317,9 +324,12 @@ def run_save_latest(args) -> int:
             manifest, combo = winner_of(str(path), args.audible_weight)
             items.append((manifest, combo))
             print('motor %s: saving %s (from %s)' % (motor_label(axis), combo.label(), Path(path).name))
-    if not items:
+    extruder_state = load_winner_state()
+    if extruder_state:
+        print('extruder: saving %s (last CHOPPER_EXTRUDER winner)' % extruder_state['fields'])
+    if not items and not extruder_state:
         raise SystemExit('no tuning datasets to save — run CHOPPER_TUNE first')
-    run_save(Moonraker(args.url), items)
+    run_save(Moonraker(args.url), items, extruder_state)
     return 0
 
 
