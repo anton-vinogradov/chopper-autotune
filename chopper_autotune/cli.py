@@ -269,6 +269,23 @@ def build_parser() -> argparse.ArgumentParser:
     cur.add_argument('--dry-run', action='store_true')
     cur.add_argument('-y', '--yes', action='store_true')
 
+    e = sub.add_parser('extruder', help='tune the extruder chopper (HEATS the hotend; '
+                                        'filament stays loaded)')
+    e.add_argument('--temp', type=float, default=200.0,
+                   help='hotend temperature in C, default 200 (PLA and composites; '
+                        'PETG ok; ABS owners: 240)')
+    e.add_argument('--speed', type=float, default=None,
+                   help='skip the resonance scan and descend at this filament speed (mm/s)')
+    e.add_argument('--min-speed', type=int, default=1, help='scan start, filament mm/s')
+    e.add_argument('--max-speed', type=int, default=12, help='scan end, filament mm/s')
+    e.add_argument('--audible-weight', type=float, default=0.25)
+    e.add_argument('--save', action='store_true',
+                   help='write the winner into [tmcXXXX extruder] (backup first) and restart')
+    e.add_argument('--socket', default=None)
+    e.add_argument('--url', default='http://127.0.0.1:7125')
+    e.add_argument('--dry-run', action='store_true')
+    e.add_argument('-y', '--yes', action='store_true')
+
     env = sub.add_parser('envelope', help='motor torque ceiling: top speed and acceleration '
                                           'before skipped steps, at the configured run current')
     env.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y', 'xy'),
@@ -306,6 +323,9 @@ def main(argv=None) -> int:
     if args.command == 'envelope':
         from .envelope import run_envelope
         return run_envelope(args)
+    if args.command == 'extruder':
+        from .extruder import run_extruder
+        return run_extruder(args)
     if args.command == 'tune':
         from .tune import run_tune
         return run_tune(args)
