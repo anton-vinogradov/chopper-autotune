@@ -160,6 +160,38 @@ def test_tension_newtons():
     assert tension_newtons(109.8, 35.0, 7.7) / t == pytest.approx(1.10, abs=0.01)
 
 
+def _pluck_samples(freq, fs=3200.0, total=4.8, burst_at=2.0, burst_len=0.6, amp=1.0,
+                   ambient_freq=None):
+    """A pluck capture: a decaying tone burst somewhere inside a long window, plus an
+    optional always-on ambient line (a fan)."""
+    t = np.arange(0, total, 1 / fs)
+    ax = 0.02 * np.random.default_rng(7).standard_normal(t.size)
+    burst = (t >= burst_at) & (t < burst_at + burst_len)
+    ax[burst] += amp * np.sin(2 * np.pi * freq * t[burst]) * np.exp(-(t[burst] - burst_at) / 0.2)
+    if ambient_freq:
+        ax += 0.15 * np.sin(2 * np.pi * ambient_freq * t)
+    return np.column_stack([t, ax, np.zeros_like(t), np.zeros_like(t)])
+
+
+def test_pluck_tones_finds_a_short_burst_in_a_long_window():
+    # a weak 0.6 s ring inside 4.8 s: a whole-window FFT dilutes it (the measured
+    # "nothing heard" failure); the sub-window scan must catch it
+    samples = _pluck_samples(246.0, amp=0.4)
+    tones = belts_mod.pluck_tones(samples)
+    assert tones and abs(tones[0][0] - 246.0) < 3.0
+
+
+def test_pluck_tones_excludes_the_ambient_line():
+    # a persistent ~600 Hz line (measured on the rig) must not be reported as a pluck
+    samples = _pluck_samples(246.0, amp=0.4, ambient_freq=600.0)
+    quiet = _pluck_samples(0.0, amp=0.0, ambient_freq=600.0)
+    ambient = belts_mod.pluck_tones(quiet)
+    assert any(abs(f - 600.0) < 6.0 for f, _ in ambient)
+    tones = belts_mod.pluck_tones(samples, ambient=ambient)
+    assert tones and abs(tones[0][0] - 246.0) < 3.0
+    assert all(abs(f - 600.0) > 6.0 for f, _ in tones)
+
+
 def test_sides_agree_is_the_structural_control():
     # one loop, equal spans at center park -> the two sides must match within 3%
     assert sides_agree(104.6, 105.0)

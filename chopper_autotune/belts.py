@@ -42,7 +42,9 @@ MATCH_TOLERANCE = 5.0       # percent apart below which the belts count as match
 MAX_HZ_PER_SEC = 2.0        # Klipper caps the sweep rate here
 STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/belts.json')
 
-PLUCK_BAND = (40.0, 500.0)  # string fundamentals and their 2f live here; skips the ~600 Hz ambient
+PLUCK_BAND = (40.0, 1000.0)  # near-head spans ring ~200-450 Hz, their 2f up to ~900;
+                             # ambient lines (e.g. a persistent ~600 Hz) are excluded
+                             # via the quiet reference instead of capping the band
 PLUCK_SNR = 30.0            # a pluck tone must beat the window's median spectrum by this
 PAIR_TOLERANCE = 0.04       # |f2 - 2*f1| / f2 for an (f, 2f) match
 GT2_MU = 7.7                # g/m, GT2 6 mm with a fiberglass core
@@ -331,12 +333,9 @@ def belts(kl: Klippy, args) -> int:
     return 0
 
 
-def pluck_tones(samples: np.ndarray, band: 'tuple[float, float]' = PLUCK_BAND,
-                count: int = 6) -> 'list[tuple[float, float]]':
-    """Tonal peaks of a pluck capture as (freq, snr-over-median), strongest first."""
-    acc = samples[:, 1:4]
+def _window_tones(acc: np.ndarray, fs: float, band: 'tuple[float, float]',
+                  count: int) -> 'list[tuple[float, float]]':
     acc = acc - acc.mean(axis=0)
-    fs = 1.0 / np.median(np.diff(samples[:, 0]))
     n = acc.shape[0]
     window = np.hanning(n)[:, None]
     nfft = 1 << int(np.ceil(np.log2(4 * n)))
@@ -356,6 +355,34 @@ def pluck_tones(samples: np.ndarray, band: 'tuple[float, float]' = PLUCK_BAND,
         if len(out) >= count:
             break
     return out
+
+
+def exclude_ambient(tones: 'list[tuple[float, float]]',
+                    ambient: 'list[tuple[float, float]] | None') -> 'list[tuple[float, float]]':
+    """Drop tones that were already ringing in the quiet reference (fans, electronics —
+    measured: a persistent ~600 Hz line on the reference rig)."""
+    if not ambient:
+        return tones
+    return [t for t in tones
+            if all(abs(t[0] - a) > max(6.0, 0.02 * a) for a, _ in ambient)]
+
+
+def pluck_tones(samples: np.ndarray, band: 'tuple[float, float]' = PLUCK_BAND,
+                ambient: 'list[tuple[float, float]] | None' = None,
+                count: int = 6) -> 'list[tuple[float, float]]':
+    """Tonal peaks of a pluck capture as (freq, snr-over-median), strongest first.
+    The pluck ring lives in a fraction of the capture and decays fast, so a whole-window
+    FFT dilutes it below the noise (measured: near-head plucks read "nothing heard");
+    scan overlapping ~1.2 s sub-windows and take the loudest one instead."""
+    fs = 1.0 / np.median(np.diff(samples[:, 0]))
+    acc = samples[:, 1:4]
+    step = max(1, int(1.2 * fs))
+    best, best_snr = [], 0.0
+    for start in range(0, max(1, acc.shape[0] - step + 1), step // 2):
+        tones = exclude_ambient(_window_tones(acc[start:start + step], fs, band, count), ambient)
+        if tones and tones[0][1] > best_snr:
+            best, best_snr = tones, tones[0][1]
+    return best
 
 
 def fundamental(tones: 'list[tuple[float, float]]') -> 'tuple[float | None, bool]':
@@ -411,15 +438,22 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
         screen.update(text, force=True)
         print('>> %s' % text, flush=True)
 
+    print('Capturing the quiet reference (do not touch)...')
+    _, quiet = capture_stream(hw, 'G4 P3000', 2.8)
+    ambient = pluck_tones(quiet)
+    if ambient:
+        print('   ambient lines excluded: %s' % ', '.join('%.0f Hz' % f for f, _ in ambient))
+
     def measure_side(label, side):
         for attempt in range(1, args.plucks + 1):
             cue('Ready: %s %s in 3s' % (label, side))
             kl.gcode('G4 P3000')
             cue('PLUCK %s %s now!' % (label, side))
             _, samples = capture_stream(hw, 'G4 P5000', 4.8)
-            tones = pluck_tones(samples)
+            tones = pluck_tones(samples, ambient=ambient)
             freq, paired = fundamental(tones)
             if freq is None:
+                cue('%s %s: nothing heard — again' % (label, side))
                 print('   belt %s %s try %d: nothing heard' % (label, side, attempt))
                 continue
             note = 'f=%.1f Hz %s  [%s]' % (freq, 'paired f+2f' if paired else
@@ -428,6 +462,8 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
             print('   belt %s %s try %d: %s' % (label, side, attempt, note))
             if paired:
                 return freq
+            cue('%s %s: unclear tone — pluck HARDER' % (label, side))
+        cue('FAILED: %s %s gave no clean tone' % (label, side))    # the display must say why
         raise SystemExit('belt %s (%s of head): no paired fundamental in %d plucks — pluck '
                          'harder, mid-span, and re-run' % (label, side, args.plucks))
 

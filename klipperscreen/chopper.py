@@ -64,9 +64,14 @@ class Panel(ScreenPanel):
         self.status = Gtk.Label(hexpand=True, vexpand=True, halign=Gtk.Align.CENTER,
                                 valign=Gtk.Align.CENTER, wrap=True,
                                 wrap_mode=Pango.WrapMode.WORD_CHAR)
+        # three button rows leave little height: scroll the status area instead of
+        # clipping the register table off the bottom of the screen
+        scroll = Gtk.ScrolledWindow(vexpand=True)
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.add(self.status)
 
         self.content.add(grid)
-        self.content.add(self.status)
+        self.content.add(scroll)
         self.content.show_all()
 
         self.show_status(self._printer.get_stat("display_status", "message"))
@@ -89,10 +94,10 @@ class Panel(ScreenPanel):
 
     def show_status(self, message):
         if message and message.strip():
-            self.status.set_markup(f"<span size='x-large'>{GLib.markup_escape_text(message.strip())}</span>")
+            self.status.set_markup(f"<span size='large'>{GLib.markup_escape_text(message.strip())}</span>")
         else:
             self.status.set_markup(
-                f"<span font_family='monospace' size='large'>{GLib.markup_escape_text(self.register_table())}</span>")
+                f"<span font_family='monospace' size='medium'>{GLib.markup_escape_text(self.register_table())}</span>")
 
     def register_table(self):
         default = "/".join(str(v) for v in DEFAULT)
