@@ -120,6 +120,8 @@ If you run [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen), `ins
 
 - **Tune A** / **Tune B** — tune one motor (A = `stepper_x`, B = `stepper_y`; the chopper is a motor property, so it's the same on any kinematics — and on CoreXY those two steppers literally are motors A and B);
 - **Tune both** — tune both motors in one run, seeding the second from the first winner;
+- **Belts** — match the two CoreXY belts: measures both, then jogs the looser one and shows the gap and how it changed since last time, so you can see which belt to tighten and by how much;
+- **Motor A** / **Motor B** — jog just that motor for a moment so you can see which physical motor and belt it is, then release the motors so you can reach in;
 - **Save** — write the latest tuning result for each motor into the config (backup first, one restart);
 - **Show** — set the defaults, then the tuned registers, on **both** motors and do coordinated moves (both run together, like printing) so you can *hear* the whole printer change; it reports the combined drop in vibration;
 - **Stop** — abort a running job; the tool restores the registers and re-homes before it exits.
