@@ -63,3 +63,20 @@ def test_screen_final_adds_a_popup():
     screen.final('Belts matched: A 105 / B 105 Hz')
     assert 'M117 Belts matched: A 105 / B 105 Hz' in kl.sent
     assert 'M118 Belts matched: A 105 / B 105 Hz' in kl.sent
+
+
+def test_fit_measure_time_shrinks_for_fast_resonances():
+    """The measured failure: motor B's 96 mm/s resonance needed 129 mm of travel against
+    the 104 mm cap and aborted the tune — the cruise must shrink to fit instead."""
+    import pytest
+
+    from chopper_autotune.collect import fit_measure_time
+
+    # 96 mm/s, accel 1000, limit 104 -> fits at ~0.99 s, not the default 1.25
+    fitted = fit_measure_time([96], 1000.0, 104.0, 1.25)
+    assert 0.9 < fitted < 1.0
+    # a comfortable speed keeps the requested cruise
+    assert fit_measure_time([58], 1000.0, 104.0, 1.25) == 1.25
+    # physically impossible even at the floor -> still a clear error
+    with pytest.raises(SystemExit, match='raise --accel'):
+        fit_measure_time([250], 1000.0, 104.0, 1.25)
