@@ -81,6 +81,23 @@ def scan_id(speed: int, iteration: int, direction: int) -> str:
     return 'v%03d_i%d_%s' % (speed, iteration, 'fwd' if direction > 0 else 'rev')
 
 
+def rising_at_edge(curve: 'list[tuple[int, float]]', max_speed: int, step: int) -> bool:
+    """True when the strongest point sits at the top of the scanned range — the peak is
+    (or may be) clipped by the range edge, the same lie the narrow belt sweep told us."""
+    if len(curve) < 3:
+        return False
+    return max(curve, key=lambda point: point[1])[0] >= max_speed - step
+
+
+def fit_max_speed(accel: float, limit: float, measure_time: float, step: int) -> int:
+    """The highest scannable speed: the whole move (ramps + a MIN_CRUISE_SEC cruise) must
+    still fit the travel limit."""
+    speed = step
+    while cruise_for(speed + step, accel, limit, measure_time) >= MIN_CRUISE_SEC:
+        speed += step
+    return speed
+
+
 def build_speed_plan(args, accel: float, limit: float) -> 'list[tuple[int, float]]':
     """(speed, cruise) pairs whose whole move fits the travel limit, over the requested range."""
     plan = []
@@ -223,6 +240,22 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
     before_move = make_parker(kl, hw)
     try:
         failed = run_sweep(hw, ds, args, plan, accel, screen, before_move, done)
+        curve = build_curve(ds)
+        peaks = find_peaks(smooth([magnitude for _, magnitude in curve])) if curve else []
+        # a curve still rising at the range edge means the peak is clipped, not absent
+        # (measured: after a belt re-tension the resonance moved past the default 120) —
+        # extend the scan upward as far as the axis allows instead of aborting the tune
+        ceiling = fit_max_speed(accel, limit, args.measure_time, args.step)
+        while curve and not peaks and rising_at_edge(curve, args.max_speed, args.step) \
+                and args.max_speed < ceiling:
+            new_max = min(ceiling, args.max_speed + max(4 * args.step, 40))
+            print('The curve is still rising at %d mm/s — extending the scan to %d'
+                  % (args.max_speed, new_max))
+            args.min_speed, args.max_speed = args.max_speed + args.step, new_max
+            extension = build_speed_plan(args, accel, limit)
+            failed += run_sweep(hw, ds, args, extension, accel, screen, before_move, done)
+            curve = build_curve(ds)
+            peaks = find_peaks(smooth([magnitude for _, magnitude in curve]))
     finally:
         print('Restoring registers, homing')
         run_restore(
@@ -230,10 +263,8 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
             lambda: exit_spreadcycle(kl, hw),
             lambda: kl.gcode('G28 X Y'))
 
-    curve = build_curve(ds)
     if not curve:
         raise SystemExit('no successful measurements')
-    peaks = find_peaks(smooth([magnitude for _, magnitude in curve]))
 
     path = str(root / 'report.html')
     write_report(curve, peaks, 'resonance scan: motor %s (%s), %s'
