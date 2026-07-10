@@ -2,14 +2,16 @@ import pytest
 import numpy as np
 
 from chopper_autotune import belts as belts_mod
-from chopper_autotune.belts import (gap_pct, load_state, progress_message, save_state, verdict,
-                                    wait_for_capture, welch_peak)
+from chopper_autotune.belts import (capture_span, gap_pct, load_state, progress_message,
+                                    save_state, verdict, wait_for_capture, welch_peak)
 
 
-def _raw_csv(path, freq, fs=3200.0, seconds=1.5):
-    """A Klipper-style raw-accel CSV with a single sine tone on one axis."""
+def _raw_csv(path, freq, fs=3200.0, seconds=1.5, tones=None):
+    """A Klipper-style raw-accel CSV with sine tone(s) on one axis."""
     t = np.arange(0, seconds, 1 / fs)
-    ax = np.sin(2 * np.pi * freq * t)
+    ax = np.zeros_like(t)
+    for f, amp in (tones or [(freq, 1.0)]):
+        ax += amp * np.sin(2 * np.pi * f * t)
     rows = np.column_stack([t, ax, np.zeros_like(t), np.zeros_like(t)])
     with open(path, 'w') as fh:
         fh.write('#time,accel_x,accel_y,accel_z\n')
@@ -32,6 +34,34 @@ def test_welch_peak_respects_the_band(tmp_path):
     assert peak <= 200.0
 
 
+def test_welch_peak_stable_on_a_comb(tmp_path):
+    """A real belt answers with a comb of near-equal span modes (measured 138/153/162 within
+    8%); a bare argmax jitters between the teeth as their heights breathe run-to-run. The
+    centroid must land mid-cluster and move only slightly when the tallest tooth flips."""
+    a = tmp_path / 'a.csv'
+    b = tmp_path / 'b.csv'
+    _raw_csv(str(a), None, seconds=3.0, tones=[(138, 0.77), (153, 0.96), (162, 1.0)])
+    _raw_csv(str(b), None, seconds=3.0, tones=[(138, 0.77), (153, 1.0), (162, 0.96)])
+    peak_a, _ = welch_peak(str(a), band=(20.0, 200.0))
+    peak_b, _ = welch_peak(str(b), band=(20.0, 200.0))
+    assert 145.0 <= peak_a <= 165.0
+    assert abs(peak_a - peak_b) < 5.0       # argmax would jump 162 -> 153 (9 Hz)
+
+
+def test_capture_span_reads_the_edges(tmp_path):
+    csv = tmp_path / 'raw.csv'
+    _raw_csv(str(csv), freq=100.0, seconds=2.0)
+    assert capture_span(str(csv)) == pytest.approx(2.0, abs=0.01)
+
+
+def test_wait_for_capture_rejects_a_truncated_sweep(tmp_path):
+    # size is stable but the capture covers only 2 s of an expected 60 s sweep
+    csv = tmp_path / 'raw_data_beltA.csv'
+    _raw_csv(str(csv), freq=100.0, seconds=2.0)
+    with pytest.raises(SystemExit, match='incomplete'):
+        wait_for_capture(str(tmp_path / 'raw_data_*beltA*.csv'), min_span_sec=60.0, timeout=2.5)
+
+
 def test_verdict_balanced_and_mismatch():
     assert 'balanced' in verdict(155.0, 153.0)                 # ~1.3% apart
     m = verdict(155.0, 133.0)                                  # ~15% apart, B lower
@@ -48,13 +78,14 @@ def test_verdict_tolerance_is_configurable():
 
 def test_wait_for_capture_returns_a_settled_file(tmp_path):
     csv = tmp_path / 'raw_data_beltA.csv'
-    csv.write_text('#time,accel_x,accel_y,accel_z\n0.0,1,0,0\n')
-    assert wait_for_capture(str(tmp_path / 'raw_data_*beltA*.csv'), timeout=5.0) == str(csv)
+    _raw_csv(str(csv), freq=100.0, seconds=2.0)
+    assert wait_for_capture(str(tmp_path / 'raw_data_*beltA*.csv'),
+                            min_span_sec=1.5, timeout=5.0) == str(csv)
 
 
 def test_wait_for_capture_times_out_on_nothing(tmp_path):
-    with pytest.raises(SystemExit, match='no usable capture'):
-        wait_for_capture(str(tmp_path / 'raw_data_*.csv'), timeout=0.5)
+    with pytest.raises(SystemExit, match='incomplete'):
+        wait_for_capture(str(tmp_path / 'raw_data_*.csv'), timeout=0.8)
 
 
 def test_belts_macro_args_translate():
@@ -95,12 +126,9 @@ def test_state_round_trips(tmp_path, monkeypatch):
     assert load_state() == {'A': 156.0, 'B': 132.0}
 
 
-def test_belts_show_and_identify_args():
+def test_belts_show_args():
     from chopper_autotune.cli import _gcode_args, boolean_flags, build_parser
     parser = build_parser()
     # SHOW=B -> just jog belt B; case-insensitive
     args = parser.parse_args(_gcode_args(['belts', 'SHOW=B'], boolean_flags(parser)))
-    assert args.show == 'b' and not args.no_identify
-    # NO_IDENTIFY=1 -> skip the post-measurement jog
-    args = parser.parse_args(_gcode_args(['belts', 'NO_IDENTIFY=1'], boolean_flags(parser)))
-    assert args.no_identify and args.show is None
+    assert args.show == 'b'

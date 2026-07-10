@@ -40,7 +40,7 @@ class Panel(ScreenPanel):
              _("Tune both motors (A and B)? About 20 minutes of movement.")),
             # row 2 — belts & which-motor-is-which
             ("move", _("Belts"), "color1", "CHOPPER_BELTS",
-             _("Match the two CoreXY belts? ~3 min: it measures both, then jogs the looser belt so you can see which one to tighten.")),
+             _("Match the two CoreXY belts? ~3 min: measures both and shows the gap; use Motor A / Motor B to see which is which.")),
             ("move", _("Motor A"), "color2", "CHOPPER_BELTS SHOW=A",
              _("Jog motor A (stepper_x) briefly so you can see which motor and belt it is, then release the motors?")),
             ("move", _("Motor B"), "color3", "CHOPPER_BELTS SHOW=B",

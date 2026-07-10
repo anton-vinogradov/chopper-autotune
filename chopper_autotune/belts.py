@@ -64,32 +64,52 @@ def progress_message(freq_a: float, freq_b: float, prev: 'dict | None',
     return 'Tighten %s · %s · %s' % (looser, change, now)
 
 
-def wait_for_capture(pattern: str, timeout: float = 20.0) -> str:
+def capture_span(path: str) -> float:
+    """Seconds of data in a Klipper raw-accel CSV, reading only the file's edges (the
+    last line may still be mid-write — skipped defensively)."""
+    first = last = None
+    with open(path, 'rb') as fh:
+        for line in fh:
+            if not line.startswith(b'#') and b',' in line:
+                first = float(line.split(b',', 1)[0])
+                break
+        fh.seek(0, os.SEEK_END)
+        fh.seek(-min(fh.tell(), 4096), os.SEEK_END)
+        for line in reversed(fh.read().splitlines()):
+            try:
+                last = float(line.split(b',', 1)[0])
+                break
+            except (ValueError, IndexError):
+                continue
+    return (last - first) if first is not None and last is not None else 0.0
+
+
+def wait_for_capture(pattern: str, min_span_sec: float = 0.0, timeout: float = 30.0) -> str:
     """Wait for Klipper's raw-accel CSV to appear and finish flushing. TEST_RESONANCES
-    returns before its background writer has flushed the file (with OUTPUT=resonances the
-    PSD step masked this; with raw_data alone we would read an empty file), so poll until
-    a matching file exists and its size stops growing."""
+    returns before its background writer has flushed the file, and the writer pauses
+    between batches — a size that merely stopped growing for one poll can still be a
+    TRUNCATED sweep (measured: a cut at ~60 s read as a phantom 156 Hz peak). So demand
+    the size stay stable across two polls AND the capture cover the sweep duration."""
     deadline = time.time() + timeout
-    last = -1
+    last, stable = -1, 0
     path = None
     while time.time() < deadline:
         files = glob.glob(pattern)
         if files:
             path = max(files, key=os.path.getmtime)
             size = os.path.getsize(path)
-            if size > 0 and size == last:
-                return path
+            stable = stable + 1 if size > 0 and size == last else 0
             last = size
+            if stable >= 2 and capture_span(path) >= 0.9 * min_span_sec:
+                return path
         time.sleep(0.3)
-    if path and os.path.getsize(path) > 0:
-        return path
-    raise SystemExit('TEST_RESONANCES produced no usable capture (%s) — check the '
-                     '[resonance_tester] output path' % pattern)
+    raise SystemExit('capture incomplete for %s: %.0fs of the %.0fs sweep flushed — '
+                     'check the [resonance_tester] output path'
+                     % (pattern, capture_span(path) if path else 0.0, min_span_sec))
 
 
-def welch_peak(path: str, band: 'tuple[float, float]') -> 'tuple[float, float]':
-    """Dominant response frequency within `band` from a Klipper raw-accel CSV, via a Welch
-    PSD (segmented, Hann-windowed, summed over axes). Returns (peak Hz, bin width Hz)."""
+def welch_psd(path: str) -> 'tuple[np.ndarray, np.ndarray]':
+    """Welch PSD (segmented, Hann-windowed, summed over axes) of a Klipper raw-accel CSV."""
     data = np.loadtxt(path, delimiter=',', comments='#')
     times, acc = data[:, 0], data[:, 1:4]
     fs = 1.0 / np.median(np.diff(times))
@@ -104,10 +124,41 @@ def welch_peak(path: str, band: 'tuple[float, float]') -> 'tuple[float, float]':
         segments += 1
     if segments == 0:
         raise SystemExit('belt capture too short to analyze (%s)' % os.path.basename(path))
-    psd /= segments
-    freqs = np.fft.rfftfreq(SEGMENT, 1 / fs)
+    return np.fft.rfftfreq(SEGMENT, 1 / fs), psd / segments
+
+
+def dominant(freqs: np.ndarray, psd: np.ndarray, band: 'tuple[float, float]') -> 'tuple[float, float]':
+    """Dominant response frequency within `band` as the energy centroid of the strongest
+    region. A real belt answers with a comb of nearby span modes at comparable energies
+    (measured: 138/153/162 Hz within 8 %), so a bare argmax jitters between the teeth by
+    several bins run-to-run; the centroid of the contiguous >=50 %-of-max region is stable."""
+    smooth = np.convolve(psd, np.ones(5) / 5, mode='same')
     mask = (freqs >= band[0]) & (freqs <= band[1])
-    return float(freqs[mask][np.argmax(psd[mask])]), float(freqs[1] - freqs[0])
+    f, p = freqs[mask], smooth[mask]
+    top = int(np.argmax(p))
+    lo, hi = top, top
+    while lo > 0 and p[lo - 1] >= 0.5 * p[top]:
+        lo -= 1
+    while hi < len(p) - 1 and p[hi + 1] >= 0.5 * p[top]:
+        hi += 1
+    region = slice(lo, hi + 1)
+    centroid = float((f[region] * p[region]).sum() / p[region].sum())
+    return centroid, float(freqs[1] - freqs[0])
+
+
+def top_peaks(freqs: np.ndarray, psd: np.ndarray, band: 'tuple[float, float]',
+              count: int = 3) -> 'list[float]':
+    """The strongest local maxima within `band`, for the console — so a multi-peak comb
+    (several belt spans) is visible instead of hiding behind the single number."""
+    mask = (freqs >= band[0]) & (freqs <= band[1])
+    f, p = freqs[mask], psd[mask]
+    peaks = [(p[i], f[i]) for i in range(1, len(p) - 1) if p[i - 1] < p[i] > p[i + 1]]
+    return [freq for _, freq in sorted(peaks, reverse=True)[:count]]
+
+
+def welch_peak(path: str, band: 'tuple[float, float]') -> 'tuple[float, float]':
+    freqs, psd = welch_psd(path)
+    return dominant(freqs, psd, band)
 
 
 def verdict(freq_a: float, freq_b: float, tolerance: float = MATCH_TOLERANCE) -> str:
@@ -202,11 +253,14 @@ def belts(kl: Klippy, args) -> int:
             kl.gcode('TEST_RESONANCES AXIS=%s OUTPUT=raw_data NAME=belt%s '
                      'FREQ_START=%g FREQ_END=%g HZ_PER_SEC=%g\nM400'
                      % (axis, label, band[0], band[1], hz_per_sec))
-            path = wait_for_capture('/tmp/raw_data_*belt%s*.csv' % label)
-            peak, binwidth = welch_peak(path, band)
+            path = wait_for_capture('/tmp/raw_data_*belt%s*.csv' % label,
+                                    min_span_sec=(band[1] - band[0]) / hz_per_sec)
+            freqs, psd = welch_psd(path)
+            peak, binwidth = dominant(freqs, psd, band)
             peaks[label] = peak
             edge = '  (near the sweep edge — raise MAX_FREQ)' if peak >= band[1] - 2 * binwidth else ''
-            print('   belt %s: resonance %.1f Hz%s' % (label, peak, edge))
+            print('   belt %s: resonance %.1f Hz (peaks: %s)%s'
+                  % (label, peak, ', '.join('%.0f' % f for f in top_peaks(freqs, psd, band)), edge))
     finally:
         run_restore(lambda: kl.gcode('G28 X Y'))
 
@@ -221,12 +275,13 @@ def belts(kl: Klippy, args) -> int:
                  peaks['A'] - prev['A'], peaks['B'] - prev['B']))
 
     message = progress_message(peaks['A'], peaks['B'], prev, args.tolerance)
-    apart = gap_pct(peaks['A'], peaks['B'])
-    identified = apart >= args.tolerance and not args.no_identify
-    if identified:
-        looser = 'x' if peaks['A'] < peaks['B'] else 'y'
-        identify_belt(kl, hw, looser, screen)       # jogs, then leaves the motors off
-    screen.update(message + (' · motors off' if identified else ''), force=True)
+    if gap_pct(peaks['A'], peaks['B']) >= args.tolerance:
+        # release the gantry so the belt is easy to reach; the message names which one,
+        # and the Motor A/B buttons (SHOW=) point at a motor when needed
+        kl.gcode('SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=0\n'
+                 'SET_STEPPER_ENABLE STEPPER=stepper_y ENABLE=0')
+        message += ' · motors off'
+    screen.update(message, force=True)
     print('\nBelt resonance goes as sqrt(tension); match the two, then re-run CHOPPER_TUNE — '
           'the per-motor chopper optimum is measured against the mechanics you leave in place.')
     return 0

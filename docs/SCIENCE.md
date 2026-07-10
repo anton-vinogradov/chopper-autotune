@@ -262,6 +262,22 @@ Two things the hardware taught us [measured]:
 - **Our PSD matches Klipper's.** Against Klipper's own `OUTPUT=resonances`, our
   Welch peaks land within one FFT bin (155 vs 155, 132 vs 133 Hz) — the analysis
   is honest, and it stays in our venv.
+- **A belt answers with a comb, not a peak — take the centroid.** Each belt has
+  several free spans, and the looser belt's response here was a clean single peak
+  (B: 132 Hz, rock-stable across five runs) while the tighter one was a **comb of
+  near-equal teeth** (A: 138/153/162 Hz within 8 % of each other). A bare argmax
+  jitters between the teeth run-to-run — A read 155, 157, 156, then 162 with no
+  belt change, swinging the reported gap 15→21 %. The dominant frequency is now
+  the **energy centroid of the strongest region** (A ≈ 154 Hz, stable), and the
+  console prints the top teeth so the comb stays visible. Sanity anchors from the
+  same data: the response maximum arrives exactly when the sweep passes that
+  frequency (a genuine driven resonance, not a stray harmonic), and both diagonals
+  share an unrelated ~61 Hz mode — the gantry mass-spring resonance, common to
+  both, exactly as it should be.
+- **Verify the capture is complete.** The raw writer flushes in batches; a file
+  whose size merely paused for one poll can be a truncated sweep, which reads as a
+  phantom peak at whatever frequency the sweep reached. The tool now also checks
+  the capture's time span against the sweep duration before analyzing.
 
 `CHOPPER_BELTS` reports the two frequencies and a verdict: balanced within a
 tolerance, or which belt is looser and by how much. It changes nothing — you
