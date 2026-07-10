@@ -25,6 +25,8 @@ Tags: **[measured]** on the reference printer (Ender-6 CoreXY, TMC2209, 24 V),
 | Jul 8 | Mechanics | belt-diagonal comparison ships: the two CoreXY diagonals respond ~15% apart |
 | Jul 10 | Mechanics | **falsified**: heavy overtension moved the response 0 Hz (and bound the axis) — the gap is structural; tool reframed as a diagnostic |
 | Jul 10 | Mechanics | **the pluck lands it**: finger pluck + ADXL + f/2f pairing = real tension; belts measured matched (~7%) — `PLUCK=1` ships |
+| Jul 11 | Extruder | third motor tuned: same mid-band resonance (5 mm/s filament), −26% at the peak; three motors, three different optima |
+| Jul 11 | Product | the plan ships: the panel's numbered buttons are the required sequence (belts → tune → current → re-tune → extruder), optional checks marked, undo documented |
 
 ---
 
@@ -342,6 +344,51 @@ automatic f/2f pairing with lone lines flagged as suspect harmonics, tension
 ratio from f², absolute newtons with a span length. The accelerometer *can*
 measure belt tension — you just excite the right mode with a finger, and let the
 machine do the listening.
+
+**Jul 11 — one more field lesson: pluck where the string can sing.** An elegant
+protocol upgrade — pluck left and right of the head, one loop, equal spans, a
+built-in cross-check — died in the field: near-head spans are too short and
+stiff for a finger, ringing weakly and briefly ("nothing heard" three times over,
+one faint 246 Hz line). The protocol settled back on the **longest front span**
+with **repeatability as the control** (two agreeing plucks per belt), plus the
+sensitivity fixes the failure forced: sub-window scanning (a brief ring dilutes
+away in a whole-window FFT) and ambient-line exclusion from a quiet reference.
+The owner's verdict on the shipped flow: it just works.
+
+</details>
+
+---
+
+## Direction VI — The third motor: the extruder
+
+**Outcome.** The extruder is the motor closest to the accelerometer on a
+direct-drive head — and its chopper turned out to matter exactly where the A/B
+motors' does: at the **same mid-band resonance** (filament 5 mm/s = 286
+full-steps/s ≈ the ~292 Hz band the axis motors sing in). Tuned, saved, and a
+third data point for the per-motor rule: **three motors, three different
+optima** (A hend-heavy `0/2/4/7`, B `1/6/4/0`, E hstrt-heavy `3/7/6/0`).
+
+<details>
+<summary>How we got there</summary>
+
+**Jul 10 — the E0 probe.** The design question was mechanical: the filament
+stays loaded, so the hotend must be heated for the motor to turn at all (200 °C
+default — PLA and composites; `FORCE_MOVE` bypasses Klipper's cold-extrusion
+guard, so the tool enforces its own), and the motion is a net-zero oscillation
+of ≤3 mm of filament — no chewed spots, no melt dragged into the cold zone. The
+probe answered yes on the first try: a clean resonance at **5 mm/s filament**
+(3× above the neighbours) where register configs separate by **27 %** — and the
+X-tuned config measured *worse* than stock on E, the per-motor rule again. Off
+resonance the field is flat, as everywhere at 1.0 A.
+
+**Jul 11 — shipped and tuned.** `CHOPPER_EXTRUDER`: resonance scan on stock
+registers → descent at the peak → top-3 validation → save into
+`[tmcXXXX extruder]`; the heater turns off on every exit path, and the winner is
+remembered so `SAVE_LAST=1` persists it without re-running the heated tune. The
+reference rig's E landed on `tbl3/toff7/hstrt6/hend0` — **26 % less vibration at
+the E resonance**, which sits at ~12 mm³/s of flow, i.e. exactly the fast-print
+regime. A pleasing symmetry for the science: the winner is *hstrt-heavy*, the
+opposite split from both axis motors.
 
 </details>
 

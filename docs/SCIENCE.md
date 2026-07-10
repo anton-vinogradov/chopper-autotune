@@ -313,6 +313,33 @@ looked more elegant but failed in the field: near-head spans are too short and
 stiff to pluck usefully, ringing weakly and briefly (measured: one faint
 ~246 Hz line, then nothing) [measured].
 
+## The third motor: the extruder rings in the same band
+
+The extruder motor obeys the same physics as the axis motors, and on a
+direct-drive head it sits closest to the accelerometer of all. Measured: its
+resonance lands in the **same mid-band** — filament 5 mm/s on this rig's geared
+extruder is 286 full-steps/s, right in the ~292 Hz band where motors A and B
+sing — ringing 3× above the neighbouring speeds, and register configs separate
+there by 27 % while the field off-resonance stays flat (as everywhere at 1.0 A).
+Notably, that resonance sits at ~12 mm³/s of flow — the fast-print regime, not
+some exotic corner. **[measured]**
+
+Method notes that made it practical:
+
+- the filament stays loaded, so the hotend is heated first (200 °C default);
+  `FORCE_MOVE` bypasses Klipper's cold-extrusion guard, so the tool enforces its
+  own temperature check;
+- the motion is a **net-zero oscillation** of ≤3 mm of filament — no spot of the
+  filament gets chewed repeatedly, no melt is dragged into the cold zone (the
+  same reasoning as retraction limits);
+- the heater turns off on every exit path, including a mid-run abort.
+
+The tuned winner delivered **26 % less vibration at the E resonance** — and gave
+the per-motor rule its third data point: **three motors, three different
+optima**, and even the hysteresis *split* flipped (E won hstrt-heavy where both
+axis motors won hend-heavy/balanced). A register set copied from another motor
+measured worse than stock here. **[measured]**
+
 ## Practical rules distilled so far
 
 - A winner on the edge (max hysteresis, or a chopper frequency barely above the
