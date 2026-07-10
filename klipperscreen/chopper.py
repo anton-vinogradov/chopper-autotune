@@ -31,28 +31,28 @@ class Panel(ScreenPanel):
         # the extruder's TMC section is "tmcXXXX extruder", so the same lookup works
         self.motors = (("stepper_x", "A"), ("stepper_y", "B"), ("extruder", "E"))
 
+        # the top row IS the plan: mechanics first (belts), then the gantry motors, then
+        # the extruder, then verify the speed/accel headroom — finish with Klipper's own
+        # Input Shaper panel (ringing from acceleration is its job, not the chopper's)
         actions = [
-            # row 1 — tuning
-            ("fine-tune", _("Tune A"), "color1", "CHOPPER_TUNE MOTOR=A",
-             _("Tune motor A (stepper_x)? The printer will home and move for several minutes.")),
-            ("fine-tune", _("Tune B"), "color2", "CHOPPER_TUNE MOTOR=B",
-             _("Tune motor B (stepper_y)? The printer will home and move for several minutes.")),
-            ("fine-tune", _("Tune both"), "color3", "CHOPPER_TUNE MOTOR=AB",
-             _("Tune both motors (A and B)? About 20 minutes of movement.")),
-            # row 2 — belt tension (you pluck, the accelerometer listens) & which-motor-is-which
-            ("move", _("Belts"), "color1", "CHOPPER_BELTS",
-             _("Measure belt tension? Follow the display: pluck each belt's long front span hard, like a guitar string, twice per belt — the accelerometer hears the tension.")),
-            ("move", _("Motor A"), "color2", "CHOPPER_BELTS SHOW=A",
-             _("Jog motor A (stepper_x) briefly so you can see which motor and belt it is, then release the motors?")),
-            ("move", _("Motor B"), "color3", "CHOPPER_BELTS SHOW=B",
-             _("Jog motor B (stepper_y) briefly so you can see which motor and belt it is, then release the motors?")),
-            # row 3 — extruder / save / demo (stop is added after)
-            ("fine-tune", _("Extruder"), "color4", "CHOPPER_EXTRUDER",
-             _("Tune the extruder chopper? The hotend will HEAT to 200C (filament stays in), then ~10 minutes of measurement; the heater turns off when done.")),
+            # row 1 — the plan, in order
+            ("move", _("1 Belts"), "color1", "CHOPPER_BELTS",
+             _("Step 1 — mechanics first. Measure belt tension: follow the display, pluck each belt's long front span hard, like a guitar string, twice per belt.")),
+            ("fine-tune", _("2 Tune"), "color2", "CHOPPER_TUNE MOTOR=AB",
+             _("Step 2 — tune both gantry motors' choppers at their resonances (~20 minutes of movement). Motor B is seeded with A's winner. Then Save.")),
+            ("extrude", _("3 Extruder"), "color3", "CHOPPER_EXTRUDER",
+             _("Step 3 — tune the extruder chopper. The hotend will HEAT to 200C (filament stays in), ~10 minutes; the heater turns off when done. Then Save.")),
+            ("increase", _("4 Envelope"), "color4", "CHOPPER_ENVELOPE",
+             _("Step 4 — verify the speed/acceleration headroom: worst-case stress with the endstop referee, ~7 minutes. Finish with Klipper's Input Shaper panel afterwards.")),
+            # row 2 — supporting actions
             ("complete", _("Save"), "color1", "CHOPPER_SAVE",
              _("Save the latest tuning result for each motor (and the extruder's last winner) into the config and restart Klipper?")),
             ("resume", _("Show"), "color2", "CHOPPER_DEMO MOTOR=AB ROUNDS=2 REPEATS=2",
              _("Play the driver defaults against the tuned registers on both motors so you can hear the difference?")),
+            ("move", _("Motor A"), "color3", "CHOPPER_BELTS SHOW=A",
+             _("Jog motor A (stepper_x) briefly so you can see which motor and belt it is, then release the motors?")),
+            ("move", _("Motor B"), "color4", "CHOPPER_BELTS SHOW=B",
+             _("Jog motor B (stepper_y) briefly so you can see which motor and belt it is, then release the motors?")),
         ]
 
         grid = Gtk.Grid(column_homogeneous=True, row_homogeneous=True, vexpand=False)
