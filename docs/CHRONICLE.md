@@ -22,7 +22,8 @@ Tags: **[measured]** on the reference printer (Ender-6 CoreXY, TMC2209, 24 V),
 | Jul 8 | Tuner | flat-region blind spot found → safety tie-breaker → auto re-tune off the edge |
 | Jul 8 | Print speed | motion envelope: no skip to 350 mm/s / 40k accel — the motor isn't the limit |
 | Jul 8 | Print speed | resonance map: 200 mm/s sits on a bump, 160/240 quieter — a print-speed answer |
-| Jul 8 | Mechanics | belt-tension match: the two CoreXY belts are ~15% apart — belt B is looser |
+| Jul 8 | Mechanics | belt-diagonal comparison ships: the two CoreXY diagonals respond ~15% apart |
+| Jul 10 | Mechanics | **falsified**: heavy overtension moved the response 0 Hz (and bound the axis) — the gap is structural; tool reframed as a diagnostic |
 
 ---
 
@@ -262,9 +263,12 @@ a speed limit; that limit is flow and the shaper).
 **Outcome.** Stepping back — the accelerometer measures one thing, vibration, so
 what's left to improve is the catalog of vibration sources. The motor's electrical
 and mid-band resonances are ours (chopper tuning, the map); frame ringing is
-Klipper's (the input shaper); that leaves the **drive mechanics**. First one
-shipped: a **belt-tension match** for CoreXY, which found the reference rig's two
-belts **~15 % apart** — belt B looser.
+Klipper's (the input shaper); that leaves the **drive mechanics**. A belt-tension
+match shipped first — and its decisive experiment **falsified the tension claim**
+on this rig: the ~15 % diagonal gap turned out to be structural, not tension (a
+heavy overtension of belt B moved its response by 0 Hz and bound the mechanics
+instead). The tool survives as a **response-asymmetry diagnostic** that knows its
+own limits; absolute tension belongs to the pluck test.
 
 <details>
 <summary>How we got there</summary>
@@ -292,6 +296,30 @@ own `OUTPUT=resonances` to within one FFT bin. Two hardware bugs surfaced and we
 fixed on the way — a sweep rate above Klipper's 2 Hz/s cap, and reading the raw CSV
 before its background writer had flushed it. `CHOPPER_BELTS` now prints the two
 frequencies and a verdict: which belt is looser, and by how much.
+
+**Jul 10 — a self-review, and the readout was fragile.** Asked point-blank "is this
+method actually sound?", we put the raw sweeps under forensics. The comparison
+itself held (a genuine driven resonance; the shared ~61 Hz gantry mode where it
+should be), but two readout bugs were real: the tight diagonal answers with a
+**comb** of near-equal teeth (138/153/162 Hz) that a bare argmax jitters across —
+A read 155→157→156→162 with no belt change — and a "settled" file size could still
+be a **truncated sweep** reading as a phantom peak. Fixed with an energy centroid
+and a capture-span check. The stability of B (never moved across five runs) was
+read as measurement quality. It was not.
+
+**Jul 10 — the decisive experiment falsifies the tension claim.** The owner
+tightened belt B *hard* — and B's response did not move at all (131.4 → 130.0 Hz),
+while the mechanics started to **bind**: the head stopped reaching the bed center,
+the motor loading up against belt friction. Loosening the belt restored clean
+motion, certified by the torque envelope — both motors again hold to 350 mm/s and
+40 000 mm/s² with zero skips. Verdict: on this rig the dominant diagonal response
+is a **structural mode** (the axial sweep loads the belt as a longitudinal spring,
+stiffness ≈ EA/L, tension-independent to first order), not the transverse string
+mode a pluck excites; the A/B gap is structural asymmetry. `CHOPPER_BELTS` was
+reframed as a **response-asymmetry diagnostic**: it never orders "tighten belt X",
+and if nothing moved between runs after a tension change, it says the response
+does not track tension on this machine — use the pluck test for absolute tension.
+A negative result, recorded as such.
 
 </details>
 

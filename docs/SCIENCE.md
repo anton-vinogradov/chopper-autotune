@@ -235,54 +235,62 @@ test for it models the head's *physical* position separately from Klipper's
 belief, so the non-monotonic back-off-and-re-approach is checked faithfully; a
 path-length model would only pass by luck.)
 
-## Belt tension: matching the two CoreXY belts
+## Belts: what a diagonal sweep really measures — a falsification
 
 The chopper work tunes the *motor*; the belts are the *mechanics* between the
-motor and the toolhead, and on CoreXY there are two of them that must be
-tensioned alike. A belt is a string: its transverse resonance frequency goes as
-**f ∝ √(T/μ)/L**, so tension shows up directly as frequency — a looser belt
-resonates lower.
+motor and the toolhead. The folk method for comparing the two CoreXY belts is to
+excite each one's diagonal (motor A = head 1,1, motor B = head 1,-1 — the same
+single-motor split as the chopper stress test) with a swept sine and compare the
+resonance peaks, on the string-mode intuition **f ∝ √(T/μ)/L**: a looser belt
+should resonate lower. We built that, measured it — and the decisive experiment
+**falsified the tension claim on this rig**.
 
-Measuring it needs the frequency domain, not the magnitude-vs-speed sweep the
-rest of the tool uses. Each belt is excited **alone** by driving one motor's
-diagonal (motor A = head 1,1, motor B = head 1,-1 — the same single-motor split
-as the chopper stress test), using Klipper's swept-sine `TEST_RESONANCES`. We
-take its **raw** capture and compute the response spectrum here (a Welch PSD in
-the tool's own venv), so nothing needs numpy inside klippy-env — the same
-principle as the streaming capture. The dominant peak of each diagonal is that
-belt's resonance; matched belts give matched peaks.
+**The falsification [measured].** The reference rig's diagonals answered ~15 %
+apart (A ≈ 154 Hz, B ≈ 131 Hz), which the string model reads as "belt B is much
+looser — tighten it". The owner then tightened belt B *hard*, well past
+reasonable: **B's response did not move at all** (131.4 → 130.0 Hz), while the
+mechanics started to bind — the head could no longer reach the bed center, the
+motor loading up against belt friction. Loosening the belt restored clean motion
+(verified: the full torque envelope again holds to 350 mm/s / 40 000 mm/s² with
+zero skips). So on this machine the dominant diagonal response is a
+**structural mode, not a tension mode**: the axial sweep drives the head through
+the belt as a *longitudinal* spring, whose stiffness is set by the belt's
+elastic modulus and the structure (EA/L — tension-independent to first order),
+not by the tension that governs the *transverse* string mode a pluck excites.
+The ~15 % A/B gap is structural asymmetry of the two diagonals, not a tension
+difference.
 
-Two things the hardware taught us [measured]:
+What survives, and what the hardware taught us on the way [measured]:
 
-- **Sweep wide enough or you lie to yourself.** A first, narrow band clipped one
-  belt's real peak at the band edge and reported both belts at the same clipped
-  frequency — a false "balanced". Widening the sweep showed the truth: **belt A
-  ≈ 155 Hz, belt B ≈ 133 Hz, ~15 % apart** (tension ∝ f², so ~36 % more tension
-  in A). The tool now warns when a peak lands near the sweep edge.
-- **Our PSD matches Klipper's.** Against Klipper's own `OUTPUT=resonances`, our
-  Welch peaks land within one FFT bin (155 vs 155, 132 vs 133 Hz) — the analysis
-  is honest, and it stays in our venv.
-- **A belt answers with a comb, not a peak — take the centroid.** Each belt has
-  several free spans, and the looser belt's response here was a clean single peak
-  (B: 132 Hz, rock-stable across five runs) while the tighter one was a **comb of
-  near-equal teeth** (A: 138/153/162 Hz within 8 % of each other). A bare argmax
-  jitters between the teeth run-to-run — A read 155, 157, 156, then 162 with no
-  belt change, swinging the reported gap 15→21 %. The dominant frequency is now
-  the **energy centroid of the strongest region** (A ≈ 154 Hz, stable), and the
-  console prints the top teeth so the comb stays visible. Sanity anchors from the
-  same data: the response maximum arrives exactly when the sweep passes that
-  frequency (a genuine driven resonance, not a stray harmonic), and both diagonals
-  share an unrelated ~61 Hz mode — the gantry mass-spring resonance, common to
-  both, exactly as it should be.
-- **Verify the capture is complete.** The raw writer flushes in batches; a file
-  whose size merely paused for one poll can be a truncated sweep, which reads as a
-  phantom peak at whatever frequency the sweep reached. The tool now also checks
-  the capture's time span against the sweep duration before analyzing.
+- **The comparison itself is real.** The response maximum arrives exactly when
+  the sweep passes that frequency (a genuine driven resonance), our Welch PSD
+  matches Klipper's own `OUTPUT=resonances` within one FFT bin, and both
+  diagonals share the ~61 Hz gantry mass-spring mode, exactly as they should. A
+  *change* in a diagonal's response over time still flags a mechanical change —
+  it just is not a tension gauge here.
+- **A stable reading is not a sensitive reading.** B's peak was "rock-stable
+  across five runs" — we first read that as measurement quality; it was the
+  first hint the number does not respond to the variable we cared about.
+- **Sweep wide enough or you lie to yourself.** A first, narrow band clipped
+  A's peak at the band edge and reported a false "balanced". The tool warns near
+  the sweep edge now.
+- **A tight diagonal answers with a comb, not a peak.** A's response is a comb
+  of near-equal teeth (138/153/162 Hz within 8 %); a bare argmax jittered between
+  them (A read 155→157→156→162 with no belt change). The dominant frequency is
+  the **energy centroid of the strongest region**, and the console prints the
+  teeth.
+- **Verify the capture is complete.** The raw writer flushes in batches; a
+  truncated sweep reads as a phantom peak at whatever frequency the sweep
+  reached. The tool checks the capture's time span against the sweep duration.
 
-`CHOPPER_BELTS` reports the two frequencies and a verdict: balanced within a
-tolerance, or which belt is looser and by how much. It changes nothing — you
-tighten a belt by hand and re-run — and then re-tune, because the per-motor
-chopper optimum is measured against the mechanics you leave in place.
+`CHOPPER_BELTS` is therefore framed as a **response-asymmetry diagnostic**: it
+reports the two frequencies, the gap, and the per-belt change since the previous
+run — and it deliberately never orders "tighten belt X". If nothing moved
+between runs while you did change a tension, it says so: the response does not
+track tension on your machine. For absolute tension, pluck the belt's free span
+and read the transverse tone (that mode *is* f ∝ √T) — a phone spectrogram works.
+After any mechanical change, re-run the tune: the chopper optimum is measured
+against the mechanics you leave in place.
 
 ## Practical rules distilled so far
 
