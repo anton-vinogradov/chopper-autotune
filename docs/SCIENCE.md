@@ -313,6 +313,13 @@ looked more elegant but failed in the field: near-head spans are too short and
 stiff to pluck usefully, ringing weakly and briefly (measured: one faint
 ~246 Hz line, then nothing) [measured].
 
+**Cross-validated by an independent instrument [measured].** The owner re-measured
+the same spans with a phone spectrograph — the classic acoustic method: a
+microphone through the air, a wholly disjoint sensing path from the accelerometer
+listening through the carriage anchor — and read **102 / 105 Hz: the same numbers
+to the hertz**. Two independent instruments agreeing on the fundamentals closes
+the loop on the method.
+
 ## The third motor: the extruder rings in the same band
 
 The extruder motor obeys the same physics as the axis motors, and on a
