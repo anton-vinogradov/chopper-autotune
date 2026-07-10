@@ -180,8 +180,6 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument('--show', type=str.lower, choices=('a', 'b'), default=None,
                    help='skip the measurement and just jog belt A or B so you can see it '
                         '(for re-checking which belt while you tighten)')
-    b.add_argument('--no-identify', action='store_true',
-                   help='do not jog the looser belt after measuring')
     b.add_argument('--socket', default=None)
     b.add_argument('--dry-run', action='store_true')
     b.add_argument('-y', '--yes', action='store_true')
