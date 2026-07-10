@@ -140,14 +140,36 @@ def test_run_save_latest_saves_newest_tuning_dataset_per_motor(monkeypatch, tmp_
         return (Dataset(root).manifest(), tmc.Chopper(0, 8, 7, 5))
 
     monkeypatch.setattr('chopper_autotune.tune.winner_of', fake_winner)
+    monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: None)
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: object())
     saved = {}
-    monkeypatch.setattr(analyze, 'run_save', lambda mk, items: saved.update(items=items))
+    monkeypatch.setattr(analyze, 'run_save',
+                        lambda mk, items, extruder_state=None: saved.update(
+                            items=items, extruder=extruder_state))
 
     analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
 
     assert set(called) == {'03_x', '02_y'}                 # newest tuning dataset per motor
     assert {m['axis'] for m, _ in saved['items']} == {'x', 'y'}
+    assert saved['extruder'] is None
+
+
+def test_run_save_latest_includes_the_extruder_winner(monkeypatch):
+    import argparse
+
+    from chopper_autotune import analyze
+    state = {'driver': '2209', 'fields': {'tbl': 3, 'toff': 7, 'hstrt': 6, 'hend': 0}}
+    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: [])
+    monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: state)
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: object())
+    saved = {}
+    monkeypatch.setattr(analyze, 'run_save',
+                        lambda mk, items, extruder_state=None: saved.update(
+                            items=items, extruder=extruder_state))
+
+    # no axis datasets at all: the stored extruder winner alone is enough to save
+    analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
+    assert saved['items'] == [] and saved['extruder'] == state
 
 
 def test_run_save_latest_errors_without_datasets(monkeypatch):
@@ -155,6 +177,7 @@ def test_run_save_latest_errors_without_datasets(monkeypatch):
 
     from chopper_autotune import analyze
     monkeypatch.setattr(analyze, 'dataset_dirs', lambda: [])
+    monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: None)
     with pytest.raises(SystemExit, match='no tuning datasets'):
         analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
 
