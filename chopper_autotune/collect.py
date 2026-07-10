@@ -261,10 +261,11 @@ class Screen:
         self._send('M118 %s' % text)
 
     def _send(self, command: str) -> bool:
+        # the display is a best-effort channel: no failure of it may kill a run
         try:
             self.kl.gcode(command)
             return True
-        except KlippyError:
+        except Exception:
             return False
 
 

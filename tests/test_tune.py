@@ -104,3 +104,35 @@ def test_tune_aborts_without_resonance_peak(monkeypatch):
 
     with pytest.raises(SystemExit, match='no clear resonance peak'):
         tune.run_tune(tune_args())
+
+
+def test_tune_reports_the_outcome_on_screen(tmp_path, monkeypatch):
+    """The run's outcome must reach the display: the console summary only lands in the
+    detached log, and SAVE=1 restarts Klipper, wiping the status line (field-reported:
+    "tune ended and nothing said how")."""
+    roots = {'x': make_dataset(tmp_path, 'x', 8), 'y': make_dataset(tmp_path, 'y', 2)}
+    monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
+    monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
+    monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
+    monkeypatch.setattr(tune, 'scan', lambda kl, args: (0, 58))
+    monkeypatch.setattr(tune, 'collect', lambda kl, args: (0, roots[args.axis]))
+    finals = []
+
+    class FakeScreen:
+        def __init__(self, kl, display):
+            pass
+
+        def final(self, text):
+            finals.append(text)
+
+    monkeypatch.setattr(tune, 'Screen', FakeScreen)
+    assert tune.run_tune(tune_args()) == 0
+    assert finals and finals[-1].startswith('Tune done: A 0/8/7/5 · B 0/2/7/5')
+    assert 'tap Save to persist' in finals[-1]
+
+    # a failure must speak too
+    finals.clear()
+    monkeypatch.setattr(tune, 'scan', lambda kl, args: (0, None))
+    with pytest.raises(SystemExit, match='no clear resonance peak'):
+        tune.run_tune(tune_args())
+    assert finals and finals[-1].startswith('Tune FAILED:')
