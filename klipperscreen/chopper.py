@@ -21,6 +21,7 @@ DEFAULT = (2, 3, 5, 0)  # Klipper's chopper defaults — the "before" the show c
 STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/state.json")
 BELTS_STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/belts.json")
 ENVELOPE_STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/envelope.json")
+MAP_STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/map.json")
 
 
 class Panel(ScreenPanel):
@@ -58,6 +59,8 @@ class Panel(ScreenPanel):
              _("Jog motor A (stepper_x) briefly so you can see which motor and belt it is, then release the motors?")),
             ("move", _("Motor B"), "color1", "CHOPPER_BELTS SHOW=B",
              _("Jog motor B (stepper_y) briefly so you can see which motor and belt it is, then release the motors?")),
+            ("move", _("Map"), "color2", "CHOPPER_MAP",
+             _("Map vibration vs speed on the current registers (~2 min, motor A)? Shows which speeds ring (VFAs) and which stay quiet; the peaks land in Results.")),
         ]
 
         grid = Gtk.Grid(column_homogeneous=True, row_homogeneous=True, vexpand=False)
@@ -142,6 +145,14 @@ class Panel(ScreenPanel):
             lines.append(_("envelope: ") + "  ".join(
                 "%s %s mm/s, %s acc" % (name, values.get("speed"), values.get("accel"))
                 for name, values in envelope.items()))
+        vfa_map = self.load_json(MAP_STATE)
+        for name, entry in vfa_map.items():
+            peaks = ",".join(str(s) for s in entry.get("peaks", [])) or "—"
+            dips = ",".join(str(s) for s in entry.get("dips", [])) or "—"
+            advice = entry.get("advice")
+            lines.append(_("map ") + "%s: %s %s · %s %s%s"
+                         % (name, _("peaks"), peaks, _("dips"), dips,
+                            " · %s" % advice if advice else ""))
         return "\n".join(lines)
 
     def register_table(self):

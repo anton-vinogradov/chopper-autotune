@@ -44,3 +44,15 @@ def test_map_macro_args_translate():
         boolean_flags(parser)))
     assert (args.axis == 'y' and args.max_speed == 300 and args.step == 5
             and args.print_speed == 200 and args.dry_run)
+
+
+def test_map_state_round_trips(tmp_path, monkeypatch):
+    import json
+
+    from chopper_autotune import resonance_map as map_mod
+    monkeypatch.setattr(map_mod, 'STATE', str(tmp_path / 'map.json'))
+    map_mod.save_state('A', [140, 210], [170], '200→160/240')
+    map_mod.save_state('B', [95], [], None)          # a second motor merges, not replaces
+    state = json.load(open(map_mod.STATE))
+    assert state['A'] == {'peaks': [140, 210], 'dips': [170], 'advice': '200→160/240'}
+    assert state['B'] == {'peaks': [95], 'dips': [], 'advice': None}

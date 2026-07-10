@@ -102,6 +102,14 @@ def envelope(kl: Klippy, args) -> int:
     print('  speed ladder %s mm/s (accel %.0f); accel ladder %s mm/s2 (speed %d)'
           % ('/'.join(map(str, speeds)), base_accel, '/'.join('%g' % a for a in accels),
              args.accel_probe_speed))
+    rail = settings.get('stepper_%s' % motors[0], {})
+    if rail.get('rotation_distance') and rail.get('microsteps'):
+        # the ladder's real ceiling is usually the MCU's step generation, not the motor:
+        # show the step rate so a Klipper "step rate" shutdown is no surprise
+        steps_per_mm = 200 * int(rail['microsteps']) / float(rail['rotation_distance'])
+        print('  ladder top %d mm/s = %.0fk steps/s at %sx microstepping — if Klipper '
+              'shuts down on step rate, lower MAX_SPEED'
+              % (speeds[-1], speeds[-1] * steps_per_mm / 1000, rail['microsteps']))
     if args.dry_run:
         return 0
     if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):

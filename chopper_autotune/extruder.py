@@ -121,6 +121,43 @@ def descent(hw, kl, driver, speed: float, audible_weight: float, screen: Screen,
     return current, cache
 
 
+def extruder_show(kl: Klippy, args, driver, driver_name: str, baseline_regs: dict,
+                  temp: float) -> int:
+    """Audible before/after for the E motor: alternate Klipper defaults and the saved
+    registers at the resonance speed so the change can be heard — the E analogue of
+    CHOPPER_DEMO. Requires a tuned extruder; heats like the tune does."""
+    if not baseline_regs or baseline_regs == tmc.KLIPPER_DEFAULT.fields():
+        raise SystemExit('the extruder is untuned (registers are Klipper defaults) — '
+                         'run CHOPPER_EXTRUDER first, there is nothing to compare')
+    hw = detect_hardware(kl, 'x')
+    kl.subscribe_accel(hw.accel_chip)
+    screen = Screen(kl, hw.display)
+    speed = args.speed or 5.0
+    screen.update('Chopper E show: heating to %.0fC' % temp, force=True)
+    kl.gcode('M104 S%.0f' % temp)
+    kl.gcode('TEMPERATURE_WAIT SENSOR=extruder MINIMUM=%.0f' % (temp - 3))
+    magnitudes = {'defaults': [], 'tuned': []}
+    try:
+        for round_no in (1, 2):
+            for label, fields in (('defaults', tmc.KLIPPER_DEFAULT.fields()),
+                                  ('tuned', baseline_regs)):
+                kl.gcode(tmc.set_fields_script('extruder', fields))
+                screen.update('E %d/2: %s' % (round_no, label.upper()), force=True)
+                print(' round %d: %s (%s)' % (round_no, label, fields))
+                magnitude, _ = measure(hw, speed)
+                magnitudes[label].append(magnitude)
+                print('   magnitude %.0f' % magnitude)
+        d = sum(magnitudes['defaults']) / len(magnitudes['defaults'])
+        t = sum(magnitudes['tuned']) / len(magnitudes['tuned'])
+        screen.final('Extruder: %.1fx less vibration (%.0f -> %.0f)' % (d / t, d, t))
+    finally:
+        run_restore(
+            lambda: kl.gcode(tmc.set_fields_script('extruder', baseline_regs)),
+            lambda: kl.gcode('M104 S0'),
+            lambda: kl.gcode('M84'))
+    return 0
+
+
 def run_extruder(args) -> int:
     kl = Klippy(find_socket(args.socket)).connect()
     try:
@@ -149,6 +186,8 @@ def extruder_tune(kl: Klippy, args) -> int:
     if temp < min_temp:
         raise SystemExit('TEMP=%.0f is below min_extrude_temp (%.0f) — the filament could '
                          'not move; raise TEMP or unload the filament' % (temp, min_temp))
+    if args.demo:
+        return extruder_show(kl, args, driver, driver_name, baseline_regs, temp)
     speeds = [float(v) for v in range(args.min_speed, args.max_speed + 1)]
 
     print('Extruder chopper tune: tmc%s, current registers %s' % (
