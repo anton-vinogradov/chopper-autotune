@@ -6,13 +6,18 @@ all winners are written into the Klipper config in one batch with a single resta
 from __future__ import annotations
 
 from . import tmc
-from .collect import Range, collect, motor_label
+from .collect import Range, Screen, collect, motor_label
 from .dataset import Dataset
 from .find_speed import scan
 from .klippy import Klippy, find_socket
 from .moonraker import Moonraker
 
 DRY_RUN_SPEED = 60
+
+
+def compact_label(combo: tmc.Chopper) -> str:
+    """0/2/4/7 — the shape the panel's register table uses."""
+    return '/'.join(str(getattr(combo, field)) for field in ('tbl', 'toff', 'hstrt', 'hend'))
 
 
 def sub_args(args, argv: 'list[str]'):
@@ -61,6 +66,7 @@ def winner_of(root: str, audible_weight: float) -> 'tuple[dict, tmc.Chopper]':
 def run_tune(args) -> int:
     axes = ['x', 'y'] if args.axis == 'xy' else [args.axis]
     kl = Klippy(find_socket(args.socket)).connect()
+    screen = Screen(kl, True)
     winners = []
     worst = 0
     try:
@@ -84,6 +90,20 @@ def run_tune(args) -> int:
             if root:
                 winners.append(winner_of(root, args.audible_weight))
                 seed_root = root
+
+        # the run's outcome must reach the screen: the console summary below only lands
+        # in the detached log, and SAVE=1 restarts Klipper, wiping the status line — so
+        # say how it ended (popup included) while the connection is still alive
+        if not args.dry_run and winners:
+            labels = ' · '.join(
+                '%s %s' % (motor_label(manifest['stepper'].rsplit('_', 1)[-1]),
+                           compact_label(combo))
+                for manifest, combo in winners)
+            screen.final('Tune done: %s%s' % (labels, ' — saving' if args.save
+                                              else ' — tap Save to persist'))
+    except SystemExit as failure:
+        screen.final('Tune FAILED: %s' % failure)      # the display must say why
+        raise
     finally:
         kl.close()
 
