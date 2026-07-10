@@ -223,6 +223,8 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 
 **CHOPPER_BELTS SWEEP=1** — the **diagonal response comparison**, kept as a *structural-change diagnostic*, not a tension gauge: it excites each belt's diagonal with Klipper's swept-sine `TEST_RESONANCES` and reports the response frequencies, the gap, and the per-belt change since the previous run. **Measured caveat:** a persistent gap can be structural asymmetry — on the reference rig a heavy overtension moved the response by 0 Hz — so it never orders "tighten belt X", and if nothing moved since the last run it says so. Use it to notice mechanics drifting over time; use the pluck (default) for tension. Needs `[resonance_tester]`; CoreXY/H-bot only. Parameters: `MIN_FREQ`, `MAX_FREQ`, `HZ_PER_SEC`, `TOLERANCE`.
 
+**CHOPPER_EXTRUDER** — tune the **extruder's** chopper. On a direct-drive head the E motor sits right next to the accelerometer, and its chopper matters exactly where the A/B motors' does: at the mid-band resonance (measured: filament 5 mm/s rang 3× above the neighbours and separated register configs by 27 %; off-resonance the field is flat). **Heats the hotend first** (default `TEMP=200` — right for PLA and its composites, workable for PETG; ABS owners pass `TEMP=240`) so the loaded filament can move — no unloading. The motion is a net-zero oscillation of a few mm of filament (never chews one spot, never drags melt into the cold zone; `FORCE_MOVE` bypasses Klipper's cold-extrusion guard, so the tool enforces its own). Flow: resonance scan over filament speeds on stock registers → register descent at the peak → top-3 validation → `SAVE=1` writes `[tmcXXXX extruder]` (backup first). The heater is switched off on every exit path. Parameters: `TEMP`, `SPEED`, `MIN_SPEED`, `MAX_SPEED`, `AUDIBLE_WEIGHT`, `SAVE`, `DRY_RUN`.
+
 **CHOPPER_STOP** — abort a running tuning/show job; the tool restores the registers, leaves spreadCycle and re-homes before it exits.
 
 **CHOPPER_STATUS** — progress of the most recent (or `DATASET=`) run; `TOTAL=` supplies the planned move count for old datasets.
@@ -266,8 +268,9 @@ Python 3.9+ on the printer host. The klippy API socket for orchestration and sam
 - [x] Belt-diagonal response comparison (`CHOPPER_BELTS`): swept-sine per diagonal, PSD in the tool's own venv, per-belt deltas between runs — reframed after a measured falsification: on the reference rig the response does not track tension (a heavy overtension moved it 0 Hz), so it diagnoses response asymmetry and never orders a tighten (see docs/SCIENCE.md)
 - [x] Belt tension proper (`CHOPPER_BELTS PLUCK=1`): display-cued finger plucks heard by the toolhead accelerometer — the transverse string mode that *is* tension, identified by its (f, 2f) pair; tension ratio from f², absolute newtons with a span length
 - [ ] Ringing-vs-acceleration ceiling: the surface-quality accel limit the envelope defers to the shaper, measured as residual vibration vs acceleration — pairs with the torque ceiling
+- [x] Extruder chopper tuning (`CHOPPER_EXTRUDER`): heated, filament-in, net-zero oscillation — the E motor resonates in the same mid-band as A/B (measured at 5 mm/s filament) and its registers separate there
 - [ ] The split question: why hend-heavy hysteresis splits stay click-free where hstrt-first splits click (open science, see docs/SCIENCE.md)
-- [ ] Motors beyond `stepper_x`/`stepper_y` (dual Y, IDEX, extruder)
+- [ ] Motors beyond `stepper_x`/`stepper_y` (dual Y, IDEX)
 
 ## Prior art & credits
 
