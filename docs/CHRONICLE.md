@@ -25,6 +25,7 @@ Tags: **[measured]** on the reference printer (Ender-6 CoreXY, TMC2209, 24 V),
 | Jul 8 | Mechanics | belt-diagonal comparison ships: the two CoreXY diagonals respond ~15% apart |
 | Jul 10 | Mechanics | **falsified**: heavy overtension moved the response 0 Hz (and bound the axis) — the gap is structural; tool reframed as a diagnostic |
 | Jul 10 | Mechanics | **the pluck lands it**: finger pluck + ADXL + f/2f pairing = real tension; belts measured matched (~7%) — `PLUCK=1` ships |
+| Jul 11 | Mechanics | phone-spectrograph cross-check: 102/105 Hz — the same to the hertz as the accelerometer |
 | Jul 11 | Extruder | third motor tuned: same mid-band resonance (5 mm/s filament), −26% at the peak; three motors, three different optima |
 | Jul 11 | Product | the plan ships: the panel's numbered buttons are the required sequence (belts → tune → current → re-tune → extruder), optional checks marked, undo documented |
 
@@ -354,6 +355,12 @@ with **repeatability as the control** (two agreeing plucks per belt), plus the
 sensitivity fixes the failure forced: sub-window scanning (a brief ring dilutes
 away in a whole-window FFT) and ambient-line exclusion from a quiet reference.
 The owner's verdict on the shipped flow: it just works.
+
+**Jul 11 — the independent cross-check.** The owner re-measured with a phone
+spectrograph — the classic acoustic pluck method, a microphone through the air
+versus our accelerometer through the carriage anchor — and read **102 / 105 Hz:
+the same numbers to the hertz**. Two wholly disjoint instruments, one string.
+The method that began as a falsified sweep ends as a cross-validated measurement.
 
 </details>
 
