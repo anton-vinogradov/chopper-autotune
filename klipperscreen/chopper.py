@@ -40,7 +40,7 @@ class Panel(ScreenPanel):
              _("Tune both motors (A and B)? About 20 minutes of movement.")),
             # row 2 — belt tension (you pluck, the accelerometer listens) & which-motor-is-which
             ("move", _("Belts"), "color1", "CHOPPER_BELTS",
-             _("Measure belt tension? Follow the display: pluck each belt left and right of the head, hard, like a guitar string — the accelerometer hears the tension and the two sides cross-check each other.")),
+             _("Measure belt tension? Follow the display: pluck each belt's long front span hard, like a guitar string, twice per belt — the accelerometer hears the tension.")),
             ("move", _("Motor A"), "color2", "CHOPPER_BELTS SHOW=A",
              _("Jog motor A (stepper_x) briefly so you can see which motor and belt it is, then release the motors?")),
             ("move", _("Motor B"), "color3", "CHOPPER_BELTS SHOW=B",
