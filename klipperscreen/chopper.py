@@ -31,18 +31,25 @@ class Panel(ScreenPanel):
         self.motors = (("stepper_x", "A"), ("stepper_y", "B"))
 
         actions = [
+            # row 1 — tuning
             ("fine-tune", _("Tune A"), "color1", "CHOPPER_TUNE MOTOR=A",
              _("Tune motor A (stepper_x)? The printer will home and move for several minutes.")),
             ("fine-tune", _("Tune B"), "color2", "CHOPPER_TUNE MOTOR=B",
              _("Tune motor B (stepper_y)? The printer will home and move for several minutes.")),
             ("fine-tune", _("Tune both"), "color3", "CHOPPER_TUNE MOTOR=AB",
              _("Tune both motors (A and B)? About 20 minutes of movement.")),
+            # row 2 — belts & which-motor-is-which
+            ("move", _("Belts"), "color1", "CHOPPER_BELTS",
+             _("Match the two CoreXY belts? ~3 min: it measures both, then jogs the looser belt so you can see which one to tighten.")),
+            ("move", _("Motor A"), "color2", "CHOPPER_BELTS SHOW=A",
+             _("Jog motor A (stepper_x) briefly so you can see which motor and belt it is, then release the motors?")),
+            ("move", _("Motor B"), "color3", "CHOPPER_BELTS SHOW=B",
+             _("Jog motor B (stepper_y) briefly so you can see which motor and belt it is, then release the motors?")),
+            # row 3 — save / demo / (stop is added after)
             ("complete", _("Save"), "color1", "CHOPPER_SAVE",
              _("Save the latest tuning result for each motor into the config and restart Klipper?")),
             ("resume", _("Show"), "color2", "CHOPPER_DEMO MOTOR=AB ROUNDS=2 REPEATS=2",
              _("Play the driver defaults against the tuned registers on both motors so you can hear the difference?")),
-            ("move", _("Belts"), "color3", "CHOPPER_BELTS",
-             _("Match the two CoreXY belts? ~3 min: it measures both, then jogs the looser belt so you can see which one to tighten.")),
         ]
 
         grid = Gtk.Grid(column_homogeneous=True, row_homogeneous=True, vexpand=False)
