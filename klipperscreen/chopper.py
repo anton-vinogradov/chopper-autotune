@@ -38,16 +38,13 @@ class Panel(ScreenPanel):
              _("Tune motor B (stepper_y)? The printer will home and move for several minutes.")),
             ("fine-tune", _("Tune both"), "color3", "CHOPPER_TUNE MOTOR=AB",
              _("Tune both motors (A and B)? About 20 minutes of movement.")),
-            # row 2 — belts & which-motor-is-which
+            # row 2 — belt tension (you pluck, the accelerometer listens) & which-motor-is-which
             ("move", _("Belts"), "color1", "CHOPPER_BELTS",
-             _("Compare the two belt diagonals? ~3 min: shows the response gap and per-belt change since last run; a gap can be tension or structure — see the docs before turning anything.")),
+             _("Measure belt tension? Follow the display: pluck each belt left and right of the head, hard, like a guitar string — the accelerometer hears the tension and the two sides cross-check each other.")),
             ("move", _("Motor A"), "color2", "CHOPPER_BELTS SHOW=A",
              _("Jog motor A (stepper_x) briefly so you can see which motor and belt it is, then release the motors?")),
             ("move", _("Motor B"), "color3", "CHOPPER_BELTS SHOW=B",
              _("Jog motor B (stepper_y) briefly so you can see which motor and belt it is, then release the motors?")),
-            # row 3 — the real tension measurement (you pluck, the accelerometer listens)
-            ("resume", _("Pluck"), "color4", "CHOPPER_BELTS PLUCK=1",
-             _("Measure belt tension by plucking? Follow the display: pluck each belt left and right of the head, hard, like a guitar string — the accelerometer hears the tension and the two sides cross-check each other.")),
             # row 3 — save / demo / (stop is added after)
             ("complete", _("Save"), "color1", "CHOPPER_SAVE",
              _("Save the latest tuning result for each motor into the config and restart Klipper?")),

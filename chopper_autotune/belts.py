@@ -75,16 +75,16 @@ def progress_message(freq_a: float, freq_b: float, prev: 'dict | None',
     (per belt), and which diagonal responds lower — deliberately NOT a "tighten X" order:
     a gap can be structure, and the per-belt deltas are what tell you if a turn did anything."""
     gap = gap_pct(freq_a, freq_b)
-    now = 'A %.0f / B %.0f Hz' % (freq_a, freq_b)
+    now = '%.0f/%.0fHz' % (freq_a, freq_b)
     if prev and 'A' in prev and 'B' in prev:
         change = 'gap %.1f->%.1f%% (A%+.0f B%+.0f)' % (
             gap_pct(prev['A'], prev['B']), gap, freq_a - prev['A'], freq_b - prev['B'])
     else:
         change = 'gap %.1f%%' % gap
     if gap < tolerance:
-        return 'Diagonals matched · %s · %s' % (change, now)
+        return 'Diag matched %s %s' % (now, change)
     lower = 'A' if freq_a < freq_b else 'B'
-    return '%s lower · %s · %s' % (lower, change, now)
+    return '%s lower %s %s' % (lower, now, change)
 
 
 def insensitive(freqs: 'dict[str, float]', prev: 'dict | None', threshold_hz: float = 3.0) -> bool:
@@ -253,7 +253,7 @@ def belts(kl: Klippy, args) -> int:
         screen.update('Motors off — belt %s is the one that moved' % motor_label(motor), force=True)
         return 0                                     # leaves the motors off on purpose
 
-    if args.pluck:
+    if not args.sweep:                              # the pluck tension test is the default
         return pluck_mode(kl, hw, args)
 
     tester = settings.get('resonance_tester') or {}
@@ -413,9 +413,9 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
 
     def measure_side(label, side):
         for attempt in range(1, args.plucks + 1):
-            cue('READY: belt %s %s of head, 3s' % (label, side))
+            cue('Ready: %s %s in 3s' % (label, side))
             kl.gcode('G4 P3000')
-            cue('PLUCK belt %s %s of head NOW!' % (label, side))
+            cue('PLUCK %s %s now!' % (label, side))
             _, samples = capture_stream(hw, 'G4 P5000', 4.8)
             tones = pluck_tones(samples)
             freq, paired = fundamental(tones)
@@ -456,11 +456,11 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
         ta, tb = tension_newtons(fa, args.span, args.mu), tension_newtons(fb, args.span, args.mu)
         print('At SPAN=%.0f cm: T_A ~ %.0f N, T_B ~ %.0f N' % (args.span, ta, tb))
     if abs(ratio - 1) * 100 < args.tolerance * 2:    # tolerance is in freq %; tension ~ 2x
-        message = 'Tensions matched: A %.0f / B %.0f Hz (ratio %.2f)' % (fa, fb, ratio)
+        message = 'Belts matched: A %.0f / B %.0f Hz' % (fa, fb)
     else:
         looser = 'A' if fa < fb else 'B'
-        message = 'Belt %s looser: A %.0f / B %.0f Hz (tension ratio %.2f)' % (looser, fa, fb, ratio)
-    print(message)
+        message = 'Belt %s looser: A %.0f / B %.0f Hz' % (looser, fa, fb)
+    print('%s (tension ratio %.2f)' % (message, ratio))
     screen.update(message, force=True)
     print('\nThis is the transverse string mode — the one that IS tension (f ~ sqrt(T)); '
           'equal spans compare directly. After adjusting, re-run to confirm the move.')
