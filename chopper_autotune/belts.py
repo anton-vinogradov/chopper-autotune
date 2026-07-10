@@ -473,19 +473,23 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
         run_restore(lambda: kl.gcode('G28 X Y'))
 
     fa, fb = fundamentals['A'], fundamentals['B']
-    ratio = (fa / fb) ** 2
+    # tension goes as the SQUARE of frequency, so a 3% frequency gap is a ~6% tension
+    # gap — say it in percent with the f^2 hint, or the number reads as a contradiction
+    tension_gap = ((fa / fb) ** 2 - 1) * 100
     print('\n=== Belt tension (pluck) ===')
     print('Belt A fundamental %.1f Hz  |  Belt B %.1f Hz' % (fa, fb))
-    print('Tension ratio A/B = (fA/fB)^2 = %.2f' % ratio)
+    print('Tension A vs B: %+.0f%%  (T ~ f^2: (%.1f/%.1f)^2 = %.2f)'
+          % (tension_gap, fa, fb, (fa / fb) ** 2))
     if args.span:
         ta, tb = tension_newtons(fa, args.span, args.mu), tension_newtons(fb, args.span, args.mu)
         print('At SPAN=%.0f cm: T_A ~ %.0f N, T_B ~ %.0f N' % (args.span, ta, tb))
-    if abs(ratio - 1) * 100 < args.tolerance * 2:    # tolerance is in freq %; tension ~ 2x
-        message = 'Belts matched: A %.0f / B %.0f Hz' % (fa, fb)
+    if abs(tension_gap) < args.tolerance * 2:        # tolerance is in freq %; tension ~ 2x
+        message = 'Belts matched: A %.0f / B %.0f Hz (tension %+.0f%%)' % (fa, fb, tension_gap)
     else:
         looser = 'A' if fa < fb else 'B'
-        message = 'Belt %s looser: A %.0f / B %.0f Hz' % (looser, fa, fb)
-    print('%s (tension ratio %.2f)' % (message, ratio))
+        message = 'Belt %s looser: A %.0f / B %.0f Hz (tension %+.0f%%)' % (looser, fa, fb,
+                                                                            tension_gap)
+    print(message)
     screen.final(message)
     print('\nThis is the transverse string mode — the one that IS tension (f ~ sqrt(T)); '
           'equal spans compare directly. After adjusting, re-run to confirm the move.')

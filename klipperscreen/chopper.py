@@ -131,9 +131,11 @@ class Panel(ScreenPanel):
             lines.append(_("run_current: ") + "  ".join(currents))
         belts = self.load_json(BELTS_STATE)
         if belts.get("A") and belts.get("B"):
-            ratio = (belts["A"] / belts["B"]) ** 2
-            lines.append(_("belts: ") + "A %.0f / B %.0f Hz (%s %.2f)"
-                         % (belts["A"], belts["B"], _("tension ratio"), ratio))
+            # tension ~ f^2: a 3% frequency gap is a ~6% tension gap — show percent,
+            # a bare 0.94 next to the frequencies reads as a contradiction
+            gap = ((belts["A"] / belts["B"]) ** 2 - 1) * 100
+            lines.append(_("belts: ") + "A %.0f / B %.0f Hz (%s %+.0f%%, T~f²)"
+                         % (belts["A"], belts["B"], _("tension"), gap))
         envelope = self.load_json(ENVELOPE_STATE)
         if envelope:
             # "350+" = held the whole tested range (the motor is not the limit there)
