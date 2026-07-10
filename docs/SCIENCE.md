@@ -287,10 +287,25 @@ What survives, and what the hardware taught us on the way [measured]:
 reports the two frequencies, the gap, and the per-belt change since the previous
 run — and it deliberately never orders "tighten belt X". If nothing moved
 between runs while you did change a tension, it says so: the response does not
-track tension on your machine. For absolute tension, pluck the belt's free span
-and read the transverse tone (that mode *is* f ∝ √T) — a phone spectrogram works.
-After any mechanical change, re-run the tune: the chopper optimum is measured
-against the mechanics you leave in place.
+track tension on your machine. After any mechanical change, re-run the tune: the
+chopper optimum is measured against the mechanics you leave in place.
+
+**The pluck lands the original idea [measured].** The transverse mode *can* be
+measured with the toolhead accelerometer — you just have to excite it with a
+finger instead of the motor. A jerk-burst attempt (hard reversals, hoping the
+tension step converts to transverse ring) found only structural lines; but a
+plain finger pluck of the span rings loud and clear at the head — SNR up to
+×1000 over the window median. The key to reading it honestly is the **(f, 2f)
+pair**: the ringing span shakes its anchor laterally at f and axially at **2f**,
+because the string's tension pulses twice per cycle — and the axial path often
+dominates. A weak pluck can show *only* a harmonic (measured: a lone "400 Hz"
+line that was 4×101.6 — read at face value it claimed a 15× tension difference);
+a hard pluck shows the pair and settles it. On the reference rig the verdict
+inverted the axial-sweep scare: **A = 101.6 Hz, B = 105.0 Hz — tensions matched
+within ~7 %** (T ∝ f²), confirming that the 15 % diagonal gap was structural.
+`CHOPPER_BELTS PLUCK=1` productizes this: display-cued plucks, automatic f/2f
+pairing (lone lines are flagged as suspect harmonics), tension ratio from f²,
+and absolute newtons from T = μ·(2·L·f)² when the span length is given.
 
 ## Practical rules distilled so far
 

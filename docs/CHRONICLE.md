@@ -24,6 +24,7 @@ Tags: **[measured]** on the reference printer (Ender-6 CoreXY, TMC2209, 24 V),
 | Jul 8 | Print speed | resonance map: 200 mm/s sits on a bump, 160/240 quieter — a print-speed answer |
 | Jul 8 | Mechanics | belt-diagonal comparison ships: the two CoreXY diagonals respond ~15% apart |
 | Jul 10 | Mechanics | **falsified**: heavy overtension moved the response 0 Hz (and bound the axis) — the gap is structural; tool reframed as a diagnostic |
+| Jul 10 | Mechanics | **the pluck lands it**: finger pluck + ADXL + f/2f pairing = real tension; belts measured matched (~7%) — `PLUCK=1` ships |
 
 ---
 
@@ -267,8 +268,10 @@ Klipper's (the input shaper); that leaves the **drive mechanics**. A belt-tensio
 match shipped first — and its decisive experiment **falsified the tension claim**
 on this rig: the ~15 % diagonal gap turned out to be structural, not tension (a
 heavy overtension of belt B moved its response by 0 Hz and bound the mechanics
-instead). The tool survives as a **response-asymmetry diagnostic** that knows its
-own limits; absolute tension belongs to the pluck test.
+instead). The sweep survives as a **response-asymmetry diagnostic** that knows its
+own limits — and then the **finger pluck landed the original idea**: pluck + ADXL
++ automatic (f, 2f) pairing measures real tension (`PLUCK=1`), and the rig's
+belts came out matched within ~7 %.
 
 <details>
 <summary>How we got there</summary>
@@ -320,6 +323,25 @@ reframed as a **response-asymmetry diagnostic**: it never orders "tighten belt X
 and if nothing moved between runs after a tension change, it says the response
 does not track tension on this machine — use the pluck test for absolute tension.
 A negative result, recorded as such.
+
+**Jul 10, later — and then the pluck landed the original idea after all.** Could
+the *transverse* mode be reached with what we have? A jerk-burst attempt (hard
+reversals, hoping the tension step converts to transverse ring) found only
+structural lines once properly averaged — its one promising "96 Hz candidate" was
+single-window variance. But a plain **finger pluck** of the span, with the
+toolhead accelerometer listening, rings at SNR up to ×1000. Two traps surfaced
+and became features: a weak pluck can show *only a harmonic* (a lone "400 Hz"
+line — 4×101.6 — briefly claimed a 15× tension difference; the "fret test" to
+check span length failed too, a finger on a rubber belt kills the ring outright),
+and the honest identifier turned out to be the **(f, 2f) pair** — the anchor
+shakes laterally at f and axially at 2f because the string's tension pulses twice
+per cycle. Hard plucks showed both belts' full pairs: **A = 101.6 Hz, B =
+105.0 Hz — tensions matched within ~7 %**, inverting the scare and confirming the
+structural-gap verdict. `CHOPPER_BELTS PLUCK=1` ships it: display-cued plucks,
+automatic f/2f pairing with lone lines flagged as suspect harmonics, tension
+ratio from f², absolute newtons with a span length. The accelerometer *can*
+measure belt tension — you just excite the right mode with a finger, and let the
+machine do the listening.
 
 </details>
 

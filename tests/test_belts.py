@@ -2,9 +2,9 @@ import pytest
 import numpy as np
 
 from chopper_autotune import belts as belts_mod
-from chopper_autotune.belts import (capture_span, gap_pct, insensitive, load_state,
-                                    progress_message, save_state, verdict, wait_for_capture,
-                                    welch_peak)
+from chopper_autotune.belts import (capture_span, fundamental, gap_pct, insensitive,
+                                    load_state, progress_message, save_state,
+                                    tension_newtons, verdict, wait_for_capture, welch_peak)
 
 
 def _raw_csv(path, freq, fs=3200.0, seconds=1.5, tones=None):
@@ -135,6 +135,37 @@ def test_state_round_trips(tmp_path, monkeypatch):
     assert load_state() is None                      # nothing yet
     save_state(156.0, 132.0)
     assert load_state() == {'A': 156.0, 'B': 132.0}
+
+
+def test_fundamental_prefers_the_f_2f_pair():
+    # the measured belt-A pluck: f=101.6 (x385) + 2f=203.3 (x1162) + stray lines;
+    # the fundamental is the PAIRED lower line even though 2f is the strongest
+    tones = [(203.3, 1162.0), (101.6, 385.0), (107.5, 76.0), (113.4, 62.0), (209.1, 42.0)]
+    freq, paired = fundamental(tones)
+    assert paired and freq == 101.6
+
+
+def test_fundamental_flags_a_lone_harmonic():
+    # the measured weak-pluck trap: only a 400 Hz line (4f) visible -> unpaired
+    freq, paired = fundamental([(400.6, 59.0)])
+    assert freq == 400.6 and not paired
+    assert fundamental([]) == (None, False)
+
+
+def test_tension_newtons():
+    # T = mu * (2 L f)^2: GT2 6mm, 35 cm span, 104.6 Hz -> ~41 N
+    t = tension_newtons(104.6, span_cm=35.0, mu_g_per_m=7.7)
+    assert t == pytest.approx(41.3, abs=1.0)
+    # tension goes as f^2: +5% frequency -> ~+10% tension
+    assert tension_newtons(109.8, 35.0, 7.7) / t == pytest.approx(1.10, abs=0.01)
+
+
+def test_pluck_macro_args_translate():
+    from chopper_autotune.cli import _gcode_args, boolean_flags, build_parser
+    parser = build_parser()
+    args = parser.parse_args(_gcode_args(
+        ['belts', 'PLUCK=1', 'SPAN=35', 'PLUCKS=6'], boolean_flags(parser)))
+    assert args.pluck and args.span == 35 and args.plucks == 6 and args.mu == 7.7
 
 
 def test_belts_show_args():

@@ -14,6 +14,15 @@ drives motor A only; B = head 1,-1 drives motor B only — the same single-motor
 the chopper stress test). We take Klipper's *raw* capture and compute the response
 spectrum here (numpy in our own venv), so nothing needs numpy inside klippy-env; only a
 configured [resonance_tester] (as for input-shaper calibration).
+
+PLUCK=1 is the tension measurement proper: you pluck each belt's span like a guitar
+string on the display's cue and the toolhead accelerometer listens. The pluck excites
+the transverse string mode — the anchor shakes the head laterally at f and, because the
+string's tension pulses twice per cycle, axially at 2f; the tool identifies the (f, 2f)
+pair and reports the fundamental (a lone unpaired line is suspect — a weak pluck often
+shows only a harmonic, measured: a 4f line masquerading at 400 Hz). Equal spans ->
+matched fundamentals = matched tension; with SPAN= (cm) it also reports absolute
+newtons, T = mu * (2 * L * f)^2.
 """
 from __future__ import annotations
 
@@ -32,6 +41,11 @@ SEGMENT = 1024              # Welch window; ~0.3 s at the ADXL's ~3.2 kHz -> ~3 
 MATCH_TOLERANCE = 5.0       # percent apart below which the belts count as matched
 MAX_HZ_PER_SEC = 2.0        # Klipper caps the sweep rate here
 STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/belts.json')
+
+PLUCK_BAND = (40.0, 500.0)  # string fundamentals and their 2f live here; skips the ~600 Hz ambient
+PLUCK_SNR = 30.0            # a pluck tone must beat the window's median spectrum by this
+PAIR_TOLERANCE = 0.04       # |f2 - 2*f1| / f2 for an (f, 2f) match
+GT2_MU = 7.7                # g/m, GT2 6 mm with a fiberglass core
 
 
 def gap_pct(freq_a: float, freq_b: float) -> float:
@@ -239,6 +253,9 @@ def belts(kl: Klippy, args) -> int:
         screen.update('Motors off — belt %s is the one that moved' % motor_label(motor), force=True)
         return 0                                     # leaves the motors off on purpose
 
+    if args.pluck:
+        return pluck_mode(kl, hw, args)
+
     tester = settings.get('resonance_tester') or {}
     if not tester.get('probe_points'):
         raise SystemExit('needs a [resonance_tester] with probe_points (same as Klipper '
@@ -311,4 +328,123 @@ def belts(kl: Klippy, args) -> int:
           'you whether the response follows the tension at all. After any mechanical change, '
           're-run CHOPPER_TUNE — the chopper optimum is measured against the mechanics you '
           'leave in place.')
+    return 0
+
+
+def pluck_tones(samples: np.ndarray, band: 'tuple[float, float]' = PLUCK_BAND,
+                count: int = 6) -> 'list[tuple[float, float]]':
+    """Tonal peaks of a pluck capture as (freq, snr-over-median), strongest first."""
+    acc = samples[:, 1:4]
+    acc = acc - acc.mean(axis=0)
+    fs = 1.0 / np.median(np.diff(samples[:, 0]))
+    n = acc.shape[0]
+    window = np.hanning(n)[:, None]
+    nfft = 1 << int(np.ceil(np.log2(4 * n)))
+    spec = (np.abs(np.fft.rfft(acc * window, n=nfft, axis=0)) ** 2).sum(axis=1)
+    freqs = np.fft.rfftfreq(nfft, 1 / fs)
+    mask = (freqs >= band[0]) & (freqs <= band[1])
+    f, p = freqs[mask], spec[mask]
+    median = np.median(p)
+    peaks = [(p[i], f[i]) for i in range(2, len(p) - 2)
+             if p[i - 1] < p[i] > p[i + 1] and p[i] > PLUCK_SNR * median]
+    peaks.sort(reverse=True)
+    out, taken = [], []
+    for power, freq in peaks:
+        if all(abs(freq - t) > 5.0 for t in taken):
+            out.append((float(freq), float(power / median)))
+            taken.append(freq)
+        if len(out) >= count:
+            break
+    return out
+
+
+def fundamental(tones: 'list[tuple[float, float]]') -> 'tuple[float | None, bool]':
+    """The string fundamental from a pluck's tone list. A pluck shakes the anchor
+    laterally at f and axially at 2f (the tension pulses twice per cycle), so an
+    (f, 2f) pair identifies the fundamental unambiguously; a lone line is returned
+    unpaired=False — it may be a harmonic of a weak pluck (measured: 4f at 400 Hz)."""
+    best = None
+    for freq, snr in tones:
+        for freq2, snr2 in tones:
+            if freq2 > freq and abs(freq2 - 2 * freq) <= PAIR_TOLERANCE * freq2:
+                combined = snr + snr2
+                if best is None or combined > best[1]:
+                    best = (freq, combined)
+    if best is not None:
+        return best[0], True
+    return (tones[0][0], False) if tones else (None, False)
+
+
+def tension_newtons(freq: float, span_cm: float, mu_g_per_m: float = GT2_MU) -> float:
+    """T = mu * (2 * L * f)^2 — the transverse string mode, the one that IS tension."""
+    wave_speed = 2 * (span_cm / 100.0) * freq
+    return (mu_g_per_m / 1000.0) * wave_speed * wave_speed
+
+
+def pluck_mode(kl: Klippy, hw, args) -> int:
+    """Guided pluck: the user plucks each belt's span on the display's cue; the toolhead
+    accelerometer listens. Motors stay enabled so the pulley is held and the span has
+    defined ends. Accepts a belt once two windows agree on the fundamental within 2%."""
+    from .collect import capture_stream
+    print('Pluck test: on the display cue, pluck the SAME span of each belt (the long '
+          'free stretch, mid-span) like a guitar string — pull ~5 mm sideways, release '
+          'sharply. Pluck HARD: weak plucks show only harmonics.')
+    if args.dry_run:
+        return 0
+    refuse_if_printing(kl)
+    screen = Screen(kl, hw.display)
+    kl.subscribe_accel(hw.accel_chip)
+    cx, cy = hw.center
+    kl.gcode('G28 X Y\nG90\nG1 X%.1f Y%.1f F6000\nM400' % (cx, cy))
+
+    def cue(text):
+        screen.update(text, force=True)
+        print('>> %s' % text, flush=True)
+
+    fundamentals = {}
+    try:
+        for label in ('A', 'B'):
+            agreed = []
+            for attempt in range(1, args.plucks + 1):
+                cue('READY: pluck belt %s in 3s' % label)
+                kl.gcode('G4 P3000')
+                cue('PLUCK belt %s NOW (hard)!' % label)
+                _, samples = capture_stream(hw, 'G4 P5000', 4.8)
+                tones = pluck_tones(samples)
+                freq, paired = fundamental(tones)
+                if freq is None:
+                    print('   belt %s try %d: nothing heard' % (label, attempt))
+                    continue
+                note = 'f=%.1f Hz %s  [%s]' % (freq, 'paired f+2f' if paired else
+                                               'UNPAIRED — may be a harmonic, pluck harder',
+                                               ', '.join('%.0f(x%.0f)' % t for t in tones[:3]))
+                print('   belt %s try %d: %s' % (label, attempt, note))
+                if paired:
+                    agreed.append(freq)
+                    if len(agreed) >= 2 and abs(agreed[-1] - agreed[-2]) <= 0.02 * agreed[-1]:
+                        break
+            if not agreed:
+                raise SystemExit('belt %s: no paired fundamental heard in %d plucks — pluck '
+                                 'harder, mid-span, and re-run' % (label, args.plucks))
+            fundamentals[label] = sum(agreed[-2:]) / len(agreed[-2:])
+    finally:
+        run_restore(lambda: kl.gcode('G28 X Y'))
+
+    fa, fb = fundamentals['A'], fundamentals['B']
+    ratio = (fa / fb) ** 2
+    print('\n=== Belt tension (pluck) ===')
+    print('Belt A fundamental %.1f Hz  |  Belt B %.1f Hz' % (fa, fb))
+    print('Tension ratio A/B = (fA/fB)^2 = %.2f' % ratio)
+    if args.span:
+        ta, tb = tension_newtons(fa, args.span, args.mu), tension_newtons(fb, args.span, args.mu)
+        print('At SPAN=%.0f cm: T_A ~ %.0f N, T_B ~ %.0f N' % (args.span, ta, tb))
+    if abs(ratio - 1) * 100 < args.tolerance * 2:    # tolerance is in freq %; tension ~ 2x
+        message = 'Tensions matched: A %.0f / B %.0f Hz (ratio %.2f)' % (fa, fb, ratio)
+    else:
+        looser = 'A' if fa < fb else 'B'
+        message = 'Belt %s looser: A %.0f / B %.0f Hz (tension ratio %.2f)' % (looser, fa, fb, ratio)
+    print(message)
+    screen.update(message, force=True)
+    print('\nThis is the transverse string mode — the one that IS tension (f ~ sqrt(T)); '
+          'equal spans compare directly. After adjusting, re-run to confirm the move.')
     return 0
