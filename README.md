@@ -106,15 +106,26 @@ cd ~ && git clone https://github.com/anton-vinogradov/chopper-autotune && bash .
 
 ### The plan — getting the most out of your printer
 
-The touchscreen panel's top row *is* this plan; each step is one button (or one console command). Mechanics first, then the motors, then verify the limits, then hand acceleration ringing to Klipper's own tool:
+The touchscreen panel's numbered buttons *are* this plan; each step is one button (or one console command).
+
+**The core sequence (do these, in order):**
 
 1. **Belts** (`CHOPPER_BELTS`) — mechanics before electronics: measure the belt tension by plucking and match the two belts. A binding or badly mismatched drive would poison every measurement after it.
 2. **Tune** (`CHOPPER_TUNE SAVE=1`) — both gantry motors: resonance speed per motor, register descent, motor B seeded from A's winner. Separate per-motor runs aren't needed — the combined run covers it (console `MOTOR=A/B` remains for experiments).
-3. *Recommended, console:* **Current** (`CHOPPER_CURRENT SAVE=1`, then `CHOPPER_TUNE SAVE=1` again) — the tuned chopper buys torque margin; spend it on a lower, cooler `run_current`, and re-tune since the optimum depends on the current. This was the single biggest win on the reference rig (motors 3.2× cooler).
+3. **Current** (`CHOPPER_CURRENT SAVE=1`) — spend the torque margin step 2 just bought on a lower, cooler `run_current` — the single biggest win on the reference rig (motors 3.2× cooler). **Then run step 2 again**: the chopper optimum depends on the current. *Why current isn't first:* the skip threshold is a property of the chopper — measured, the stock chopper skips at 1.0–1.2 A where the tuned one holds to 0.42 A — so measuring current before tuning would conclude "no reduction possible". Tune buys the margin, Current spends it, the re-Tune adapts.
 4. **Extruder** (`CHOPPER_EXTRUDER SAVE=1`) — the third motor: heats the hotend (filament stays in), finds the E resonance, tunes, saves.
-5. **Envelope** (`CHOPPER_ENVELOPE`) — verify the speed/acceleration headroom with the endstop referee: on a healthy tuned rig the verdict is "the motor is not the limit", and your practical ceilings are the hotend flow (speed) and ringing (acceleration). Optionally `CHOPPER_MAP PRINT_SPEED=<yours>` to check your cruise speed isn't parked on a resonance (VFAs) and see quieter neighbours.
-6. **Input shaper** — acceleration ringing is Klipper's own domain: run `SHAPER_CALIBRATE` + `SAVE_CONFIG` (or KlipperScreen's built-in *Input Shaper* panel). We deliberately don't wrap it — it already measures *and applies*.
-7. **Show** (`CHOPPER_DEMO`) — hear the before/after any time; **Save** persists whatever the latest tunings achieved in one restart.
+5. **Input shaper** — acceleration ringing is Klipper's own domain: run `SHAPER_CALIBRATE` + `SAVE_CONFIG` (or KlipperScreen's built-in *Input Shaper* panel). We deliberately don't wrap it — it already measures *and applies*.
+
+**Optional (worth it, not required):**
+
+- **Envelope** (`CHOPPER_ENVELOPE`) — verify the speed/acceleration headroom with the endstop referee: on a healthy tuned rig the verdict is "the motor is not the limit", and your practical ceilings are hotend flow (speed) and ringing (acceleration).
+- **Map** (`CHOPPER_MAP PRINT_SPEED=<yours>`) — check your cruise speed isn't parked on a motor resonance (the cause of VFAs) and see the quieter neighbours.
+- **Show** (`CHOPPER_DEMO`) — hear the before/after any time.
+
+**At any point:**
+
+- **Stop** (`CHOPPER_STOP`) — aborts the running job; the tool restores registers, spreadCycle, heaters and homing before exiting.
+- **Undo** — every save writes `*.chopper-backup.cfg` next to the edited config first; restoring that file (and `RESTART`) rolls everything back.
 
 ### The simple way — one command
 
@@ -128,15 +139,16 @@ The first tune finds the resonance speed of each motor, runs the register descen
 
 ### From the touchscreen — KlipperScreen
 
-If you run [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen), `install.sh` adds a **Chopper** button to its **More** menu (it merges with your existing menu, nothing is rewritten). One tap opens a panel whose **top row is the plan, in order**:
+If you run [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen), `install.sh` adds a **Chopper** button to its **More** menu (it merges with your existing menu, nothing is rewritten). One tap opens a panel whose **numbered buttons are the plan, in order**:
 
-- **1 Belts** → **2 Tune** → **3 Extruder** → **4 Envelope** — the numbered sequence from [the plan](#the-plan--getting-the-most-out-of-your-printer) above (finish with Klipper's own Input Shaper panel afterwards);
+- **1 Belts** → **2 Tune** → **3 Current** (writes `run_current`, then run **2 Tune** again) → **4 Extruder** — the required sequence from [the plan](#the-plan--getting-the-most-out-of-your-printer) above (finish with Klipper's own Input Shaper panel afterwards);
+- **5 Envelope** — the optional speed/acceleration headroom check;
 - **Save** — write the latest tuning results (both motors and the extruder's last winner) into the config in one restart, backup first;
 - **Show** — set the defaults, then the tuned registers, on **both** motors and do coordinated moves so you can *hear* the whole printer change; it reports the combined drop in vibration;
 - **Motor A** / **Motor B** — jog just that motor for a moment so you can see which physical motor and belt it is, then release the motors so you can reach in;
 - **Stop** — abort a running job; the tool restores the registers, heaters and homing before it exits.
 
-Every action confirms before it moves (or heats) the printer. While a job runs the panel shows live progress and finishes with a popup verdict; when idle it shows, per motor, the **default → tuned** registers and how much **less it vibrates** (measured by the last Show). The buttons drive the same `CHOPPER_*` macros, so anything you can do from the console you can do from the screen. (`CHOPPER_CURRENT` and `CHOPPER_MAP` are console-only for now.)
+Every action confirms before it moves (or heats) the printer. While a job runs the panel shows live progress and finishes with a popup verdict; when idle it shows, per motor, the **default → tuned** registers and how much **less it vibrates** (measured by the last Show). The buttons drive the same `CHOPPER_*` macros, so anything you can do from the console you can do from the screen. (`CHOPPER_MAP` is console-only for now.)
 
 ![The Chopper panel on KlipperScreen](docs/klipperscreen-panel.png)
 

@@ -31,27 +31,30 @@ class Panel(ScreenPanel):
         # the extruder's TMC section is "tmcXXXX extruder", so the same lookup works
         self.motors = (("stepper_x", "A"), ("stepper_y", "B"), ("extruder", "E"))
 
-        # the top row IS the plan: mechanics first (belts), then the gantry motors, then
-        # the extruder, then verify the speed/accel headroom — finish with Klipper's own
-        # Input Shaper panel (ringing from acceleration is its job, not the chopper's)
+        # the top rows ARE the plan: mechanics first (belts), tune the gantry motors,
+        # spend the bought torque margin on a cooler current (then Tune AGAIN — the
+        # chopper optimum depends on the current; that sandwich is measured, see the
+        # README plan), then the extruder; Envelope is the optional headroom check, and
+        # acceleration ringing belongs to Klipper's own Input Shaper panel afterwards
         actions = [
-            # row 1 — the plan, in order
             ("move", _("1 Belts"), "color1", "CHOPPER_BELTS",
              _("Step 1 — mechanics first. Measure belt tension: follow the display, pluck each belt's long front span hard, like a guitar string, twice per belt.")),
             ("fine-tune", _("2 Tune"), "color2", "CHOPPER_TUNE MOTOR=AB",
-             _("Step 2 — tune both gantry motors' choppers at their resonances (~20 minutes of movement). Motor B is seeded with A's winner. Then Save.")),
-            ("extrude", _("3 Extruder"), "color3", "CHOPPER_EXTRUDER",
-             _("Step 3 — tune the extruder chopper. The hotend will HEAT to 200C (filament stays in), ~10 minutes; the heater turns off when done. Then Save.")),
-            ("increase", _("4 Envelope"), "color4", "CHOPPER_ENVELOPE",
-             _("Step 4 — verify the speed/acceleration headroom: worst-case stress with the endstop referee, ~7 minutes. Finish with Klipper's Input Shaper panel afterwards.")),
-            # row 2 — supporting actions
-            ("complete", _("Save"), "color1", "CHOPPER_SAVE",
+             _("Step 2 — tune both gantry motors' choppers at their resonances (~20 minutes of movement). Motor B is seeded with A's winner. Then Save, and continue with 3 Current.")),
+            ("settings", _("3 Current"), "color3", "CHOPPER_CURRENT SAVE=1",
+             _("Step 3 — find the minimal safe run current (worst-case stress + endstop referee) and WRITE it into the config. Afterwards run 2 Tune again: the chopper optimum depends on the current.")),
+            ("extrude", _("4 Extruder"), "color4", "CHOPPER_EXTRUDER",
+             _("Step 4 — tune the extruder chopper. The hotend will HEAT to 200C (filament stays in), ~10 minutes; the heater turns off when done. Then Save.")),
+            # row 2 — the optional check + supporting actions
+            ("increase", _("5 Envelope"), "color1", "CHOPPER_ENVELOPE",
+             _("Optional check — verify the speed/acceleration headroom: worst-case stress with the endstop referee, ~7 minutes. Finish the plan with Klipper's Input Shaper panel.")),
+            ("complete", _("Save"), "color2", "CHOPPER_SAVE",
              _("Save the latest tuning result for each motor (and the extruder's last winner) into the config and restart Klipper?")),
-            ("resume", _("Show"), "color2", "CHOPPER_DEMO MOTOR=AB ROUNDS=2 REPEATS=2",
+            ("resume", _("Show"), "color3", "CHOPPER_DEMO MOTOR=AB ROUNDS=2 REPEATS=2",
              _("Play the driver defaults against the tuned registers on both motors so you can hear the difference?")),
-            ("move", _("Motor A"), "color3", "CHOPPER_BELTS SHOW=A",
+            ("move", _("Motor A"), "color4", "CHOPPER_BELTS SHOW=A",
              _("Jog motor A (stepper_x) briefly so you can see which motor and belt it is, then release the motors?")),
-            ("move", _("Motor B"), "color4", "CHOPPER_BELTS SHOW=B",
+            ("move", _("Motor B"), "color1", "CHOPPER_BELTS SHOW=B",
              _("Jog motor B (stepper_y) briefly so you can see which motor and belt it is, then release the motors?")),
         ]
 
