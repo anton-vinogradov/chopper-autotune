@@ -20,6 +20,7 @@ DRIVERS = ("tmc2209", "tmc2208", "tmc2240", "tmc5160", "tmc2130", "tmc2660")
 DEFAULT = (2, 3, 5, 0)  # Klipper's chopper defaults — the "before" the show compares against
 STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/state.json")
 BELTS_STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/belts.json")
+ENVELOPE_STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/envelope.json")
 
 
 class Panel(ScreenPanel):
@@ -133,6 +134,12 @@ class Panel(ScreenPanel):
             ratio = (belts["A"] / belts["B"]) ** 2
             lines.append(_("belts: ") + "A %.0f / B %.0f Hz (%s %.2f)"
                          % (belts["A"], belts["B"], _("tension ratio"), ratio))
+        envelope = self.load_json(ENVELOPE_STATE)
+        if envelope:
+            # "350+" = held the whole tested range (the motor is not the limit there)
+            lines.append(_("envelope: ") + "  ".join(
+                "%s %s mm/s, %s acc" % (name, values.get("speed"), values.get("accel"))
+                for name, values in envelope.items()))
         return "\n".join(lines)
 
     def register_table(self):
