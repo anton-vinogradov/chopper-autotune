@@ -2,8 +2,9 @@ import pytest
 import numpy as np
 
 from chopper_autotune import belts as belts_mod
-from chopper_autotune.belts import (capture_span, gap_pct, load_state, progress_message,
-                                    save_state, verdict, wait_for_capture, welch_peak)
+from chopper_autotune.belts import (capture_span, gap_pct, insensitive, load_state,
+                                    progress_message, save_state, verdict, wait_for_capture,
+                                    welch_peak)
 
 
 def _raw_csv(path, freq, fs=3200.0, seconds=1.5, tones=None):
@@ -62,18 +63,28 @@ def test_wait_for_capture_rejects_a_truncated_sweep(tmp_path):
         wait_for_capture(str(tmp_path / 'raw_data_*beltA*.csv'), min_span_sec=60.0, timeout=2.5)
 
 
-def test_verdict_balanced_and_mismatch():
-    assert 'balanced' in verdict(155.0, 153.0)                 # ~1.3% apart
+def test_verdict_matched_and_gap():
+    assert 'matched' in verdict(155.0, 153.0)                  # ~1.3% apart
     m = verdict(155.0, 133.0)                                  # ~15% apart, B lower
-    assert 'MISMATCH' in m and 'belt B' in m and 'Tighten belt B' in m
-    a = verdict(133.0, 155.0)                                  # A lower now
-    assert 'belt A' in a and 'Tighten belt A' in a
+    assert 'GAP' in m and 'diagonal B responds lower' in m
+    # honesty: no tighten order, and the structural caveat is spelled out
+    assert 'Tighten belt' not in m and 'structural' in m and 'pluck test' in m
+    assert 'diagonal A responds lower' in verdict(133.0, 155.0)
 
 
 def test_verdict_tolerance_is_configurable():
-    # 8% apart: matched under a 10% tolerance, a mismatch under the 5% default
-    assert 'balanced' in verdict(104.0, 96.0, tolerance=10.0)
-    assert 'MISMATCH' in verdict(104.0, 96.0, tolerance=5.0)
+    # 8% apart: matched under a 10% tolerance, a gap under the 5% default
+    assert 'matched' in verdict(104.0, 96.0, tolerance=10.0)
+    assert 'GAP' in verdict(104.0, 96.0, tolerance=5.0)
+
+
+def test_insensitive_flags_a_frozen_response():
+    # nothing moved since the last run -> the tension-does-not-track warning fires
+    assert insensitive({'A': 153.5, 'B': 131.0}, {'A': 153.7, 'B': 131.4})
+    # a belt actually moved -> no warning
+    assert not insensitive({'A': 153.7, 'B': 142.0}, {'A': 153.7, 'B': 131.4})
+    # no previous run -> nothing to compare
+    assert not insensitive({'A': 153.7, 'B': 131.4}, None)
 
 
 def test_wait_for_capture_returns_a_settled_file(tmp_path):
@@ -99,19 +110,19 @@ def test_belts_macro_args_translate():
 
 
 def test_progress_message_first_run_and_delta():
-    # first run: no previous state -> gap and which to tighten, no delta
+    # first run: no previous state -> gap and which diagonal is lower, no delta, no order
     first = progress_message(156.0, 132.0, prev=None)
-    assert 'Tighten B' in first and 'gap 16.7%' in first and 'A 156 / B 132 Hz' in first
-    assert '->' not in first
+    assert 'B lower' in first and 'gap 16.7%' in first and 'A 156 / B 132 Hz' in first
+    assert '->' not in first and 'Tighten' not in first
     # second run: B came up 9 Hz -> show the change per belt and the closing gap
     second = progress_message(156.0, 141.0, prev={'A': 156.0, 'B': 132.0})
     assert 'B+9' in second and 'A+0' in second
-    assert '16.7->' in second and 'Tighten B' in second
+    assert '16.7->' in second and 'B lower' in second
 
 
 def test_progress_message_matched():
     msg = progress_message(156.0, 154.0, prev={'A': 156.0, 'B': 141.0})
-    assert msg.startswith('Belts matched') and 'B+13' in msg
+    assert msg.startswith('Diagonals matched') and 'B+13' in msg
 
 
 def test_gap_pct():

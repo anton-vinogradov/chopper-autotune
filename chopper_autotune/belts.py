@@ -1,11 +1,19 @@
-"""CoreXY belt-tension match. The two belts should resonate at the same frequency —
-belt resonance goes as sqrt(tension), so a lower peak means a looser belt.
+"""CoreXY belt-diagonal response comparison. On a symmetric CoreXY, matched belts give
+matched responses, so a persistent gap between the diagonals is worth investigating —
+but honestly: a gap can be tension mismatch OR structural asymmetry, and on the
+reference rig the dominant response did NOT track tension at all (a heavy overtension
+of belt B moved its 131 Hz response by nothing — the mode is structural there). So the
+tool reports the two responses and their run-to-run deltas, and it watches for that
+exact failure: if a belt was tensioned between runs and its response did not move, it
+says so instead of asking for more turns. For absolute tension use the pluck test (the
+transverse string mode, f = sqrt(T/mu)/2L — a different mode from what an axial sweep
+through the motor excites).
 
-Each belt is excited alone by Klipper's swept-sine TEST_RESONANCES on that motor's
-diagonal (A = head 1,1 drives motor A only; B = head 1,-1 drives motor B only — the
-same single-motor split as the chopper stress test). We take Klipper's *raw* capture
-and compute the response spectrum here (numpy in our own venv), so nothing needs numpy
-inside klippy-env; only a configured [resonance_tester] (as for input-shaper calibration).
+Each diagonal is excited alone by Klipper's swept-sine TEST_RESONANCES (A = head 1,1
+drives motor A only; B = head 1,-1 drives motor B only — the same single-motor split as
+the chopper stress test). We take Klipper's *raw* capture and compute the response
+spectrum here (numpy in our own venv), so nothing needs numpy inside klippy-env; only a
+configured [resonance_tester] (as for input-shaper calibration).
 """
 from __future__ import annotations
 
@@ -50,7 +58,8 @@ def save_state(freq_a: float, freq_b: float):
 def progress_message(freq_a: float, freq_b: float, prev: 'dict | None',
                      tolerance: float = MATCH_TOLERANCE) -> str:
     """A one-line status for the display: the gap now, how it changed since the previous run
-    (per belt), and which belt to tighten — so you can gauge how much more to turn."""
+    (per belt), and which diagonal responds lower — deliberately NOT a "tighten X" order:
+    a gap can be structure, and the per-belt deltas are what tell you if a turn did anything."""
     gap = gap_pct(freq_a, freq_b)
     now = 'A %.0f / B %.0f Hz' % (freq_a, freq_b)
     if prev and 'A' in prev and 'B' in prev:
@@ -59,9 +68,19 @@ def progress_message(freq_a: float, freq_b: float, prev: 'dict | None',
     else:
         change = 'gap %.1f%%' % gap
     if gap < tolerance:
-        return 'Belts matched · %s · %s' % (change, now)
-    looser = 'A' if freq_a < freq_b else 'B'
-    return 'Tighten %s · %s · %s' % (looser, change, now)
+        return 'Diagonals matched · %s · %s' % (change, now)
+    lower = 'A' if freq_a < freq_b else 'B'
+    return '%s lower · %s · %s' % (lower, change, now)
+
+
+def insensitive(freqs: 'dict[str, float]', prev: 'dict | None', threshold_hz: float = 3.0) -> bool:
+    """True when nothing moved since the previous run — the signal that if a belt WAS
+    tensioned in between, the response does not track tension on this machine (measured
+    on the reference rig: a heavy overtension moved the response by 0 Hz)."""
+    if not prev or 'A' not in prev or 'B' not in prev:
+        return False
+    return (abs(freqs['A'] - prev['A']) < threshold_hz
+            and abs(freqs['B'] - prev['B']) < threshold_hz)
 
 
 def capture_span(path: str) -> float:
@@ -162,14 +181,16 @@ def welch_peak(path: str, band: 'tuple[float, float]') -> 'tuple[float, float]':
 
 
 def verdict(freq_a: float, freq_b: float, tolerance: float = MATCH_TOLERANCE) -> str:
-    mean = (freq_a + freq_b) / 2
-    apart = abs(freq_a - freq_b) / mean * 100
+    apart = gap_pct(freq_a, freq_b)
     if apart < tolerance:
-        return 'balanced: %.1f%% apart (< %.0f%%) — the belts are matched.' % (apart, tolerance)
-    looser = 'A' if freq_a < freq_b else 'B'
-    slack = ((max(freq_a, freq_b) / min(freq_a, freq_b)) ** 2 - 1) * 100
-    return ('MISMATCH: %.1f%% apart — belt %s resonates lower, so it is looser (~%.0f%% less '
-            'tension). Tighten belt %s a little and re-run.' % (apart, looser, slack, looser))
+        return ('matched: %.1f%% apart (< %.0f%%) — the two diagonals respond alike.'
+                % (apart, tolerance))
+    lower = 'A' if freq_a < freq_b else 'B'
+    return ('GAP: %.1f%% — diagonal %s responds lower. That can be a looser belt %s OR a '
+            'structural asymmetry: verify with the pluck test before turning anything, and '
+            'if you do adjust, make a SMALL change and watch the per-belt delta on the next '
+            'run — if the number does not move, stop: the response does not track tension '
+            'on this machine.' % (apart, lower, lower))
 
 
 def identify_belt(kl: Klippy, hw, motor: str, screen: Screen, cycles: int = 4):
@@ -180,8 +201,8 @@ def identify_belt(kl: Klippy, hw, motor: str, screen: Screen, cycles: int = 4):
     vec = stress_vector(hw.kinematics, motor)
     span = min(40.0, hw.axis_span / 6)
     label = motor_label(motor)
-    print('Jogging belt %s so you can see which one to tighten, then releasing the motors...' % label)
-    screen.update('Tighten belt %s — the moving one' % label, force=True)
+    print('Jogging belt %s so you can see which one it is, then releasing the motors...' % label)
+    screen.update('Belt %s — the moving one' % label, force=True)
     kl.gcode('G90\nG1 X%.1f Y%.1f F6000\nM400' % (cx, cy))
     moves = []
     for _ in range(cycles):
@@ -215,7 +236,7 @@ def belts(kl: Klippy, args) -> int:
         motor = 'x' if args.show == 'a' else 'y'
         kl.gcode('G28 X Y\nM400')
         identify_belt(kl, hw, motor, screen)
-        screen.update('Motors off — tighten belt %s, then re-measure' % motor_label(motor), force=True)
+        screen.update('Motors off — belt %s is the one that moved' % motor_label(motor), force=True)
         return 0                                     # leaves the motors off on purpose
 
     tester = settings.get('resonance_tester') or {}
@@ -227,8 +248,8 @@ def belts(kl: Klippy, args) -> int:
     hz_per_sec = min(args.hz_per_sec, MAX_HZ_PER_SEC)   # Klipper rejects a faster sweep
     if hz_per_sec < args.hz_per_sec:
         print('Capping sweep rate to %g Hz/s (Klipper maximum)' % MAX_HZ_PER_SEC)
-    print('Belt-tension match on %s: swept-sine %g-%g Hz per belt (motor A = head 1,1, '
-          'motor B = head 1,-1), response spectrum computed here.'
+    print('Belt-diagonal response comparison on %s: swept-sine %g-%g Hz per diagonal '
+          '(motor A = head 1,1, motor B = head 1,-1), response spectrum computed here.'
           % (hw.kinematics, band[0], band[1]))
     if args.dry_run:
         return 0
@@ -266,22 +287,28 @@ def belts(kl: Klippy, args) -> int:
 
     prev = load_state()                             # the previous run, to show what changed
     save_state(peaks['A'], peaks['B'])
-    print('\n=== Belt-tension match ===')
-    print('Belt A %.1f Hz  |  Belt B %.1f Hz' % (peaks['A'], peaks['B']))
+    print('\n=== Belt-diagonal response ===')
+    print('Diagonal A %.1f Hz  |  Diagonal B %.1f Hz' % (peaks['A'], peaks['B']))
     print(verdict(peaks['A'], peaks['B'], args.tolerance))
     if prev and 'A' in prev and 'B' in prev:
         print('Since last run: gap %.1f%% -> %.1f%%  (A %+.1f, B %+.1f Hz)'
               % (gap_pct(prev['A'], prev['B']), gap_pct(peaks['A'], peaks['B']),
                  peaks['A'] - prev['A'], peaks['B'] - prev['B']))
+        if insensitive(peaks, prev):
+            print('Nothing moved since the last run. If you changed a belt tension in '
+                  'between, the response does NOT track tension on this machine — do not '
+                  'keep tightening; check absolute tension with the pluck test instead.')
 
     message = progress_message(peaks['A'], peaks['B'], prev, args.tolerance)
     if gap_pct(peaks['A'], peaks['B']) >= args.tolerance:
-        # release the gantry so the belt is easy to reach; the message names which one,
-        # and the Motor A/B buttons (SHOW=) point at a motor when needed
+        # release the gantry so the belts are easy to reach; the Motor A/B buttons
+        # (SHOW=) point at a motor when needed
         kl.gcode('SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=0\n'
                  'SET_STEPPER_ENABLE STEPPER=stepper_y ENABLE=0')
         message += ' · motors off'
     screen.update(message, force=True)
-    print('\nBelt resonance goes as sqrt(tension); match the two, then re-run CHOPPER_TUNE — '
-          'the per-motor chopper optimum is measured against the mechanics you leave in place.')
+    print('\nIf you adjust a belt, change it a LITTLE and re-run: the per-belt delta tells '
+          'you whether the response follows the tension at all. After any mechanical change, '
+          're-run CHOPPER_TUNE — the chopper optimum is measured against the mechanics you '
+          'leave in place.')
     return 0
