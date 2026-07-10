@@ -23,6 +23,7 @@ from .metrics import parse_accel_csv, transients, vibration_score, window
 
 CSV_WAIT_SEC = 30.0
 MOVE_MARGIN = 0.4
+MIN_MEASURE_TIME = 0.4      # ranking is window-length invariant down to here (measured)
 MIN_STEADY_SAMPLES = 32
 PARK_INTERVAL_MOVES = 400
 OVERHEAD_STREAM_SEC = 0.3
@@ -149,6 +150,21 @@ def build_plan(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range, hend: 
 
 def travel_for(speed: float, accel: float, measure_time: float) -> float:
     return speed * speed / accel + speed * measure_time
+
+
+def fit_measure_time(speeds: 'list[int]', accel: float, limit: float,
+                     requested: float) -> float:
+    """The cruise time that fits the axis at the fastest requested speed. A high
+    resonance speed can push the default cruise past the travel limit (measured: motor B
+    at 96 mm/s needed 129 mm against a 104 mm cap, which used to abort the tune) — shrink
+    instead: ranking is invariant down to ~0.4 s of cruise (window study)."""
+    fit = min((limit - s * s / accel) / s for s in speeds)
+    if fit >= requested:
+        return requested
+    if fit < MIN_MEASURE_TIME:
+        raise SystemExit('even a %.2fs cruise does not fit %.0fmm at %d mm/s — raise --accel'
+                         % (MIN_MEASURE_TIME, limit, max(speeds)))
+    return round(fit, 2)
 
 
 def steady_window(t_end: float, speed: float, accel: float, measure_time: float,
@@ -619,12 +635,14 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
 
     speeds = list(args.speed.values())
     accel = args.accel or hw.max_accel / 10
-    travel = max(travel_for(s, accel, args.measure_time) for s in speeds)
     limit = hw.axis_span * MOVE_MARGIN
-    if travel > limit:
-        raise SystemExit('travel %.0fmm exceeds safe %.0fmm (%.0f%% of %.0fmm axis span); '
-                         'reduce --measure-time or raise --accel'
-                         % (travel, limit, MOVE_MARGIN * 100, hw.axis_span))
+    fitted = fit_measure_time(speeds, accel, limit, args.measure_time)
+    if fitted < args.measure_time:
+        print('Cruise %.2fs does not fit the axis at %d mm/s: shrinking to %.2fs '
+              '(ranking is window-length invariant down to ~0.4s, measured)'
+              % (args.measure_time, max(speeds), fitted))
+        args.measure_time = fitted
+    travel = max(travel_for(s, accel, args.measure_time) for s in speeds)
 
     overhead = OVERHEAD_CSV_SEC if args.csv else OVERHEAD_STREAM_SEC
     per_move = args.measure_time + 2 * max(speeds) / accel + overhead
