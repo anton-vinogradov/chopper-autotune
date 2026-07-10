@@ -146,6 +146,7 @@ If you run [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen), `ins
 - **Save** — write the latest tuning results (both motors and the extruder's last winner) into the config in one restart, backup first;
 - **Show** — set the defaults, then the tuned registers, on **both** motors and do coordinated moves so you can *hear* the whole printer change; it reports the combined drop in vibration;
 - **Motor A** / **Motor B** — jog just that motor for a moment so you can see which physical motor and belt it is, then release the motors so you can reach in;
+- **Results** — an on-demand summary of everything measured so far: default → tuned registers per motor (A/B/E) with the vibration drop, run currents, and the last belt-tension plucks;
 - **Stop** — abort a running job; the tool restores the registers, heaters and homing before it exits.
 
 Every action confirms before it moves (or heats) the printer. While a job runs the panel shows live progress and finishes with a popup verdict; when idle it shows, per motor, the **default → tuned** registers and how much **less it vibrates** (measured by the last Show). The buttons drive the same `CHOPPER_*` macros, so anything you can do from the console you can do from the screen. (`CHOPPER_MAP` is console-only for now.)
