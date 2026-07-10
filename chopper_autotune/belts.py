@@ -252,7 +252,7 @@ def belts(kl: Klippy, args) -> int:
         motor = 'x' if args.show == 'a' else 'y'
         kl.gcode('G28 X Y\nM400')
         identify_belt(kl, hw, motor, screen)
-        screen.update('Motors off — belt %s is the one that moved' % motor_label(motor), force=True)
+        screen.final('Motors off — belt %s is the one that moved' % motor_label(motor))
         return 0                                     # leaves the motors off on purpose
 
     if not args.sweep:                              # the pluck tension test is the default
@@ -325,7 +325,7 @@ def belts(kl: Klippy, args) -> int:
         kl.gcode('SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=0\n'
                  'SET_STEPPER_ENABLE STEPPER=stepper_y ENABLE=0')
         message += ' · motors off'
-    screen.update(message, force=True)
+    screen.final(message)
     print('\nIf you adjust a belt, change it a LITTLE and re-run: the per-belt delta tells '
           'you whether the response follows the tension at all. After any mechanical change, '
           're-run CHOPPER_TUNE — the chopper optimum is measured against the mechanics you '
@@ -486,7 +486,7 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
         looser = 'A' if fa < fb else 'B'
         message = 'Belt %s looser: A %.0f / B %.0f Hz' % (looser, fa, fb)
     print('%s (tension ratio %.2f)' % (message, ratio))
-    screen.update(message, force=True)
+    screen.final(message)
     print('\nThis is the transverse string mode — the one that IS tension (f ~ sqrt(T)); '
           'equal spans compare directly. After adjusting, re-run to confirm the move.')
     return 0

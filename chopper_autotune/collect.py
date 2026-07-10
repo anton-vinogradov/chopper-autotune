@@ -253,6 +253,13 @@ class Screen:
         if self.console:
             self.console = self._send('RESPOND PREFIX="%s" MSG="%s"' % (self.CONSOLE_PREFIX, text))
 
+    def final(self, text: str):
+        """End-of-run verdict: the status line as usual PLUS a KlipperScreen popup (M118's
+        `echo:` raises one). Popups are banned for progress — mid-run they cover the panel
+        and its Stop button — but a single one is right when the run is over."""
+        self.update(text, force=True)
+        self._send('M118 %s' % text)
+
     def _send(self, command: str) -> bool:
         try:
             self.kl.gcode(command)
@@ -444,7 +451,7 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
     ds.update_manifest(winner=winner['chopper'].fields())
     print('\nRecommended for printer.cfg:\n')
     print(tmc.cfg_snippet(hw.driver, hw.stepper, winner['chopper']))
-    screen.update('Chopper: %s' % winner['chopper'].label(), force=True)
+    screen.final('Chopper: %s' % winner['chopper'].label())
     return winner
 
 
@@ -469,7 +476,7 @@ def run_grid(kl: Klippy, hw: Hardware, ds: Dataset, args, plan, travel: float, a
             eta = remaining * (time.monotonic() - started) / (ok + failed)
             screen.update('Chopper %d%% %d/%d ETA %s'
                           % (100 * index // len(plan), index, len(plan), eta_text(eta)))
-    screen.update('Chopper grid done: %d ok, %d failed' % (ok, failed), force=True)
+    screen.final('Chopper grid done: %d ok, %d failed' % (ok, failed))
     return ok, failed
 
 

@@ -246,7 +246,7 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
         print('Resonance peaks: %s'
               % ', '.join('%d mm/s (magnitude %.0f)' % curve[i] for i in peaks))
         print('\nRecommended: CHOPPER_COLLECT MOTOR=%s SPEED=%d' % (hw.motor, recommended))
-        screen.update('Chopper: resonance %d mm/s' % recommended, force=True)
+        screen.final('Chopper: resonance %d mm/s' % recommended)
     else:
         top = max(curve, key=lambda point: point[1])
         print('No clear resonance peaks; highest magnitude %.0f at %d mm/s. '

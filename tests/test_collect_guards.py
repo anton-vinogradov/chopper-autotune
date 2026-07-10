@@ -42,3 +42,24 @@ def test_check_resume_rejects_different_conditions():
         check_resume(manifest, [58], 300.0, 0.4)
     with pytest.raises(SystemExit, match='speeds'):
         check_resume(manifest, [40, 58], 300.0, 1.25)
+
+
+def test_screen_final_adds_a_popup():
+    """final() = the status line as usual PLUS one M118 (KlipperScreen popup). Progress
+    updates must never popup — mid-run popups cover the panel and its Stop button."""
+    from chopper_autotune.collect import Screen
+
+    class FakeKl:
+        def __init__(self):
+            self.sent = []
+
+        def gcode(self, script):
+            self.sent.append(script)
+
+    kl = FakeKl()
+    screen = Screen(kl, display=True)
+    screen.update('progress 1/10', force=True)
+    assert not any(cmd.startswith('M118') for cmd in kl.sent)
+    screen.final('Belts matched: A 105 / B 105 Hz')
+    assert 'M117 Belts matched: A 105 / B 105 Hz' in kl.sent
+    assert 'M118 Belts matched: A 105 / B 105 Hz' in kl.sent
