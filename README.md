@@ -104,6 +104,18 @@ Install on the printer host (Klipper restarts at the end):
 cd ~ && git clone https://github.com/anton-vinogradov/chopper-autotune && bash ./chopper-autotune/install.sh
 ```
 
+### The plan — getting the most out of your printer
+
+The touchscreen panel's top row *is* this plan; each step is one button (or one console command). Mechanics first, then the motors, then verify the limits, then hand acceleration ringing to Klipper's own tool:
+
+1. **Belts** (`CHOPPER_BELTS`) — mechanics before electronics: measure the belt tension by plucking and match the two belts. A binding or badly mismatched drive would poison every measurement after it.
+2. **Tune** (`CHOPPER_TUNE SAVE=1`) — both gantry motors: resonance speed per motor, register descent, motor B seeded from A's winner. Separate per-motor runs aren't needed — the combined run covers it (console `MOTOR=A/B` remains for experiments).
+3. *Recommended, console:* **Current** (`CHOPPER_CURRENT SAVE=1`, then `CHOPPER_TUNE SAVE=1` again) — the tuned chopper buys torque margin; spend it on a lower, cooler `run_current`, and re-tune since the optimum depends on the current. This was the single biggest win on the reference rig (motors 3.2× cooler).
+4. **Extruder** (`CHOPPER_EXTRUDER SAVE=1`) — the third motor: heats the hotend (filament stays in), finds the E resonance, tunes, saves.
+5. **Envelope** (`CHOPPER_ENVELOPE`) — verify the speed/acceleration headroom with the endstop referee: on a healthy tuned rig the verdict is "the motor is not the limit", and your practical ceilings are the hotend flow (speed) and ringing (acceleration). Optionally `CHOPPER_MAP PRINT_SPEED=<yours>` to check your cruise speed isn't parked on a resonance (VFAs) and see quieter neighbours.
+6. **Input shaper** — acceleration ringing is Klipper's own domain: run `SHAPER_CALIBRATE` + `SAVE_CONFIG` (or KlipperScreen's built-in *Input Shaper* panel). We deliberately don't wrap it — it already measures *and applies*.
+7. **Show** (`CHOPPER_DEMO`) — hear the before/after any time; **Save** persists whatever the latest tunings achieved in one restart.
+
 ### The simple way — one command
 
 ```
@@ -116,17 +128,15 @@ The first tune finds the resonance speed of each motor, runs the register descen
 
 ### From the touchscreen — KlipperScreen
 
-If you run [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen), `install.sh` adds a **Chopper** button to its **More** menu (it merges with your existing menu, nothing is rewritten). One tap opens a panel with:
+If you run [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen), `install.sh` adds a **Chopper** button to its **More** menu (it merges with your existing menu, nothing is rewritten). One tap opens a panel whose **top row is the plan, in order**:
 
-- **Tune A** / **Tune B** — tune one motor (A = `stepper_x`, B = `stepper_y`; the chopper is a motor property, so it's the same on any kinematics — and on CoreXY those two steppers literally are motors A and B);
-- **Tune both** — tune both motors in one run, seeding the second from the first winner;
-- **Belts** — measure belt tension by plucking: follow the display, pluck each belt's long front span hard, twice; the accelerometer hears the tension;
+- **1 Belts** → **2 Tune** → **3 Extruder** → **4 Envelope** — the numbered sequence from [the plan](#the-plan--getting-the-most-out-of-your-printer) above (finish with Klipper's own Input Shaper panel afterwards);
+- **Save** — write the latest tuning results (both motors and the extruder's last winner) into the config in one restart, backup first;
+- **Show** — set the defaults, then the tuned registers, on **both** motors and do coordinated moves so you can *hear* the whole printer change; it reports the combined drop in vibration;
 - **Motor A** / **Motor B** — jog just that motor for a moment so you can see which physical motor and belt it is, then release the motors so you can reach in;
-- **Save** — write the latest tuning result for each motor into the config (backup first, one restart);
-- **Show** — set the defaults, then the tuned registers, on **both** motors and do coordinated moves (both run together, like printing) so you can *hear* the whole printer change; it reports the combined drop in vibration;
-- **Stop** — abort a running job; the tool restores the registers and re-homes before it exits.
+- **Stop** — abort a running job; the tool restores the registers, heaters and homing before it exits.
 
-Every action confirms before it moves the printer. While a job runs the panel shows live progress; when idle it shows, per motor, the **default → tuned** registers and how much **less it vibrates** (measured by the last Show). The buttons drive the same `CHOPPER_*` macros, so anything you can do from the console you can do from the screen. (`CHOPPER_CURRENT` is console-only for now.)
+Every action confirms before it moves (or heats) the printer. While a job runs the panel shows live progress and finishes with a popup verdict; when idle it shows, per motor, the **default → tuned** registers and how much **less it vibrates** (measured by the last Show). The buttons drive the same `CHOPPER_*` macros, so anything you can do from the console you can do from the screen. (`CHOPPER_CURRENT` and `CHOPPER_MAP` are console-only for now.)
 
 ![The Chopper panel on KlipperScreen](docs/klipperscreen-panel.png)
 
@@ -215,7 +225,7 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 
 **CHOPPER_CURRENT** — find the minimal safe `run_current` per motor: a worst-case single-motor stress pattern (full machine accel, belt speeds through 200 mm/s) with an **endstop referee** — skipped steps land as a position offset that an endstop creep measures deterministically, because a stall can be nearly silent (measured; see [docs/SCIENCE.md](docs/SCIENCE.md)). Bisects to the skip threshold and recommends `threshold × MARGIN` (default `2.0`); `SAVE=1` writes `run_current` (backup first) and restarts. Re-run `CHOPPER_TUNE` afterwards — the chopper optimum depends on the current. Parameters: `MOTOR`, `MARGIN`, `MIN_CURRENT`, `RESOLUTION`, `ACCEL`, `SAVE`, `DRY_RUN`.
 
-**CHOPPER_ENVELOPE** — the motor's **torque ceiling** at the configured current: how fast and how hard each motor can be pushed before it skips a step. Climbs a speed ladder (default `150→350` mm/s at full accel) and an acceleration ladder (`1–4×` `max_accel` at a moderate speed), same single-motor stress and **endstop referee** as `CHOPPER_CURRENT`; the safe ceiling is the last rung before the first skip, reported with a `1.3×` margin. This is the *motor* limit only — which speeds are quiet vs ringy is `CHOPPER_MAP`, and the real top-speed limit is usually hotend flow, not the motor. Read-only (nothing to save). Parameters: `MOTOR`, `MIN_SPEED`, `MAX_SPEED`, `STEP`, `ACCEL_PROBE_SPEED`, `ACCEL`, `DRY_RUN`.
+**CHOPPER_ENVELOPE** — the motor's **torque ceiling** at the configured current: how fast and how hard each motor can be pushed before it skips a step. Climbs a speed ladder (default `150→350` mm/s at full accel) and an acceleration ladder (`1–4×` `max_accel` at a moderate speed), same single-motor stress and **endstop referee** as `CHOPPER_CURRENT`; the safe ceiling is the last rung before the first skip, reported with a `1.3×` margin. This is the *motor* limit only — which speeds are quiet vs ringy is `CHOPPER_MAP`, and the real top-speed limit is usually hotend flow, not the motor. **Why the ladder tops out at 350:** at 256 microsteps that is already ~450k steps/s on one motor — near the step-generation budget of common 32-bit boards; past it the failure mode is a Klipper "step rate" shutdown mid-test (which aborts and proves nothing about the motor), and printing never cruises there anyway. Raise `MAX_SPEED=` if your microstepping/MCU allows. Read-only (nothing to save). Parameters: `MOTOR`, `MIN_SPEED`, `MAX_SPEED`, `STEP`, `ACCEL_PROBE_SPEED`, `ACCEL`, `DRY_RUN`.
 
 **CHOPPER_MAP** — the **resonance map**: vibration vs speed on the registers you actually print with, over a wide range (default `20→250` mm/s). Where `CHOPPER_FIND_SPEED` scans on *stock* registers to expose the peak it needs for tuning, this scans on the *current* (tuned) ones — the vibration you actually feel — and reports the **resonance peaks** (cruising there causes **VFAs**, the fine vertical banding) and the **quiet dips** between them, as a bar table plus an HTML plot. Pass `PRINT_SPEED=` and it tells you whether your speed sits on a resonance and names the quieter speeds nearby. Honest scope: a constant-velocity sweep measures the motor/chopper vibration signature, **not** your top print speed — the motor holds torque far past any commanded speed (`CHOPPER_ENVELOPE`), the real ceiling is hotend flow, and corner ringing is the input shaper's job (`SHAPER_CALIBRATE`). Read-only. Parameters: `MOTOR`, `MIN_SPEED`, `MAX_SPEED`, `STEP`, `PRINT_SPEED`, `ITERATIONS`, `ACCEL`, `DRY_RUN`.
 
