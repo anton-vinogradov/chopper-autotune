@@ -112,7 +112,7 @@ def test_belts_macro_args_translate():
 def test_progress_message_first_run_and_delta():
     # first run: no previous state -> gap and which diagonal is lower, no delta, no order
     first = progress_message(156.0, 132.0, prev=None)
-    assert 'B lower' in first and 'gap 16.7%' in first and 'A 156 / B 132 Hz' in first
+    assert 'B lower' in first and 'gap 16.7%' in first and '156/132Hz' in first
     assert '->' not in first and 'Tighten' not in first
     # second run: B came up 9 Hz -> show the change per belt and the closing gap
     second = progress_message(156.0, 141.0, prev={'A': 156.0, 'B': 132.0})
@@ -122,7 +122,7 @@ def test_progress_message_first_run_and_delta():
 
 def test_progress_message_matched():
     msg = progress_message(156.0, 154.0, prev={'A': 156.0, 'B': 141.0})
-    assert msg.startswith('Diagonals matched') and 'B+13' in msg
+    assert msg.startswith('Diag matched') and 'B+13' in msg
 
 
 def test_gap_pct():
@@ -170,9 +170,14 @@ def test_sides_agree_is_the_structural_control():
 def test_pluck_macro_args_translate():
     from chopper_autotune.cli import _gcode_args, boolean_flags, build_parser
     parser = build_parser()
+    # pluck is the default; PLUCK=1 stays accepted for compatibility
     args = parser.parse_args(_gcode_args(
         ['belts', 'PLUCK=1', 'SPAN=35', 'PLUCKS=6'], boolean_flags(parser)))
-    assert args.pluck and args.span == 35 and args.plucks == 6 and args.mu == 7.7
+    assert not args.sweep and args.span == 35 and args.plucks == 6 and args.mu == 7.7
+    # the sweep diagnostic is now the opt-in
+    args = parser.parse_args(_gcode_args(['belts', 'SWEEP=1'], boolean_flags(parser)))
+    assert args.sweep
+    assert not parser.parse_args(_gcode_args(['belts'], boolean_flags(parser))).sweep
 
 
 def test_belts_show_args():

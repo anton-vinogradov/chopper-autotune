@@ -180,9 +180,11 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument('--show', type=str.lower, choices=('a', 'b'), default=None,
                    help='skip the measurement and just jog belt A or B so you can see it '
                         '(for re-checking which belt while you tighten)')
+    b.add_argument('--sweep', action='store_true',
+                   help='the diagonal swept-sine response comparison instead of the pluck '
+                        'test — a structural-change diagnostic, NOT a tension gauge')
     b.add_argument('--pluck', action='store_true',
-                   help='guided pluck test: you pluck each belt on the display cue, the '
-                        'accelerometer listens — the transverse string mode that IS tension')
+                   help='the guided pluck tension test (the default; kept for compatibility)')
     b.add_argument('--span', type=float, default=None,
                    help='pluck: plucked span length in cm -> report absolute newtons')
     b.add_argument('--mu', type=float, default=7.7,
