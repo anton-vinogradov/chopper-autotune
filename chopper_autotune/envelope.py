@@ -7,11 +7,35 @@ hotend's flow rate, which is a thermal, not a motion, measurement.
 """
 from __future__ import annotations
 
+import json
 import math
+import os
 
 from .collect import Screen, detect_hardware, enter_spreadcycle, exit_spreadcycle, refuse_if_printing, run_restore
 from .current import Referee, referee_axis, stress_vector
 from .klippy import Klippy, find_socket
+
+STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/envelope.json')
+
+
+def ceiling_label(hold, skip, kilo: bool = False) -> str:
+    """350+ = held the whole tested range; 300 = the last safe rung before a skip;
+    <150 = skipped already at the first rung."""
+    fmt = (lambda v: '%gk' % (v / 1000)) if kilo else (lambda v: '%g' % v)
+    if hold is None:
+        return '<%s' % fmt(skip)
+    return fmt(hold) + ('' if skip is not None else '+')
+
+
+def save_state(results: 'dict[str, dict]'):
+    """Remember the measured ceilings so the panel's Results can show the achieved
+    speed/acceleration at any time."""
+    try:
+        os.makedirs(os.path.dirname(STATE), exist_ok=True)
+        with open(STATE, 'w') as handle:
+            json.dump(results, handle)
+    except OSError:
+        pass
 
 MARGIN = 1.3                                  # recommend ceiling / margin
 STRESS_REPS = 3
@@ -86,6 +110,7 @@ def envelope(kl: Klippy, args) -> int:
 
     refuse_if_printing(kl)
     screen = Screen(kl, board.display)
+    achieved = {}
     try:
         kl.gcode('G28 X Y\nG90')
         for m in motors:
@@ -123,9 +148,16 @@ def envelope(kl: Klippy, args) -> int:
                             lambda mm=m: exit_spreadcycle(kl, hw[mm]))
             print(' => speed: %s' % verdict(s_hold, s_skip, 'mm/s'))
             print(' => accel: %s' % verdict(a_hold, a_skip, 'mm/s2'))
+            achieved[label] = {'speed': ceiling_label(s_hold, s_skip),
+                               'accel': ceiling_label(a_hold, a_skip, kilo=True)}
     finally:
         run_restore(lambda: kl.gcode('M204 S%.0f\nG28 X Y' % board.max_accel))
 
+    if achieved:
+        save_state(achieved)                        # the panel's Results shows these
+        screen.final('Envelope: ' + ' · '.join(
+            '%s %s mm/s, %s acc' % (label, values['speed'], values['accel'])
+            for label, values in achieved.items()))
     print('\nThis is the motor (torque) limit only. For which speeds are quiet vs ringy, '
           'run CHOPPER_FIND_SPEED; and the real top-speed limit is usually the hotend flow '
           'rate, which is not a motion measurement.')

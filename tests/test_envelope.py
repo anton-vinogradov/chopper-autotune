@@ -36,3 +36,23 @@ def test_envelope_macro_args_translate():
         ['envelope', 'MOTOR=B', 'MAX_SPEED=300', 'STEP=25', 'DRY_RUN=1'],
         boolean_flags(parser)))
     assert args.axis == 'y' and args.max_speed == 300 and args.step == 25 and args.dry_run
+
+
+def test_ceiling_label_shapes():
+    from chopper_autotune.envelope import ceiling_label
+    assert ceiling_label(350, None) == '350+'          # held the whole range
+    assert ceiling_label(300, 350) == '300'            # last safe rung before a skip
+    assert ceiling_label(None, 150) == '<150'          # skipped at the first rung
+    assert ceiling_label(40000, None, kilo=True) == '40k+'
+    assert ceiling_label(30000, 40000, kilo=True) == '30k'
+
+
+def test_envelope_state_round_trips(tmp_path, monkeypatch):
+    import json
+
+    from chopper_autotune import envelope as envelope_mod
+    monkeypatch.setattr(envelope_mod, 'STATE', str(tmp_path / 'envelope.json'))
+    achieved = {'A': {'speed': '350+', 'accel': '40k+'},
+                'B': {'speed': '300', 'accel': '40k+'}}
+    envelope_mod.save_state(achieved)
+    assert json.load(open(envelope_mod.STATE)) == achieved
