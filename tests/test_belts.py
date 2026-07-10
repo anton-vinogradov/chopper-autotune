@@ -3,7 +3,7 @@ import numpy as np
 
 from chopper_autotune import belts as belts_mod
 from chopper_autotune.belts import (capture_span, fundamental, gap_pct, insensitive,
-                                    load_state, progress_message, save_state,
+                                    load_state, progress_message, save_state, sides_agree,
                                     tension_newtons, verdict, wait_for_capture, welch_peak)
 
 
@@ -158,6 +158,13 @@ def test_tension_newtons():
     assert t == pytest.approx(41.3, abs=1.0)
     # tension goes as f^2: +5% frequency -> ~+10% tension
     assert tension_newtons(109.8, 35.0, 7.7) / t == pytest.approx(1.10, abs=0.01)
+
+
+def test_sides_agree_is_the_structural_control():
+    # one loop, equal spans at center park -> the two sides must match within 3%
+    assert sides_agree(104.6, 105.0)
+    assert not sides_agree(105.0, 240.0)     # an obstructed/mismeasured span must flag
+    assert not sides_agree(105.0, 109.0)     # 3.8% apart -> outside the 3% control
 
 
 def test_pluck_macro_args_translate():
