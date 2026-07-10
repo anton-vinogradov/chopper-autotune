@@ -19,6 +19,7 @@ REGISTERS = ("driver_tbl", "driver_toff", "driver_hstrt", "driver_hend")
 DRIVERS = ("tmc2209", "tmc2208", "tmc2240", "tmc5160", "tmc2130", "tmc2660")
 DEFAULT = (2, 3, 5, 0)  # Klipper's chopper defaults — the "before" the show compares against
 STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/state.json")
+BELTS_STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/belts.json")
 
 
 class Panel(ScreenPanel):
@@ -63,10 +64,14 @@ class Panel(ScreenPanel):
             button = self._gtk.Button(icon, label, style)
             button.connect("clicked", self.run, command, confirm)
             grid.attach(button, index % 4, index // 4, 1, 1)
+        # local buttons (no printer action): Results shows everything measured so far
+        results = self._gtk.Button("info", _("Results"), "color1")
+        results.connect("clicked", self.show_results)
+        grid.attach(results, len(actions) % 4, len(actions) // 4, 1, 1)
         stop = self._gtk.Button("stop", _("Stop"), "color4")
         stop.connect("clicked", self.stop)
         # 4 columns keep the buttons to three rows, leaving the status area its height
-        grid.attach(stop, len(actions) % 4, len(actions) // 4, 1, 1)
+        grid.attach(stop, (len(actions) + 1) % 4, (len(actions) + 1) // 4, 1, 1)
 
         self.status = Gtk.Label(hexpand=True, vexpand=True, halign=Gtk.Align.CENTER,
                                 valign=Gtk.Align.CENTER, wrap=True,
@@ -106,6 +111,30 @@ class Panel(ScreenPanel):
             self.status.set_markup(
                 f"<span font_family='monospace' size='medium'>{GLib.markup_escape_text(self.register_table())}</span>")
 
+    def show_results(self, widget=None):
+        # on-demand summary of everything measured so far; a later status update
+        # overwrites it, tapping Results brings it back
+        self.status.set_markup(
+            f"<span font_family='monospace' size='medium'>{GLib.markup_escape_text(self.results_text())}</span>")
+
+    def results_text(self):
+        lines = [self.register_table()]
+        currents = []
+        for stepper, name in self.motors:
+            for driver in DRIVERS:
+                section = self._printer.get_config_section(f"{driver} {stepper}")
+                if section and section.get("run_current") is not None:
+                    currents.append("%s %sA" % (name, section["run_current"]))
+                    break
+        if currents:
+            lines.append(_("run_current: ") + "  ".join(currents))
+        belts = self.load_json(BELTS_STATE)
+        if belts.get("A") and belts.get("B"):
+            ratio = (belts["A"] / belts["B"]) ** 2
+            lines.append(_("belts: ") + "A %.0f / B %.0f Hz (%s %.2f)"
+                         % (belts["A"], belts["B"], _("tension ratio"), ratio))
+        return "\n".join(lines)
+
     def register_table(self):
         default = "/".join(str(v) for v in DEFAULT)
         state = self.load_state()
@@ -135,9 +164,13 @@ class Panel(ScreenPanel):
         return "-%d%%" % pct if pct >= 0 else "+%d%%" % -pct
 
     @staticmethod
-    def load_state():
+    def load_json(path):
         try:
-            with open(STATE) as handle:
+            with open(path) as handle:
                 return json.load(handle)
         except (OSError, ValueError):
             return {}
+
+    @classmethod
+    def load_state(cls):
+        return cls.load_json(STATE)
