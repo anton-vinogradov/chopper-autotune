@@ -108,3 +108,24 @@ def test_build_curve_medians(tmp_path):
     ds.append({'id': 'v040_bad', 'kind': 'speed', 'status': 'failed', 'speed': 40})
 
     assert build_curve(ds) == [(40, 120), (42, 1000)]
+
+
+def test_rising_at_edge_flags_a_clipped_peak():
+    from chopper_autotune.find_speed import rising_at_edge
+    # the measured failure: monotonic rise into the range top = the peak is clipped
+    rising = [(100, 1500), (110, 1800), (120, 2230)]
+    assert rising_at_edge(rising, max_speed=120, step=2)
+    # an interior maximum is not an edge case
+    interior = [(40, 900), (58, 2676), (80, 1200), (120, 800)]
+    assert not rising_at_edge(interior, max_speed=120, step=2)
+    # too little data to judge
+    assert not rising_at_edge([(20, 100), (22, 200)], max_speed=22, step=2)
+
+
+def test_fit_max_speed_respects_the_travel_limit():
+    from chopper_autotune.find_speed import MIN_CRUISE_SEC, cruise_for, fit_max_speed
+    accel, limit, measure_time = 1000.0, 104.0, 1.0
+    top = fit_max_speed(accel, limit, measure_time, step=2)
+    assert cruise_for(top, accel, limit, measure_time) >= MIN_CRUISE_SEC
+    assert cruise_for(top + 2, accel, limit, measure_time) < MIN_CRUISE_SEC
+    assert top > 120                     # the old default was nowhere near the real ceiling
