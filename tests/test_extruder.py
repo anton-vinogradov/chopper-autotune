@@ -1,7 +1,9 @@
 import pytest
 
 from chopper_autotune import tmc
-from chopper_autotune.extruder import extruder_context, oscillation, resonant_speed
+from chopper_autotune import extruder as extruder_mod
+from chopper_autotune.extruder import (extruder_context, load_winner_state, oscillation,
+                                       resonant_speed, save_winner_state)
 
 
 def test_resonant_speed_picks_the_peak():
@@ -43,4 +45,15 @@ def test_extruder_macro_args_translate():
     args = parser.parse_args(_gcode_args(
         ['extruder', 'TEMP=240', 'SPEED=5', 'SAVE=1', 'DRY_RUN=1'], boolean_flags(parser)))
     assert (args.temp == 240 and args.speed == 5 and args.save and args.dry_run
-            and args.min_speed == 1 and args.max_speed == 12)
+            and args.min_speed == 1 and args.max_speed == 12 and not args.save_last)
+    args = parser.parse_args(_gcode_args(['extruder', 'SAVE_LAST=1'], boolean_flags(parser)))
+    assert args.save_last
+
+
+def test_winner_state_round_trips(tmp_path, monkeypatch):
+    monkeypatch.setattr(extruder_mod, 'STATE', str(tmp_path / 'extruder.json'))
+    assert load_winner_state() is None
+    save_winner_state('2209', tmc.Chopper(3, 7, 6, 0))
+    state = load_winner_state()
+    assert state == {'driver': '2209',
+                     'fields': {'tbl': 3, 'toff': 7, 'hstrt': 6, 'hend': 0}}

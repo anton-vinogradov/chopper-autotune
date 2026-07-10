@@ -281,6 +281,8 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument('--audible-weight', type=float, default=0.25)
     e.add_argument('--save', action='store_true',
                    help='write the winner into [tmcXXXX extruder] (backup first) and restart')
+    e.add_argument('--save-last', action='store_true',
+                   help='persist the previously tuned winner immediately, without re-tuning')
     e.add_argument('--socket', default=None)
     e.add_argument('--url', default='http://127.0.0.1:7125')
     e.add_argument('--dry-run', action='store_true')
