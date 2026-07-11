@@ -63,9 +63,11 @@ class Panel(ScreenPanel):
         ]
 
         grid = Gtk.Grid(column_homogeneous=True, row_homogeneous=True, vexpand=False)
+        self.buttons = {}
         for index, (icon, label, style, command, confirm) in enumerate(actions):
             button = self._gtk.Button(icon, label, style)
             button.connect("clicked", self.run, command, confirm)
+            self.buttons[label] = button
             grid.attach(button, index % 4, index // 4, 1, 1)
         # local buttons (no printer action): Results shows everything measured so far
         restore = self._gtk.Button("refresh", _("Restore"), "color2")
@@ -116,6 +118,7 @@ class Panel(ScreenPanel):
         self.content.add(scroll)
         self.content.show_all()
 
+        self.mark_done_steps()
         self.show_status(self._printer.get_stat("display_status", "message"))
 
     def run(self, widget, command, confirm):
@@ -134,6 +137,40 @@ class Panel(ScreenPanel):
         if action == "notify_status_update" and "message" in data.get("display_status", {}):
             self.show_status(data["display_status"]["message"])
 
+    def step_states(self):
+        """Which plan steps already left their mark — read from the same sources
+        Results uses: saved registers in the live config and the state files."""
+        default = "/".join(str(v) for v in DEFAULT)
+
+        def tuned(stepper):
+            return self.tuned_registers(stepper) not in ("", default)
+
+        return {
+            _("1 Belts"): bool(self.load_json(BELTS_STATE)),
+            _("2,4 Tune"): tuned("stepper_x") and tuned("stepper_y"),
+            _("3 Current"): bool(self.load_json(CURRENT_STATE)),
+            _("5 Extruder"): tuned("extruder"),
+            _("Envelope"): bool(self.load_json(ENVELOPE_STATE)),
+            _("Map"): bool(self.load_json(MAP_STATE)),
+        }
+
+    @staticmethod
+    def relabel(widget, text):
+        """Set a button's text by finding its Label child: Gtk.Button.set_label would
+        replace the icon+label box some KlipperScreen versions build inside."""
+        if isinstance(widget, Gtk.Label):
+            widget.set_text(text)
+            return True
+        if hasattr(widget, "get_children"):
+            return any(Panel.relabel(child, text) for child in widget.get_children())
+        return False
+
+    def mark_done_steps(self):
+        for label, done in self.step_states().items():
+            button = self.buttons.get(label)
+            if button:
+                self.relabel(button, ("\u2713 " + label) if done else label)
+
     def show_status(self, message):
         if getattr(self, "results_open", False):
             if not (message and message.strip()):
@@ -144,6 +181,7 @@ class Panel(ScreenPanel):
         if message and message.strip():
             self.status.set_markup(f"<span size='large'>{GLib.markup_escape_text(message.strip())}</span>")
         else:
+            self.mark_done_steps()                  # a finished run may have advanced the plan
             self.status.set_markup(
                 f"<span font_family='monospace' size='medium'>{GLib.markup_escape_text(self.register_table())}</span>")
 
