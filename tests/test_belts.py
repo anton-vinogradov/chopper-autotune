@@ -211,3 +211,9 @@ def test_belts_show_args():
     # SHOW=B -> just jog belt B; case-insensitive
     args = parser.parse_args(_gcode_args(['belts', 'SHOW=B'], boolean_flags(parser)))
     assert args.show == 'b'
+
+
+def test_state_default_paths_split_pluck_from_sweep():
+    # belts.json is what the panel renders as TENSION — the sweep's structural
+    # frequencies must live in their own file (the falsified reading, measured)
+    assert belts_mod.SWEEP_STATE != belts_mod.STATE

@@ -9,7 +9,9 @@ description = "Measurement-driven auto-tuning of TMC chopper registers for Klipp
 readme = "README.md"
 license = { file = "LICENSE.TXT" }
 requires-python = ">=3.9"
-dependencies = ["numpy", "plotly"]
+# numpy>=1.23: older loadtxt falls back to a pure-python parser — 10-20s per 13MB
+# belt capture on a Pi with the distro numpy leaking through --system-site-packages
+dependencies = ["numpy>=1.23", "plotly"]
 
 [project.urls]
 Homepage = "https://github.com/anton-vinogradov/chopper-autotune"

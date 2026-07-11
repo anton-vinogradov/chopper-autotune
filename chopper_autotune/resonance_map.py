@@ -20,7 +20,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from . import __version__, tmc
+from . import __version__
 from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen,
                       default_dataset_root, detect_hardware, enter_spreadcycle, exit_spreadcycle,
                       make_parker, now, park, refuse_if_printing, run_restore)
@@ -179,13 +179,13 @@ def resonance_map(kl: Klippy, args) -> int:
     advice = None
     if args.print_speed:
         at, below, above = quieter_alternatives(curve, args.print_speed)
+        options = [alt for alt in (below, above) if alt]
         alts = ['%d mm/s (%.0f, %+.0f%%)' % (s, m, (m / at[1] - 1) * 100)
-                for s, m in (below, above) if s is not None]
+                for s, m in options]
         if alts:
             print('\nYour print speed %d mm/s measures %.0f — quieter nearby: %s'
                   % (args.print_speed, at[1], ', '.join(alts)))
-            advice = '%d→%s' % (args.print_speed,
-                                '/'.join(str(s) for s, _ in (below, above) if s is not None))
+            advice = '%d→%s' % (args.print_speed, '/'.join(str(s) for s, _ in options))
         else:
             print('\nYour print speed %d mm/s (%.0f) is already in a quiet spot — no nearby '
                   'speed runs meaningfully quieter.' % (args.print_speed, at[1]))

@@ -320,8 +320,14 @@ def run_save_latest(args) -> int:
         info = Dataset(str(path)).manifest()
         axis = info.get('axis')
         if axis in ('x', 'y') and axis not in seen and 'search' in info:
+            try:
+                manifest, combo = winner_of(str(path), args.audible_weight)
+            except SystemExit as reason:
+                # an aborted-at-start dataset has no measurements — fall back to an
+                # older complete one instead of blocking Save entirely
+                print('motor %s: skipping %s (%s)' % (motor_label(axis), Path(path).name, reason))
+                continue
             seen.add(axis)
-            manifest, combo = winner_of(str(path), args.audible_weight)
             items.append((manifest, combo))
             print('motor %s: saving %s (from %s)' % (motor_label(axis), combo.label(), Path(path).name))
     extruder_state = load_winner_state()

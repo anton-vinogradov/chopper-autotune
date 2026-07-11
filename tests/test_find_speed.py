@@ -129,3 +129,7 @@ def test_fit_max_speed_respects_the_travel_limit():
     assert cruise_for(top, accel, limit, measure_time) >= MIN_CRUISE_SEC
     assert cruise_for(top + 2, accel, limit, measure_time) < MIN_CRUISE_SEC
     assert top > 120                     # the old default was nowhere near the real ceiling
+
+
+def test_cruise_for_zero_speed_is_zero_not_a_crash():
+    assert cruise_for(0, 4000, 200, 2.0) == 0.0

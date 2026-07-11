@@ -29,6 +29,9 @@ def bar(value: float, scale: float) -> str:
 
 def run_demo(args) -> int:
     from argparse import Namespace
+    if getattr(args, 'live', False) and args.report:
+        raise SystemExit('LIVE=1 and REPORT=1 contradict — REPORT measures the numbers, '
+                         'LIVE plays the audible showcase (the default)')
     kl = Klippy(find_socket(args.socket)).connect()
     try:
         if args.axis == 'xy' and not args.report:
@@ -88,15 +91,15 @@ def showcase_together(kl, args) -> int:
 
     refuse_if_printing(kl)
     kl.subscribe_accel(board.accel_chip)
-    # home and hold at center with the motors ENABLED (park disables them) for G1 moves
-    kl.gcode('G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, *board.center))
-    for axis in MOTORS:
-        enter_spreadcycle(kl, hw[axis])
     screen = Screen(kl, board.display)
     configs = [('default', default), ('tuned', tuned)]
     playing = {'default': '>> DEFAULTS', 'tuned': '>> TUNED'}
     results = {name: [] for name, _ in configs}
     try:
+        # home and hold at center with the motors ENABLED (park disables them) for G1 moves
+        kl.gcode('G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, *board.center))
+        for axis in MOTORS:
+            enter_spreadcycle(kl, hw[axis])
         for r in range(1, args.rounds + 1):
             round_avg = {}
             for name, regs in configs:
@@ -221,12 +224,12 @@ def demo(kl: Klippy, args) -> int:
                                'speed': speed, 'default': default.label(), 'tuned': tuned.label()})
     print('Preparing: home XY, park at center, disable motors')
     park(kl, hw)
-    enter_spreadcycle(kl, hw)
     before_move = make_parker(kl, hw)
     screen = Screen(kl, hw.display)
     configs = [('default', default), ('tuned', tuned)]
     results = {name: [] for name, _ in configs}
     try:
+        enter_spreadcycle(kl, hw)
         measure_baseline(hw, ds, args, set())
         if live:
             results = _showcase(kl, hw, args, ds, configs, speed, travel, accel,

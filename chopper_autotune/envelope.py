@@ -29,11 +29,18 @@ def ceiling_label(hold, skip, kilo: bool = False) -> str:
 
 def save_state(results: 'dict[str, dict]'):
     """Remember the measured ceilings so the panel's Results can show the achieved
-    speed/acceleration at any time."""
+    speed/acceleration at any time. Merged per motor: MOTOR=B must not erase A."""
     try:
+        merged = {}
+        try:
+            with open(STATE) as handle:
+                merged = json.load(handle)
+        except (OSError, ValueError):
+            pass
+        merged.update(results)
         os.makedirs(os.path.dirname(STATE), exist_ok=True)
         with open(STATE, 'w') as handle:
-            json.dump(results, handle)
+            json.dump(merged, handle)
     except OSError:
         pass
 
@@ -96,6 +103,16 @@ def envelope(kl: Klippy, args) -> int:
     base_accel = args.accel or board.max_accel
     speeds = tuple(range(args.min_speed, args.max_speed + 1, args.step))
     accels = tuple(round(base_accel * f, -2) for f in (1.0, 1.5, 2.0, 3.0, 4.0))
+    max_velocity = float(settings.get('printer', {}).get('max_velocity') or 0)
+    if max_velocity and speeds and speeds[-1] > max_velocity:
+        # G1 feed is silently clamped to [printer] max_velocity — rungs above it would
+        # "hold" without ever being commanded, so cut them instead of lying
+        speeds = tuple(s for s in speeds if s <= max_velocity)
+        print('Capping the speed ladder at [printer] max_velocity = %g mm/s — raise it in '
+              'the config to probe higher' % max_velocity)
+        if not speeds:
+            raise SystemExit('MIN_SPEED %d exceeds [printer] max_velocity %g — nothing to test'
+                             % (args.min_speed, max_velocity))
 
     print('Motion envelope on motor(s) %s at the configured run current: worst-case '
           'single-motor stress, endstop referee.' % '+'.join(motor_label(m) for m in motors))

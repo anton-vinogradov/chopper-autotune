@@ -634,6 +634,8 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
         print('Warning: --seed-from only affects --search descent, ignoring')
 
     speeds = list(args.speed.values())
+    if min(speeds) <= 0:
+        raise SystemExit('SPEED must be positive, got %s' % min(speeds))
     accel = args.accel or hw.max_accel / 10
     limit = hw.axis_span * MOVE_MARGIN
     fitted = fit_measure_time(speeds, accel, limit, args.measure_time)
@@ -715,11 +717,11 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
 
     print('Preparing: home XY, park at center, disable motors')
     park(kl, hw)
-    enter_spreadcycle(kl, hw)
     started = time.time()
     before_move = make_parker(kl, hw)
     screen = Screen(kl, hw.display)
     try:
+        enter_spreadcycle(kl, hw)
         measure_baseline(hw, ds, args, done)
         if args.search == 'descent':
             ok, failed = run_descent(kl, hw, ds, args, tpfd, speeds, travel, accel, done,
@@ -734,7 +736,8 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
     finally:
         print('Restoring baseline registers, homing')
         run_restore(
-            lambda: hw.baseline and kl.gcode(tmc.set_fields_script(hw.stepper, hw.baseline)),
+            lambda: kl.gcode(tmc.set_fields_script(
+                hw.stepper, hw.baseline or tmc.KLIPPER_DEFAULT.fields())),
             lambda: exit_spreadcycle(kl, hw),
             lambda: kl.gcode('G28 X Y'))
 

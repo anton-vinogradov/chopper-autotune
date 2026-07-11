@@ -125,11 +125,9 @@ class Panel(ScreenPanel):
         lines = [self.register_table()]
         currents = []
         for stepper, name in self.motors:
-            for driver in DRIVERS:
-                section = self._printer.get_config_section(f"{driver} {stepper}")
-                if section and section.get("run_current") is not None:
-                    currents.append("%s %sA" % (name, section["run_current"]))
-                    break
+            section = self.tmc_section(stepper)
+            if section and section.get("run_current") is not None:
+                currents.append("%s %sA" % (name, section["run_current"]))
         if currents:
             lines.append(_("run_current: ") + "  ".join(currents))
         belts = self.load_json(BELTS_STATE)
@@ -166,13 +164,19 @@ class Panel(ScreenPanel):
                                                  self.noise_change(axis, tuned, state)))
         return "\n".join(rows)
 
-    def tuned_registers(self, stepper):
+    def tmc_section(self, stepper):
         for driver in DRIVERS:
             section = self._printer.get_config_section(f"{driver} {stepper}")
             if section:
-                values = [section.get(reg) for reg in REGISTERS]
-                if all(value is not None for value in values):
-                    return "/".join(str(value) for value in values)
+                return section
+        return None
+
+    def tuned_registers(self, stepper):
+        section = self.tmc_section(stepper)
+        if section:
+            values = [section.get(reg) for reg in REGISTERS]
+            if all(value is not None for value in values):
+                return "/".join(str(value) for value in values)
         return ""
 
     def noise_change(self, axis, tuned, state):

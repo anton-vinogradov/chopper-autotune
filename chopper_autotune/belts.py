@@ -15,8 +15,8 @@ the chopper stress test). We take Klipper's *raw* capture and compute the respon
 spectrum here (numpy in our own venv), so nothing needs numpy inside klippy-env; only a
 configured [resonance_tester] (as for input-shaper calibration).
 
-PLUCK=1 is the tension measurement proper: you pluck each belt's span like a guitar
-string on the display's cue and the toolhead accelerometer listens. The pluck excites
+The default flow is the tension measurement proper: you pluck each belt's span like a
+guitar string on the display's cue and the toolhead accelerometer listens. The pluck excites
 the transverse string mode — the anchor shakes the head laterally at f and, because the
 string's tension pulses twice per cycle, axially at 2f; the tool identifies the (f, 2f)
 pair and reports the fundamental (a lone unpaired line is suspect — a weak pluck often
@@ -41,6 +41,9 @@ SEGMENT = 1024              # Welch window; ~0.3 s at the ADXL's ~3.2 kHz -> ~3 
 MATCH_TOLERANCE = 5.0       # percent apart below which the belts count as matched
 MAX_HZ_PER_SEC = 2.0        # Klipper caps the sweep rate here
 STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/belts.json')
+# the sweep's run-to-run deltas live apart: its structural response frequencies must
+# never land in belts.json, which the panel renders as TENSION (pluck fundamentals)
+SWEEP_STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/belts_sweep.json')
 
 PLUCK_BAND = (40.0, 1000.0)  # near-head spans ring ~200-450 Hz, their 2f up to ~900;
                              # ambient lines (e.g. a persistent ~600 Hz) are excluded
@@ -54,18 +57,19 @@ def gap_pct(freq_a: float, freq_b: float) -> float:
     return abs(freq_a - freq_b) / ((freq_a + freq_b) / 2) * 100
 
 
-def load_state() -> 'dict | None':
+def load_state(path: 'str | None' = None) -> 'dict | None':
     try:
-        with open(STATE) as handle:
+        with open(path or STATE) as handle:
             return json.load(handle)
     except (OSError, ValueError):
         return None
 
 
-def save_state(freq_a: float, freq_b: float):
+def save_state(freq_a: float, freq_b: float, path: 'str | None' = None):
+    path = path or STATE
     try:
-        os.makedirs(os.path.dirname(STATE), exist_ok=True)
-        with open(STATE, 'w') as handle:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, 'w') as handle:
             json.dump({'A': freq_a, 'B': freq_b}, handle)
     except OSError:
         pass
@@ -170,6 +174,9 @@ def dominant(freqs: np.ndarray, psd: np.ndarray, band: 'tuple[float, float]') ->
     smooth = np.convolve(psd, np.ones(5) / 5, mode='same')
     mask = (freqs >= band[0]) & (freqs <= band[1])
     f, p = freqs[mask], smooth[mask]
+    if len(p) == 0 or not np.isfinite(p).any():
+        raise SystemExit('no spectrum in %.0f-%.0f Hz — capture too short or sample rate too low'
+                         % band)
     top = int(np.argmax(p))
     lo, hi = top, top
     while lo > 0 and p[lo - 1] >= 0.5 * p[top]:
@@ -245,11 +252,17 @@ def belts(kl: Klippy, args) -> int:
     if not coupled_xy(hw.kinematics):
         raise SystemExit('belt-tension match is a CoreXY/H-bot check (two belts drive one '
                          'motion); kinematics here is %s — nothing to match' % hw.kinematics)
+    if getattr(args, 'pluck', False) and args.sweep:
+        raise SystemExit('PLUCK=1 and SWEEP=1 contradict — pick one (pluck is the default)')
 
     if args.show:                                   # just point at a belt, no measurement
+        motor = 'x' if args.show == 'a' else 'y'
+        if args.dry_run:
+            print('DRY_RUN: would home X/Y, jog motor %s and switch motors off'
+                  % motor_label(motor))
+            return 0
         screen = Screen(kl, hw.display)
         refuse_if_printing(kl)
-        motor = 'x' if args.show == 'a' else 'y'
         kl.gcode('G28 X Y\nM400')
         identify_belt(kl, hw, motor, screen)
         screen.final('Motors off — belt %s is the one that moved' % motor_label(motor))
@@ -304,8 +317,8 @@ def belts(kl: Klippy, args) -> int:
     finally:
         run_restore(lambda: kl.gcode('G28 X Y'))
 
-    prev = load_state()                             # the previous run, to show what changed
-    save_state(peaks['A'], peaks['B'])
+    prev = load_state(SWEEP_STATE)                  # the previous run, to show what changed
+    save_state(peaks['A'], peaks['B'], SWEEP_STATE)
     print('\n=== Belt-diagonal response ===')
     print('Diagonal A %.1f Hz  |  Diagonal B %.1f Hz' % (peaks['A'], peaks['B']))
     print(verdict(peaks['A'], peaks['B'], args.tolerance))
@@ -490,6 +503,7 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
         message = 'Belt %s looser: A %.0f / B %.0f Hz (tension %+.0f%%)' % (looser, fa, fb,
                                                                             tension_gap)
     print(message)
+    save_state(fa, fb)
     screen.final(message)
     print('\nThis is the transverse string mode — the one that IS tension (f ~ sqrt(T)); '
           'equal spans compare directly. After adjusting, re-run to confirm the move.')
