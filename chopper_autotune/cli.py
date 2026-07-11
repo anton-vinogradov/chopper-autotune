@@ -320,6 +320,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def announce_failure(args, message: str):
+    """Best-effort last words on the printer display: the tools run detached, so a
+    failure that only lands in the log looks like 'nothing starts' at the machine
+    (field: a missing accelerometer died silently). Never masks the real error."""
+    try:
+        from .klippy import Klippy, find_socket
+        kl = Klippy(find_socket(getattr(args, 'socket', None))).connect()
+        try:
+            safe = message.replace('"', "'").replace('\n', ' ')[:120]
+            kl.gcode('M117 %s' % safe)
+            kl.gcode('M118 %s' % safe)
+        finally:
+            kl.close()
+    except Exception:
+        pass
+
+
 def main(argv=None) -> int:
     if hasattr(sys.stdout, 'reconfigure'):
         sys.stdout.reconfigure(line_buffering=True)
@@ -331,6 +348,18 @@ def main(argv=None) -> int:
     if getattr(args, 'dataset_opt', None):
         args.dataset = args.dataset_opt
 
+    try:
+        return dispatch(args)
+    except SystemExit as failure:
+        if isinstance(failure.code, str):           # a refusal with a reason (not Stop's int)
+            announce_failure(args, '%s FAILED: %s' % (args.command, failure.code))
+        raise
+    except Exception as failure:
+        announce_failure(args, '%s FAILED: %s' % (args.command, failure))
+        raise
+
+
+def dispatch(args) -> int:
     if args.command == 'save':
         from .analyze import run_save_latest
         return run_save_latest(args)

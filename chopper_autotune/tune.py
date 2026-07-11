@@ -109,9 +109,6 @@ def run_tune(args) -> int:
                 for manifest, combo in winners)
             screen.final('Tune done: %s%s' % (labels, ' — saving' if args.save
                                               else ' — tap Save to persist'))
-    except SystemExit as failure:
-        screen.final('Tune FAILED: %s' % failure)      # the display must say why
-        raise
     finally:
         kl.close()
 
