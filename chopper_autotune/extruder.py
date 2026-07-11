@@ -16,11 +16,11 @@ import os
 import statistics
 
 from . import tmc
-from .collect import Screen, capture_stream, detect_hardware, refuse_if_printing, run_restore
+from .collect import Range, Screen, capture_stream, detect_hardware, refuse_if_printing, run_restore
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
 from .metrics import transients, vibration_score
-from .search import penalized_score
+from .search import descent_budget, multi_start_descent, penalized_score
 
 AMP_CAP = 3.0               # max half-stroke, mm of filament (a retraction-scale swing)
 CRUISE_SEC = 2.4            # oscillation time per measurement
@@ -80,13 +80,18 @@ def measure(hw, speed: float) -> 'tuple[float, int]':
     return vibration_score(samples, 0.0)['median_magnitude'], transients(samples)['clicks']
 
 
+FIELD_RANGES = (Range(0, 3), Range(1, 8), Range(0, 7), Range(0, 15))   # tbl/toff/hstrt/hend
+
+
 def descent(hw, kl, driver, speed: float, audible_weight: float, screen: Screen,
             rounds: int = 2) -> 'tuple[tmc.Chopper, dict]':
-    """Coordinate descent per AN-001 order, measuring each candidate live; results are
-    cached per combo so revisits are free."""
+    """Multi-start coordinate descent (search.py — the same engine as the axis tune:
+    joint tbl+toff phase and spanning hend seeds, closing the measured toff x hend
+    blind spot a per-field single-start walk re-created), evaluating each candidate
+    live on the extruder; the cache makes converging starts nearly free."""
     cache = {}
 
-    def scored(combo):
+    def evaluate(combo):
         if combo not in cache:
             kl.gcode(tmc.set_fields_script('extruder', combo.fields()))
             magnitude, clicks = measure(hw, speed)
@@ -95,17 +100,9 @@ def descent(hw, kl, driver, speed: float, audible_weight: float, screen: Screen,
             screen.update('Chopper E cand %d: %.0f' % (len(cache), cache[combo]))
         return cache[combo]
 
-    current = tmc.KLIPPER_DEFAULT
-    for _ in range(rounds):
-        for field, values in (('toff', range(1, 9)), ('tbl', range(0, 4)),
-                              ('hstrt', range(0, 8)), ('hend', range(0, 16))):
-            candidates = []
-            for value in values:
-                combo = tmc.Chopper(**{**current.fields(), field: value})
-                if tmc.validate(combo) is None:
-                    candidates.append(combo)
-            current = min(candidates, key=scored)
-    return current, cache
+    winner = multi_start_descent(driver, *FIELD_RANGES, None, tmc.KLIPPER_DEFAULT,
+                                 evaluate, rounds)
+    return winner, cache
 
 
 def extruder_show(kl: Klippy, args, baseline_regs: dict, stealth: 'tuple | None',
@@ -195,12 +192,14 @@ def extruder_tune(kl: Klippy, args) -> int:
         return extruder_show(kl, args, baseline_regs, stealth, temp)
     speeds = [float(v) for v in range(args.min_speed, args.max_speed + 1)]
 
+    budget = descent_budget(driver, *FIELD_RANGES, None)
     print('Extruder chopper tune: tmc%s, current registers %s' % (
         driver_name, baseline_regs or tmc.KLIPPER_DEFAULT.fields()))
     print('  hotend will HEAT to %.0fC (filament stays in); scan %s mm/s on stock '
-          'registers%s; then a register descent at the resonance'
+          'registers%s; then a multi-start register descent at the resonance '
+          '(<=%d candidates x ~%.0fs, usually far fewer — converging starts share the cache)'
           % (temp, '%g..%g' % (speeds[0], speeds[-1]) if args.speed is None else args.speed,
-             '' if args.speed is None else ' (skipped, SPEED given)'))
+             '' if args.speed is None else ' (skipped, SPEED given)', budget, CRUISE_SEC + 0.6))
     if args.dry_run:
         return 0
     if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):

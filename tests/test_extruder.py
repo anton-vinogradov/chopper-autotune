@@ -66,3 +66,50 @@ def test_extruder_demo_arg_translates():
     # through the cross-subcommand boolean_flags collection
     args = parser.parse_args(_gcode_args(['extruder', 'DEMO=1'], boolean_flags(parser)))
     assert args.demo and not args.save_last
+
+
+def test_extruder_descent_rides_the_shared_engine(monkeypatch):
+    # the E descent must be the same multi-start engine as the axis tune — a private
+    # per-field walk re-created the measured toff x hend blind spot
+    from chopper_autotune import extruder as ex
+    from chopper_autotune import tmc
+    captured = {}
+
+    def fake_engine(driver, tbl, toff, hstrt, hend, tpfd, start, evaluate, rounds=2):
+        captured.update(ranges=(tbl, toff, hstrt, hend), tpfd=tpfd, start=start, rounds=rounds)
+        return tmc.Chopper(0, 2, 2, 12)
+
+    monkeypatch.setattr(ex, 'multi_start_descent', fake_engine)
+    winner, cache = ex.descent(None, None, tmc.DRIVERS['2209'], 5.0, 0.25, None)
+    assert captured['ranges'] == ex.FIELD_RANGES
+    assert captured['start'] == tmc.KLIPPER_DEFAULT
+    assert captured['tpfd'] is None
+    assert winner == tmc.Chopper(0, 2, 2, 12)
+
+
+def test_extruder_descent_measures_live_and_caches(monkeypatch):
+    from chopper_autotune import extruder as ex
+    from chopper_autotune.collect import Range
+
+    monkeypatch.setattr(ex, 'FIELD_RANGES',
+                        (Range(2, 2), Range(3, 3), Range(4, 5), Range(0, 1)))
+    measured = []
+
+    def fake_measure(hw, speed):
+        measured.append(speed)
+        return 100.0, 0
+
+    monkeypatch.setattr(ex, 'measure', fake_measure)
+
+    class FakeKl:
+        def gcode(self, script):
+            pass
+
+    class FakeScreen:
+        def update(self, text, force=False):
+            pass
+
+    winner, cache = ex.descent(None, FakeKl(), ex.tmc.DRIVERS['2209'], 5.0, 0.25, FakeScreen())
+    assert winner in cache
+    assert len(measured) == len(cache)          # every combo measured exactly once (cache)
+    assert (winner.tbl, winner.toff) == (2, 3)  # stayed inside the forced ranges
