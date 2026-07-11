@@ -85,7 +85,12 @@ class Panel(ScreenPanel):
         # clipping the register table off the bottom of the screen
         scroll = Gtk.ScrolledWindow(vexpand=True)
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        tappable = Gtk.EventBox()                   # the full-screen results close on tap
+        scroll.set_overlay_scrolling(False)         # touch overlay hides the bar: keep the
+                                                    # overflow visible as an affordance
+        # the full-screen results close on TAP only — a scroll gesture also ends in a
+        # button-release, so the press position is remembered and a real drag is let be
+        tappable = Gtk.EventBox()
+        tappable.connect("button-press-event", self.remember_press)
         tappable.connect("button-release-event", self.close_results)
         tappable.add(self.status)
         scroll.add(tappable)
@@ -118,6 +123,7 @@ class Panel(ScreenPanel):
             if not (message and message.strip()):
                 return                              # stay on the results page while idle
             self.results_open = False
+            self.status.set_valign(Gtk.Align.CENTER)
             self.grid.show()
         if message and message.strip():
             self.status.set_markup(f"<span size='large'>{GLib.markup_escape_text(message.strip())}</span>")
@@ -132,13 +138,23 @@ class Panel(ScreenPanel):
         tapping the summary (or a fresh status update) brings the buttons back."""
         self.grid.hide()
         self.results_open = True
+        self.status.set_valign(Gtk.Align.START)
         self.status.set_markup(
             f"<span font_family='monospace' size='medium'>{GLib.markup_escape_text(self.results_text())}</span>"
             + "\n<span size='small'>" + _("tap to close") + "</span>")
 
-    def close_results(self, *_args):
+    def remember_press(self, _widget, event):
+        self.press_at = (event.x_root, event.y_root)
+        return False
+
+    def close_results(self, _widget=None, event=None):
+        if event is not None and getattr(self, "press_at", None) is not None:
+            moved = abs(event.x_root - self.press_at[0]) + abs(event.y_root - self.press_at[1])
+            if moved > 10:                          # a drag = scrolling, not a close tap
+                return False
         if getattr(self, "results_open", False):
             self.results_open = False
+            self.status.set_valign(Gtk.Align.CENTER)
             self.grid.show()
             self.show_status(self._printer.get_stat("display_status", "message"))
         return False
