@@ -112,9 +112,10 @@ The touchscreen panel's numbered buttons *are* this plan; each step is one butto
 
 1. **Belts** (`CHOPPER_BELTS`) — mechanics before electronics: measure the belt tension by plucking and match the two belts. A binding or badly mismatched drive would poison every measurement after it.
 2. **Tune** (`CHOPPER_TUNE SAVE=1`) — both gantry motors: resonance speed per motor, register descent, motor B seeded from A's winner. Separate per-motor runs aren't needed — the combined run covers it (console `MOTOR=A/B` remains for experiments).
-3. **Current** (`CHOPPER_CURRENT SAVE=1`) — spend the torque margin step 2 just bought on a lower, cooler `run_current` — the single biggest win on the reference rig (motors 3.2× cooler). **Then run step 2 again**: the chopper optimum depends on the current. *Why current isn't first:* the skip threshold is a property of the chopper — measured, the stock chopper skips at 1.0–1.2 A where the tuned one holds to 0.42 A — so measuring current before tuning would conclude "no reduction possible". Tune buys the margin, Current spends it, the re-Tune adapts.
-4. **Extruder** (`CHOPPER_EXTRUDER SAVE=1`) — the third motor: heats the hotend (filament stays in), finds the E resonance, tunes, saves.
-5. **Input shaper** — acceleration ringing is Klipper's own domain: run `SHAPER_CALIBRATE` + `SAVE_CONFIG` (or KlipperScreen's built-in *Input Shaper* panel). We deliberately don't wrap it — it already measures *and applies*.
+3. **Current** (`CHOPPER_CURRENT SAVE=1`) — spend the torque margin step 2 just bought on a lower, cooler `run_current` — the single biggest win on the reference rig (motors 3.2× cooler). *Why current isn't first:* the skip threshold is a property of the chopper — measured, the stock chopper skips at 1.0–1.2 A where the tuned one holds to 0.42 A — so measuring current before tuning would conclude "no reduction possible". Tune buys the margin, Current spends it, step 4 adapts.
+4. **Tune again** (`CHOPPER_TUNE SAVE=1`) — the same button/command as step 2: the chopper optimum depends on the run current, so the registers are re-derived at the current step 3 just set.
+5. **Extruder** (`CHOPPER_EXTRUDER SAVE=1`) — the third motor: heats the hotend (filament stays in), finds the E resonance, tunes, saves.
+6. **Input shaper** — acceleration ringing is Klipper's own domain: run `SHAPER_CALIBRATE` + `SAVE_CONFIG` (or KlipperScreen's built-in *Input Shaper* panel). We deliberately don't wrap it — it already measures *and applies*.
 
 **Optional (worth it, not required):**
 
@@ -141,8 +142,8 @@ The first tune finds the resonance speed of each motor, runs the register descen
 
 If you run [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen), `install.sh` adds a **Chopper** button to its **More** menu (it merges with your existing menu, nothing is rewritten). One tap opens a panel whose **numbered buttons are the plan, in order**:
 
-- **1 Belts** → **2 Tune** → **3 Current** (writes `run_current`, then run **2 Tune** again) → **4 Extruder** — the required sequence from [the plan](#the-plan--getting-the-most-out-of-your-printer) above (finish with Klipper's own Input Shaper panel afterwards);
-- **5 Envelope** — the optional speed/acceleration headroom check;
+- **1 Belts** → **2,4 Tune** → **3 Current** → **5 Extruder** — the required sequence from [the plan](#the-plan--getting-the-most-out-of-your-printer) above: the Tune button is deliberately numbered twice, steps 2 AND 4, because after Current you run it again (finish with Klipper's own Input Shaper panel afterwards);
+- **Envelope** — the optional speed/acceleration headroom check;
 - **Save** — write the latest tuning results (both motors and the extruder's last winner) into the config in one restart, backup first;
 - **Show** — set the defaults, then the tuned registers, on **both** motors and do coordinated moves so you can *hear* the whole printer change; it reports the combined drop in vibration;
 - **Motor A** / **Motor B** — jog just that motor for a moment so you can see which physical motor and belt it is, then release the motors so you can reach in;
