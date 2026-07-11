@@ -98,23 +98,27 @@ class Panel(ScreenPanel):
         self.status = Gtk.Label(hexpand=True, vexpand=True, halign=Gtk.Align.CENTER,
                                 valign=Gtk.Align.CENTER, wrap=True,
                                 wrap_mode=Pango.WrapMode.WORD_CHAR)
-        # three button rows leave little height: scroll the status area instead of
-        # clipping the register table off the bottom of the screen
-        scroll = Gtk.ScrolledWindow(vexpand=True)
-        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroll.set_overlay_scrolling(False)         # touch overlay hides the bar: keep the
-                                                    # overflow visible as an affordance
         # the full-screen results close on TAP only — a scroll gesture also ends in a
         # button-release, so the press position is remembered and a real drag is let be
         tappable = Gtk.EventBox()
         tappable.connect("button-press-event", self.remember_press)
         tappable.connect("button-release-event", self.close_results)
         tappable.add(self.status)
-        scroll.add(tappable)
+
+        # ONE scroll for the whole page, buttons included: the strip left under three
+        # button rows was too small to even grab with a finger (measured by a finger) —
+        # dragging anywhere, buttons included, now scrolls the page
+        page = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        page.add(grid)
+        page.add(self.restore_menu)
+        page.pack_start(tappable, True, True, 0)
+        scroll = Gtk.ScrolledWindow(vexpand=True)
+        scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+        scroll.set_overlay_scrolling(False)         # touch overlay hides the bar: keep the
+                                                    # overflow visible as an affordance
+        scroll.add(page)
 
         self.grid = grid
-        self.content.add(grid)
-        self.content.add(self.restore_menu)
         self.content.add(scroll)
         self.content.show_all()
 
@@ -172,6 +176,7 @@ class Panel(ScreenPanel):
                 self.relabel(button, ("\u2713 " + label) if done else label)
 
     def show_status(self, message):
+        self.mark_done_steps()                      # a finished run may have advanced the plan
         if getattr(self, "results_open", False):
             if not (message and message.strip()):
                 return                              # stay on the results page while idle
@@ -181,7 +186,6 @@ class Panel(ScreenPanel):
         if message and message.strip():
             self.status.set_markup(f"<span size='large'>{GLib.markup_escape_text(message.strip())}</span>")
         else:
-            self.mark_done_steps()                  # a finished run may have advanced the plan
             self.status.set_markup(
                 f"<span font_family='monospace' size='medium'>{GLib.markup_escape_text(self.register_table())}</span>")
 
