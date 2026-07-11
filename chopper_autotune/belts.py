@@ -415,8 +415,11 @@ def machine_axes(hw, kl) -> 'tuple | None':
         _, s = capture_stream(hw, 'G91\nG1 %s-5 F1800\nG1 %s5 F1800\nG90\nM400'
                               % (letter, letter), 1.2)
         acc = s[:, 1:4] - s[:, 1:4].mean(axis=0)
-        rms = np.sqrt((acc ** 2).mean(axis=0))
-        return rms / np.linalg.norm(rms)
+        # the first principal component, not per-axis RMS: RMS drops the sign, and a
+        # chip mounted at 45 deg to the machine then reads X and Y jogs as the SAME
+        # direction (field: 'Axis calibration: ambiguous' on an honestly mounted V0)
+        _, vecs = np.linalg.eigh(np.cov(acc.T))
+        return vecs[:, -1]
 
     ex, ey = direction('X'), direction('Y')
     if abs(float(np.dot(ex, ey))) > 0.5:            # jogs read alike: mounting is odd,
