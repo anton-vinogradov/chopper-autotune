@@ -27,6 +27,20 @@ CURRENT_STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/curre
 
 class Panel(ScreenPanel):
 
+    @property
+    def printer(self):
+        """Always the CURRENT printer object: the panel is cached across Klipper
+        restarts (every Save/Restore ends in one), and KlipperScreen may rebuild its
+        printer state on reconnect — the constructor-captured reference then shows the
+        pre-restart config (measured: a Restore left the old registers on screen until
+        KlipperScreen itself was restarted)."""
+        return getattr(self._screen, "printer", None) or self._printer
+
+    def activate(self):
+        """Called whenever the panel is (re)shown — recompute the marks and the idle
+        table from the live config, not from whatever was true when it was built."""
+        self.show_status(self.printer.get_stat("display_status", "message"))
+
     def __init__(self, screen, title):
         super().__init__(screen, title or _("Chopper Autotune"))
 
@@ -123,7 +137,7 @@ class Panel(ScreenPanel):
         self.content.show_all()
 
         self.mark_done_steps()
-        self.show_status(self._printer.get_stat("display_status", "message"))
+        self.show_status(self.printer.get_stat("display_status", "message"))
 
     def run(self, widget, command, confirm):
         self._screen._confirm_send_action(widget, confirm, "printer.gcode.script",
@@ -204,7 +218,7 @@ class Panel(ScreenPanel):
     def pick_restore(self, widget, command, confirm):
         self.restore_menu.hide()
         self.grid.show()
-        self.show_status(self._printer.get_stat("display_status", "message"))
+        self.show_status(self.printer.get_stat("display_status", "message"))
         if command:
             self.run(widget, command, confirm)
 
@@ -233,7 +247,7 @@ class Panel(ScreenPanel):
             self.results_open = False
             self.status.set_valign(Gtk.Align.CENTER)
             self.grid.show()
-            self.show_status(self._printer.get_stat("display_status", "message"))
+            self.show_status(self.printer.get_stat("display_status", "message"))
         return False
 
     def results_text(self):
@@ -281,13 +295,16 @@ class Panel(ScreenPanel):
         for stepper, name in self.motors:
             tuned = self.tuned_registers(stepper)
             axis = stepper.rsplit("_", 1)[-1]
-            rows.append("%-3s %7s → %-10s %s" % (name, default, tuned or _("untuned"),
+            # explicit stock lines (a defaults-Restore writes them) read as untuned too:
+            # "2/3/5/0 -> 2/3/5/0" looks like a comparison of something with something
+            shown = tuned if tuned and tuned != default else _("untuned")
+            rows.append("%-3s %7s → %-10s %s" % (name, default, shown,
                                                  self.noise_change(axis, tuned, state)))
         return "\n".join(rows)
 
     def tmc_section(self, stepper):
         for driver in DRIVERS:
-            section = self._printer.get_config_section(f"{driver} {stepper}")
+            section = self.printer.get_config_section(f"{driver} {stepper}")
             if section:
                 return section
         return None
