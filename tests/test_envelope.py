@@ -73,12 +73,13 @@ def test_envelope_state_merges_per_motor(tmp_path, monkeypatch):
 def test_recommend_limits_separates_where_the_numbers_go():
     from chopper_autotune.envelope import recommend_limits
     rec = recommend_limits({'A': 350, 'B': 350}, {'A': 40000, 'B': 40000}, coupled=True,
-                           shaper={'x': ('ei', 106.8, 20770), 'y': ('mzv', 50.0, 7365)},
+                           shaper={'x': ('ei', 106.8, 20770, 8600), 'y': ('mzv', 50.0, 7365, 3100)},
                            printer_now={'max_velocity': 500, 'max_accel': 10000})
     assert rec['max_velocity'] == 247               # tested ceiling / sqrt(2): a 45deg move
     assert rec['max_velocity_margin'] == 190        # runs one belt faster than the head
     assert rec['max_accel'] == 30700                # the MACHINE cap is motor torque /1.3
     assert rec['print_accel'] == 7300               # the Y shaper is print-quality guidance
+    assert rec['print_accel_crisp'] == 3100         # ...with the crisp-detail variant alongside
     assert 'Y shaper' in rec['limited_by']
     assert rec['now_velocity'] == 500               # the run can say 'now 500 - over'
 
@@ -90,6 +91,7 @@ def test_recommend_limits_without_shaper_and_cartesian():
     assert rec['max_velocity'] == 200               # no sqrt(2) coupling on cartesian
     assert rec['max_accel'] == 10000
     assert rec['print_accel'] is None and rec['limited_by'] is None
+    assert rec['print_accel_crisp'] is None
 
 
 def test_recommend_limits_refuses_a_first_rung_skip():
