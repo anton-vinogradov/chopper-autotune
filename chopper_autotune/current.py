@@ -60,6 +60,15 @@ class Referee:
 
     def __init__(self, kl: Klippy, axis: str, settings: dict, park_other: float):
         rail = settings['stepper_' + axis]
+        endstop_pin = str(rail.get('endstop_pin') or '')
+        if 'virtual_endstop' in endstop_pin:
+            # sensorless homing: the "endstop" is StallGuard, which needs sustained
+            # velocity to detect a stall — the referee's slow creep would never trigger
+            # it (or trigger it randomly). Refuse honestly instead of measuring noise.
+            raise SystemExit('the %s endstop is sensorless (%s) — the endstop referee '
+                             'needs a physical switch; CHOPPER_CURRENT/CHOPPER_ENVELOPE '
+                             'are not available on this machine (the accelerometer tools '
+                             'all work)' % (axis, endstop_pin))
         self.kl = kl
         self.axis = axis
         self.endstop = float(rail['position_endstop'])
