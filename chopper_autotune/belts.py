@@ -416,7 +416,7 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
         for attempt in range(1, args.plucks + 1):
             cue('Ready: belt %s in 3s' % label)
             kl.gcode('G4 P3000')
-            cue('PLUCK belt %s now!' % label)
+            cue('PLUCK belt %s now! (listening 5s...)' % label)
             _, samples = capture_stream(hw, 'G4 P5000', 4.8)
             tones = pluck_tones(samples, ambient=ambient)
             freq, paired = fundamental(tones)
