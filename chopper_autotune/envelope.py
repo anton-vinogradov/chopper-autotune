@@ -66,23 +66,39 @@ def shaper_accels(settings) -> 'dict[str, tuple[str, float, int]]':
 
 def recommend_limits(speed_holds: 'dict[str, float]', accel_holds: 'dict[str, float]',
                      coupled: bool, shaper: 'dict[str, tuple[str, float, int]]',
-                     margin: float = MARGIN) -> 'dict | None':
-    """[printer] numbers from everything measured: velocity from the slowest motor's
-    belt ceiling (on coupled XY a pure X/Y move runs BOTH belts at head speed, and a 45
-    degree diagonal runs one belt sqrt(2) faster — the bulletproof number covers that);
-    accel = min(motor ceiling, the input shaper's own suggestion) — ringing usually wins."""
+                     printer_now: 'dict[str, float]', margin: float = MARGIN) -> 'dict | None':
+    """The "what to set" numbers, separated by WHERE they go — conflating them read as
+    a downgrade in the field (a 7300 smoothing threshold next to a configured 10000):
+
+    - [printer] max_velocity: any-direction belt safety. On coupled XY a pure X/Y move
+      runs BOTH belts at head speed and a 45 degree one runs a belt sqrt(2) faster, so
+      the cap is tested-ceiling/sqrt(2); the /margin variant rides along.
+    - [printer] max_accel: the MACHINE cap (motor torque/margin) — travels use it, and
+      smoothing costs nothing where no plastic is laid.
+    - slicer print accel: the input shaper's smoothing threshold — print quality only."""
     if not speed_holds or None in speed_holds.values() \
             or not accel_holds or None in accel_holds.values():
         return None                                # skipped at the first rung: fix that first
     belt = min(speed_holds.values())
-    vel_axis = belt / margin
-    vel = vel_axis / math.sqrt(2) if coupled else vel_axis
-    caps = {'motor torque': min(accel_holds.values()) / margin}
-    for axis, (name, freq, accel) in shaper.items():
-        caps['%s shaper (%s@%.1f)' % (axis.upper(), name, freq)] = accel
-    limited_by = min(caps, key=caps.get)
-    return {'max_velocity': int(vel), 'max_velocity_axis': int(vel_axis),
-            'max_accel': int(caps[limited_by] // 100 * 100), 'limited_by': limited_by}
+    vel = belt / math.sqrt(2) if coupled else belt
+    machine_accel = int(min(accel_holds.values()) / margin // 100 * 100)
+    print_accel = min((accel for _, _, accel in shaper.values()), default=None)
+    slowest_shaper = min(shaper, key=lambda a: shaper[a][2]) if shaper else None
+    return {'max_velocity': int(vel), 'max_velocity_margin': int(vel / margin),
+            'belt_ceiling': belt,
+            'max_accel': machine_accel,
+            'print_accel': int(print_accel // 100 * 100) if print_accel else None,
+            'limited_by': ('%s shaper (%s@%.1f)' % (slowest_shaper.upper(),
+                                                    *shaper[slowest_shaper][:2])
+                           if slowest_shaper else None),
+            'now_velocity': printer_now.get('max_velocity'),
+            'now_accel': printer_now.get('max_accel')}
+
+
+def verdict_now(now: 'float | None', suggested: float, over: str, ok: str = 'ok') -> str:
+    if not now:
+        return ''
+    return ' (now %g — %s)' % (now, ok if now <= suggested else over)
 
 
 STRESS_REPS = 3
@@ -232,21 +248,32 @@ def envelope(kl: Klippy, args) -> int:
         from .collect import coupled_xy
         shaper_caps = shaper_accels(settings)
         recommendation = recommend_limits(speed_holds, accel_holds,
-                                          coupled_xy(board.kinematics), shaper_caps)
+                                          coupled_xy(board.kinematics), shaper_caps,
+                                          settings.get('printer', {}))
     if recommendation:
         save_state({'recommend': recommendation})   # Results carries the numbers
-        print('\n=== Recommended [printer] limits ===')
-        print('max_velocity: %d   # slowest belt holds %g+ mm/s, /%.1f margin%s'
-              % (recommendation['max_velocity'], min(speed_holds.values()), MARGIN,
-                 ', /sqrt(2) for coupled-XY diagonals (%d for pure X/Y moves)'
-                 % recommendation['max_velocity_axis']
-                 if recommendation['max_velocity'] != recommendation['max_velocity_axis'] else ''))
-        print('max_accel: %d     # limited by %s'
-              % (recommendation['max_accel'], recommendation['limited_by']))
-        if not shaper_caps:
-            print('(no [input_shaper] found — run SHAPER_CALIBRATE for the ringing-side cap)')
-        finale += ' · rec <=%d mm/s, <=%.1fk acc' % (recommendation['max_velocity'],
-                                                     recommendation['max_accel'] / 1000)
+        rec = recommendation
+        print('\n=== What to set ===')
+        print('[printer] max_velocity: %d%s\n    every direction stays at the tested %g mm/s'
+              ' belt ceiling (a 45 deg move runs a belt sqrt(2) faster than the head);'
+              ' %d keeps a %.1fx margin'
+              % (rec['max_velocity'],
+                 verdict_now(rec['now_velocity'], rec['max_velocity'],
+                             over='a 45 deg travel would outrun the tested ceiling'),
+                 rec['belt_ceiling'], rec['max_velocity_margin'], MARGIN))
+        print('[printer] max_accel: %d%s\n    the MACHINE cap: motor torque /%.1f;'
+              ' travels use it — smoothing costs nothing where no plastic is laid'
+              % (rec['max_accel'],
+                 verdict_now(rec['now_accel'], rec['max_accel'],
+                             over='above the motor margin'), MARGIN))
+        if rec['print_accel']:
+            print('slicer print accel: <=%d\n    %s smoothing passes Klipper\'s 0.12 mm'
+                  ' guidance above this — print-move quality only'
+                  % (rec['print_accel'], rec['limited_by']))
+        else:
+            print('(no [input_shaper] found — run SHAPER_CALIBRATE for the print-accel guidance)')
+        finale += ' · set vel<=%d acc<=%dk print<=%.1fk' % (
+            rec['max_velocity'], rec['max_accel'] / 1000, (rec['print_accel'] or 0) / 1000)
     if finale:
         screen.final(finale)
     print('\nThis is the motor (torque) limit only. For which speeds are quiet vs ringy, '
