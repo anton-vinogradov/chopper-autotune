@@ -111,3 +111,12 @@ def test_latest_dataset_missing(tmp_path):
     import pytest
     with pytest.raises(SystemExit):
         latest_dataset(bases=(tmp_path / 'nope',))
+
+
+def test_restore_macro_args_translate():
+    from chopper_autotune.cli import _gcode_args, boolean_flags, build_parser
+    parser = build_parser()
+    args = parser.parse_args(_gcode_args(['restore', 'DEFAULTS=1'], boolean_flags(parser)))
+    assert args.defaults is True and args.backup is False
+    args = parser.parse_args(_gcode_args(['restore', 'BACKUP=1'], boolean_flags(parser)))
+    assert args.backup is True and args.defaults is False

@@ -126,7 +126,7 @@ The touchscreen panel's numbered buttons *are* this plan; each step is one butto
 **At any point:**
 
 - **Stop** (`CHOPPER_STOP`) — aborts the running job; the tool restores registers, spreadCycle, heaters and homing before exiting.
-- **Undo** — every save writes `*.chopper-backup.cfg` next to the edited config first; restoring that file (and `RESTART`) rolls everything back.
+- **Undo** — the panel's **Restore** button (or `CHOPPER_RESTORE DEFAULTS=1` / `BACKUP=1`): stock chopper registers, or the `*.chopper-backup.cfg` snapshot every save takes first — the latter rolls back currents too.
 
 ### The simple way — one command
 
@@ -142,9 +142,9 @@ The first tune finds the resonance speed of each motor, runs the register descen
 
 If you run [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen), `install.sh` adds a **Chopper** button to its **More** menu (it merges with your existing menu, nothing is rewritten). One tap opens a panel whose **numbered buttons are the plan, in order**:
 
-- **1 Belts** → **2,4 Tune** → **3 Current** → **5 Extruder** — the required sequence from [the plan](#the-plan--getting-the-most-out-of-your-printer) above: the Tune button is deliberately numbered twice, steps 2 AND 4, because after Current you run it again (finish with Klipper's own Input Shaper panel afterwards);
+- **1 Belts** → **2,4 Tune** → **3 Current** → **5 Extruder** — the required sequence from [the plan](#the-plan--getting-the-most-out-of-your-printer) above: the Tune button is deliberately numbered twice, steps 2 AND 4, because after Current you run it again (finish with Klipper's own Input Shaper panel afterwards). Every numbered step **saves its result itself** (backup first, one restart);
 - **Envelope** — the optional speed/acceleration headroom check;
-- **Save** — write the latest tuning results (both motors and the extruder's last winner) into the config in one restart, backup first;
+- **Restore** — the undo: choose **Klipper defaults** (stock chopper registers, tuning off; `run_current` stays — it is a measured safety setting) or **Backup** (the config exactly as before the last save, currents included);
 - **Show** — set the defaults, then the tuned registers, on **both** motors and do coordinated moves so you can *hear* the whole printer change; it reports the combined drop in vibration;
 - **Motor A** / **Motor B** — jog just that motor for a moment so you can see which physical motor and belt it is, then release the motors so you can reach in;
 - **Results** — an on-demand summary of everything measured so far: default → tuned registers per motor (A/B/E) with the vibration drop, run currents with the measured skip thresholds behind them, the last belt-tension plucks, the achieved envelope ceilings (speed/acceleration; `350+` = held the whole tested range), and the resonance-map peaks/dips;
@@ -236,7 +236,9 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 
 **CHOPPER_DEMO** — plays the driver defaults against the saved/tuned registers, alternating so you can *hear* the difference and announcing each on the display and console. `MOTOR` (a/b, or **ab** = the default: **both motors together** in coordinated moves, like printing — a whole-printer before/after), `SPEED`, `ROUNDS`, `REPEATS`. `REPORT=1` prints the measured numbers (how much less vibration, per motor, with bars) one motor at a time instead of the audible show; `DEFAULT=tbl,toff,hstrt,hend` (default `2,3,5,0`) and `ITERATIONS` apply to the report.
 
-**CHOPPER_SAVE** — write the latest tuning result for each motor into the config in one batched restart (with a backup); logs which winner it saves per motor and from which dataset. The extruder's last `CHOPPER_EXTRUDER` winner, if any, rides along in the same batch. Save what the last tuning achieved, whether the motors were tuned separately or together.
+**CHOPPER_SAVE** — write the latest tuning result for each motor into the config in one batched restart (with a backup); logs which winner it saves per motor and from which dataset. The extruder's last `CHOPPER_EXTRUDER` winner, if any, rides along in the same batch. Save what the last tuning achieved, whether the motors were tuned separately or together. (The panel's numbered buttons pass `SAVE=1` themselves, so this is a console tool now.)
+
+**CHOPPER_RESTORE** — the undo. `DEFAULTS=1` writes the stock chopper registers (`2/3/5/0`) into every tuned TMC section — tuning off, `run_current` untouched (it is a measured safety setting). `BACKUP=1` puts back the `*.chopper-backup.cfg` snapshots taken before the last save — registers AND currents. One restart either way; refuses while printing.
 
 **CHOPPER_CURRENT** — find the minimal safe `run_current` per motor: a worst-case single-motor stress pattern (full machine accel, belt speeds through 200 mm/s) with an **endstop referee** — skipped steps land as a position offset that an endstop creep measures deterministically, because a stall can be nearly silent (measured; see [docs/SCIENCE.md](docs/SCIENCE.md)). Bisects to the skip threshold and recommends `threshold × MARGIN` (default `2.0`); `SAVE=1` writes `run_current` (backup first) and restarts. Re-run `CHOPPER_TUNE` afterwards — the chopper optimum depends on the current. Parameters: `MOTOR`, `MARGIN`, `MIN_CURRENT`, `RESOLUTION`, `ACCEL`, `SAVE`, `DRY_RUN`.
 
