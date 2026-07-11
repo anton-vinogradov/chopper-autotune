@@ -280,9 +280,9 @@ class Panel(ScreenPanel):
                 "%s %s mm/s, %s acc" % (name, values.get("speed"), values.get("accel"))
                 for name, values in envelope.items()))
         if recommend:
-            lines.append(_("recommended: ") + "≤%s mm/s · accel ≤%s (%s)"
+            lines.append(_("set: ") + "[printer] velocity ≤%s · accel ≤%s · slicer print accel ≤%s"
                          % (recommend.get("max_velocity"), recommend.get("max_accel"),
-                            recommend.get("limited_by", "")))
+                            recommend.get("print_accel") or "?"))
         vfa_map = self.load_json(MAP_STATE)
         for name, entry in vfa_map.items():
             peaks = ",".join(str(s) for s in entry.get("peaks", [])) or "—"

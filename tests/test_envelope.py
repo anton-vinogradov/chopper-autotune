@@ -70,27 +70,39 @@ def test_envelope_state_merges_per_motor(tmp_path, monkeypatch):
     assert saved['B'] == {'speed': '300', 'accel': '30k'}
 
 
-def test_recommend_limits_coupled_xy_and_shaper_cap():
+def test_recommend_limits_separates_where_the_numbers_go():
     from chopper_autotune.envelope import recommend_limits
     rec = recommend_limits({'A': 350, 'B': 350}, {'A': 40000, 'B': 40000}, coupled=True,
-                           shaper={'x': ('ei', 106.8, 20770), 'y': ('mzv', 50.0, 7365)})
-    assert rec['max_velocity_axis'] == 269          # 350 / 1.3: both belts run at head speed
-    assert rec['max_velocity'] == 190               # /sqrt(2): a 45deg diagonal runs one belt faster
-    assert rec['max_accel'] == 7300                 # the Y shaper wins over motors (30769) and X
+                           shaper={'x': ('ei', 106.8, 20770), 'y': ('mzv', 50.0, 7365)},
+                           printer_now={'max_velocity': 500, 'max_accel': 10000})
+    assert rec['max_velocity'] == 247               # tested ceiling / sqrt(2): a 45deg move
+    assert rec['max_velocity_margin'] == 190        # runs one belt faster than the head
+    assert rec['max_accel'] == 30700                # the MACHINE cap is motor torque /1.3
+    assert rec['print_accel'] == 7300               # the Y shaper is print-quality guidance
     assert 'Y shaper' in rec['limited_by']
+    assert rec['now_velocity'] == 500               # the run can say 'now 500 - over'
 
 
 def test_recommend_limits_without_shaper_and_cartesian():
     from chopper_autotune.envelope import recommend_limits
-    rec = recommend_limits({'A': 200}, {'A': 13000}, coupled=False, shaper={})
-    assert rec['max_velocity'] == rec['max_velocity_axis'] == 153
-    assert rec['max_accel'] == 10000 and rec['limited_by'] == 'motor torque'
+    rec = recommend_limits({'A': 200}, {'A': 13000}, coupled=False, shaper={},
+                           printer_now={})
+    assert rec['max_velocity'] == 200               # no sqrt(2) coupling on cartesian
+    assert rec['max_accel'] == 10000
+    assert rec['print_accel'] is None and rec['limited_by'] is None
 
 
 def test_recommend_limits_refuses_a_first_rung_skip():
     from chopper_autotune.envelope import recommend_limits
     assert recommend_limits({'A': None, 'B': 350}, {'A': 40000, 'B': 40000},
-                            coupled=True, shaper={}) is None
+                            coupled=True, shaper={}, printer_now={}) is None
+
+
+def test_verdict_now_flags_an_over_limit_config():
+    from chopper_autotune.envelope import verdict_now
+    assert 'ok' in verdict_now(200, 247, over='outrun')
+    assert 'outrun' in verdict_now(500, 247, over='outrun')
+    assert verdict_now(None, 247, over='outrun') == ''
 
 
 def test_shaper_accels_absent_klipper_is_quiet(monkeypatch):
