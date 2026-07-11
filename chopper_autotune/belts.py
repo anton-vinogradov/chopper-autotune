@@ -385,7 +385,9 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
     """Guided pluck on each belt's LONGEST free span (across the front on most CoreXY —
     field-tested: near-head spans are too short and stiff to ring usefully). A belt is
     accepted once two plucks agree on the paired fundamental within 2% — repeatability is
-    the control. Motors stay enabled so the pulley is held and the span has defined ends."""
+    the control. Motors stay enabled DURING the measurement (the pulley is held, so the
+    span has defined ends) and are released at the end: the user's next move is a
+    tensioner screw, and holding motors would fight it."""
     from .collect import capture_stream
     print('Pluck test: on the display cue, pluck the LONGEST free span of each belt (across '
           'the front on most CoreXY) mid-span, like a guitar string — pull ~5 mm sideways, '
@@ -443,7 +445,11 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
         for label in ('A', 'B'):
             fundamentals[label] = measure_belt(label)
     finally:
-        run_restore(lambda: kl.gcode('G28 X Y'))
+        # hand the gantry over on every exit — verdict, failed plucks or Stop — the
+        # user's next move is a tensioner screw; no parting G28: releasing forgets the
+        # position anyway and every next job homes first
+        run_restore(lambda: kl.gcode('SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=0\n'
+                                     'SET_STEPPER_ENABLE STEPPER=stepper_y ENABLE=0'))
 
     fa, fb = fundamentals['A'], fundamentals['B']
     # tension goes as the SQUARE of frequency, so a 3% frequency gap is a ~6% tension
@@ -464,7 +470,7 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
                                                                             tension_gap)
     print(message)
     save_state(fa, fb)
-    screen.final(message)
+    screen.final(message + ' \u00b7 motors off')
     print('\nThis is the transverse string mode — the one that IS tension (f ~ sqrt(T)); '
           'equal spans compare directly. After adjusting, re-run to confirm the move.')
     return 0
