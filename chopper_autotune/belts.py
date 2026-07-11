@@ -432,20 +432,28 @@ def tone_families(tries: 'list[list[tuple]]', tol: float = 0.03) -> 'list[dict]'
     return [f for f in families if f['tries'] >= 2]
 
 
+PAIR_RATIO = 1.35           # belts of one machine never differ 2x in tension: the
+                            # A/B verdict pair must sit within ~35% in frequency
+                            # (field: same-polarization matching alone paired a 315 Hz
+                            # mode with a 91 Hz one -> a nonsense +1107% verdict)
+
+
 def resolve_pair(fams_a: 'list[dict]', fams_b: 'list[dict]') -> 'tuple[dict, dict] | None':
-    """The A/B verdict pair: prefer families with the SAME clean polarization (the
-    same span type on both belts — comparing a side line of one belt against a front
-    line of the other produced the field's flip-flopping verdicts), then the most
-    consistently seen, then the loudest."""
+    """The A/B verdict pair: candidates must be the SAME mode on both belts — within
+    PAIR_RATIO in frequency first of all; among those prefer matching clean
+    polarization, then frequency closeness, then consistency, then loudness."""
     best = None
     for fa in fams_a:
         for fb in fams_b:
+            ratio = max(fa['freq'], fb['freq']) / min(fa['freq'], fb['freq'])
+            if ratio > PAIR_RATIO:
+                continue
             same = fa['cls'] == fb['cls'] and fa['cls'] in ('X', 'Y')
-            score = (same, fa['tries'] + fb['tries'], fa['snr'] + fb['snr'])
+            score = (same, -ratio, fa['tries'] + fb['tries'], fa['snr'] + fb['snr'])
             if best is None or score > best[0]:
                 best = (score, fa, fb)
-    if best is None or not best[0][0]:
-        return None                                 # no same-class pair exists
+    if best is None:
+        return None                                 # nothing comparable was heard
     return best[1], best[2]
 
 
@@ -598,22 +606,24 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
                                       for f in fundamentals['B'])))
     fam_a, fam_b = pair
 
-    def interpret(label, fam):
-        """A clean-polarization family is the axial pump: halve for the fundamental —
-        unless SPAN says the halved tension is one no ringing belt carries (a sagging
-        span pulses its tension at f too)."""
-        line = fam['freq']
-        fund = line / 2
-        if args.span and tension_newtons(fund, args.span, args.mu) < 2.5:
-            print('belt %s: %.1f Hz along %s — axial, but halving means <2.5 N at '
-                  'SPAN=%.1f; keeping it as the fundamental (sag ripple)'
-                  % (label, line, fam['cls'], args.span))
-            return line
-        print('belt %s: %.1f Hz along %s = the tension pump (2f) -> fundamental %.1f Hz'
-              % (label, line, fam['cls'], fund))
-        return fund
-
-    fa, fb = interpret('A', fam_a), interpret('B', fam_b)
+    # ONE fold for BOTH belts: the pair is the same mode, so the harmonic order is
+    # shared — and for the A-vs-B ratio the order cancels entirely; the fold only
+    # scales the absolute Hz. Halve when a clean polarization says "axial pump",
+    # unless SPAN= proves the halved tension impossible (sag ripple pulses at f).
+    cleaner = fam_a if fam_a['cls'] in ('X', 'Y') else fam_b
+    halve = cleaner['cls'] in ('X', 'Y')
+    if halve and args.span \
+            and tension_newtons(cleaner['freq'] / 2, args.span, args.mu) < 2.5:
+        print('halving would mean <2.5 N at SPAN=%.1f — keeping the lines as '
+              'fundamentals (sag ripple)' % args.span)
+        halve = False
+    fold = 2.0 if halve else 1.0
+    for label, fam in (('A', fam_a), ('B', fam_b)):
+        print('belt %s: %.1f Hz (pol=%s, seen %dx)%s'
+              % (label, fam['freq'], fam['cls'], fam['tries'],
+                 ' -> fundamental %.1f Hz (axial pump /2)' % (fam['freq'] / fold)
+                 if halve else ''))
+    fa, fb = fam_a['freq'] / fold, fam_b['freq'] / fold
     # tension goes as the SQUARE of frequency, so a 3% frequency gap is a ~6% tension
     # gap — say it in percent with the f^2 hint, or the number reads as a contradiction
     tension_gap = ((fa / fb) ** 2 - 1) * 100
