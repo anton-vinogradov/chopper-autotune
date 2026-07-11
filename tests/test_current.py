@@ -137,3 +137,13 @@ def test_unify_recommendation_maxes_coupled_twins_within_each_rating():
     # non-identical motors: the unified value never exceeds a motor's own configured current
     assert unify_recommendation({'x': 1.0, 'y': 0.6}, {'x': 1.5, 'y': 0.8},
                                 coupled=True, per_motor=False) == {'x': 1.0, 'y': 0.8}
+
+
+def test_referee_refuses_sensorless_endstops():
+    import pytest
+
+    from chopper_autotune.current import Referee
+    settings = {'stepper_x': {'endstop_pin': 'tmc2209_stepper_x:virtual_endstop',
+                              'position_endstop': 120, 'position_max': 120}}
+    with pytest.raises(SystemExit, match='sensorless'):
+        Referee(None, 'x', settings, 60.0)
