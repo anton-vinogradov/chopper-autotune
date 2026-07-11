@@ -254,3 +254,13 @@ def test_known_speed_reuses_latest_axis_run(tmp_path, monkeypatch):
     assert known_speed('x') == 58          # the tuning run, not the later demo/scan
     assert known_speed('y') == 34
     assert known_speed('z') is None
+
+
+def test_demo_shrinks_the_cruise_instead_of_skipping_a_fast_motor():
+    # the re-tensioned rig moved a resonance to ~100 mm/s: the default 1.0s cruise
+    # no longer fits the axis, and the demo used to refuse the motor outright
+    from chopper_autotune.collect import MOVE_MARGIN, fit_measure_time, travel_for
+    span, accel = 260.0, 1000.0
+    fitted = fit_measure_time([100], accel, span * MOVE_MARGIN, 1.0)
+    assert 0.4 <= fitted < 1.0                       # shrunk, not refused
+    assert travel_for(100, accel, fitted) <= span * MOVE_MARGIN
