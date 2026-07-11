@@ -248,7 +248,8 @@ def demo(kl: Klippy, args) -> int:
         run_restore(
             lambda: kl.gcode(tmc.set_fields_script(hw.stepper, tuned.fields())),
             lambda: exit_spreadcycle(kl, hw),
-            lambda: kl.gcode('G28 X Y'))
+            lambda: kl.gcode('G28 X Y'),
+            ds.flush_raw)
 
     if not results['default'] or not results['tuned']:
         raise SystemExit('demo failed to collect measurements')

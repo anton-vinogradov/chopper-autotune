@@ -142,7 +142,8 @@ def resonance_map(kl: Klippy, args) -> int:
         failed = run_sweep(hw, ds, args, plan, accel, screen, before_move, done)
     finally:
         print('Homing')
-        run_restore(lambda: exit_spreadcycle(kl, hw), lambda: kl.gcode('G28 X Y'))
+        run_restore(lambda: exit_spreadcycle(kl, hw), lambda: kl.gcode('G28 X Y'),
+                    ds.flush_raw)
 
     curve = build_curve(ds)
     if not curve:

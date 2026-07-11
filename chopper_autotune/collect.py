@@ -775,7 +775,8 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
             lambda: kl.gcode(tmc.set_fields_script(
                 hw.stepper, hw.baseline or tmc.KLIPPER_DEFAULT.fields())),
             lambda: exit_spreadcycle(kl, hw),
-            lambda: kl.gcode('G28 X Y'))
+            lambda: kl.gcode('G28 X Y'),
+            ds.flush_raw)
 
     print('Done in %dm: %d ok, %d failed -> %s' % ((time.time() - started) // 60, ok, failed, root))
     print('Next: chopper-autotune analyze %s' % root)

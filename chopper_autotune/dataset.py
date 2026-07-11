@@ -42,6 +42,9 @@ class Dataset:
         self.manifest_path = self.root / 'manifest.json'
         self.records_path = self.root / 'measurements.jsonl'
         self.raw_dir = self.root / 'raw'
+        self._raw_writer = None
+        self._raw_gate = None
+        self._raw_errors = []
 
     @classmethod
     def create(cls, root, manifest: dict) -> 'Dataset':
@@ -90,13 +93,43 @@ class Dataset:
         return {r['id'] for r in self.records() if r.get('status') == 'ok'}
 
     def store_raw_samples(self, measurement_id: str, samples) -> str:
+        """Queue the raw capture for a background write and return its path at once.
+        Formatting + gzipping ~5k lines between moves added 7-10 minutes to a full
+        grid (measured) — the writer thread does it while the next move runs. The
+        semaphore bounds how many captures wait in RAM; flush_raw() joins the queue."""
+        if self._raw_writer is None:
+            from concurrent.futures import ThreadPoolExecutor
+            from threading import Semaphore
+            self._raw_writer = ThreadPoolExecutor(max_workers=1)
+            self._raw_gate = Semaphore(4)
         dst = self.raw_dir / (measurement_id + '.csv.gz')
-        lines = ['#time,accel_x,accel_y,accel_z']
-        lines += ['%.6f,%.6f,%.6f,%.6f' % (s[0], s[1], s[2], s[3]) for s in samples]
-        # level 1: ~3x faster than the default 9 on the hot path, ~8% larger files
-        with gzip.open(dst, 'wt', compresslevel=1) as f:
-            f.write('\n'.join(lines) + '\n')
+
+        def write():
+            try:
+                lines = ['#time,accel_x,accel_y,accel_z']
+                lines += ['%.6f,%.6f,%.6f,%.6f' % (s[0], s[1], s[2], s[3]) for s in samples]
+                # level 1: ~3x faster than the default 9, ~8% larger files
+                with gzip.open(dst, 'wt', compresslevel=1) as f:
+                    f.write('\n'.join(lines) + '\n')
+            except OSError as e:
+                self._raw_errors.append('%s: %s' % (measurement_id, e))
+            finally:
+                self._raw_gate.release()
+
+        self._raw_gate.acquire()
+        self._raw_writer.submit(write)
         return str(dst.relative_to(self.root))
 
+    def flush_raw(self):
+        """Wait for every queued raw write; call at the end of a run (and before reading
+        raw back) so a SystemExit path still lands the captures the records reference."""
+        if self._raw_writer is not None:
+            self._raw_writer.shutdown(wait=True)
+            self._raw_writer = None
+        for failure in self._raw_errors:
+            print('Warning: raw capture not stored (%s)' % failure)
+        self._raw_errors = []
+
     def open_raw(self, record: dict):
+        self.flush_raw()
         return gzip.open(self.root / record['raw'], 'rt')

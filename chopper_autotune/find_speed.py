@@ -265,7 +265,8 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
             lambda: kl.gcode(tmc.set_fields_script(
                 hw.stepper, hw.baseline or tmc.KLIPPER_DEFAULT.fields())),
             lambda: exit_spreadcycle(kl, hw),
-            lambda: kl.gcode('G28 X Y'))
+            lambda: kl.gcode('G28 X Y'),
+            ds.flush_raw)
 
     if not curve:
         raise SystemExit('no successful measurements')
