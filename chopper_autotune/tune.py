@@ -67,9 +67,8 @@ def improvement_note(manifest: dict) -> str:
     """' -46%' when the run measured the winner quieter than Klipper defaults; ''
     when the reference was not measured or did not lose."""
     quieter = manifest.get('improvement') or 0
-    if quieter <= 1:
-        return ''
-    return ' -%d%%' % round((1 - 1 / quieter) * 100)
+    pct = round((1 - 1 / quieter) * 100) if quieter > 1 else 0
+    return ' -%d%%' % pct if pct >= 1 else ''
 
 
 def run_tune(args) -> int:

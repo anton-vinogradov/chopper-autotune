@@ -142,5 +142,6 @@ def test_improvement_note_formats_the_quieter_factor():
     from chopper_autotune.tune import improvement_note
     assert improvement_note({'improvement': 1.85}) == ' -46%'
     assert improvement_note({'improvement': 1.0}) == ''      # nothing won
+    assert improvement_note({'improvement': 1.003}) == ''     # a statistical tie is not -0%
     assert improvement_note({'improvement': 0.9}) == ''      # defaults measured quieter
     assert improvement_note({}) == ''                        # reference never measured

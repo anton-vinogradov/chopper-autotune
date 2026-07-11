@@ -514,8 +514,9 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
               % (tmc.KLIPPER_DEFAULT.label(), quieter, reference, winner['magnitude']))
         from .demo import write_state
         write_state(hw.stepper.rsplit('_', 1)[-1], winner['chopper'], quieter)
-        if quieter > 1:
-            finale += ' — %d%% less vibration' % round((1 - 1 / quieter) * 100)
+        pct = round((1 - 1 / quieter) * 100)
+        if pct >= 1:                                # a statistical tie is not a win
+            finale += ' — %d%% less vibration' % pct
     print('\nRecommended for printer.cfg:\n')
     print(tmc.cfg_snippet(hw.driver, hw.stepper, winner['chopper']))
     screen.final(finale)
