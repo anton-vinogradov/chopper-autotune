@@ -80,3 +80,18 @@ def test_fit_measure_time_shrinks_for_fast_resonances():
     # physically impossible even at the floor -> still a clear error
     with pytest.raises(SystemExit, match='raise --accel'):
         fit_measure_time([250], 1000.0, 104.0, 1.25)
+
+
+def test_await_flushed_demands_span_and_settled_size(tmp_path):
+    import pytest
+
+    from chopper_autotune.collect import await_flushed
+
+    csv = tmp_path / 'adxl345-v060.csv'
+    csv.write_text('#time,x,y,z\n' + ''.join('%.4f,0,0,0\n' % (t / 100) for t in range(101)))
+    # 1s of data against an expected 4s capture = truncated -> refused
+    with pytest.raises(TimeoutError):
+        await_flushed(str(tmp_path / '*-v060.csv'), min_span_sec=4.0, timeout=1.0, poll=0.05)
+    # the same file against its true duration -> accepted
+    assert await_flushed(str(tmp_path / '*-v060.csv'), min_span_sec=1.0,
+                         timeout=5.0, poll=0.05) == str(csv)

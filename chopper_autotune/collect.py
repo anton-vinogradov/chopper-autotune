@@ -185,19 +185,55 @@ def measurement_id(combo: tmc.Chopper, speed: int, iteration: int, direction: in
     return '%s_v%d_i%d_%s' % (combo.label(), speed, iteration, 'fwd' if direction > 0 else 'rev')
 
 
-def wait_for_csv(name: str, timeout: float = CSV_WAIT_SEC) -> Path:
-    """Klipper dumps the CSV asynchronously after the measurement stops; wait until the size settles."""
+def capture_span(path: str) -> float:
+    """Seconds of data in a Klipper raw-accel CSV, reading only the file's edges (the
+    last line may still be mid-write — skipped defensively)."""
+    first = last = None
+    with open(path, 'rb') as fh:
+        for line in fh:
+            if not line.startswith(b'#') and b',' in line:
+                first = float(line.split(b',', 1)[0])
+                break
+        fh.seek(0, os.SEEK_END)
+        fh.seek(-min(fh.tell(), 4096), os.SEEK_END)
+        for line in reversed(fh.read().splitlines()):
+            try:
+                last = float(line.split(b',', 1)[0])
+                break
+            except (ValueError, IndexError):
+                continue
+    return (last - first) if first is not None and last is not None else 0.0
+
+
+def await_flushed(pattern: str, min_span_sec: float = 0.0, timeout: float = 30.0,
+                  poll: float = 0.1) -> str:
+    """Wait for a Klipper accel CSV matching `pattern` to appear AND finish flushing.
+    The background writer flushes in batches after the command returns — a size that
+    merely stopped growing for one poll can still be a TRUNCATED capture (measured: a
+    cut sweep read as a phantom 156 Hz peak). Demand the size stay stable across two
+    polls AND the capture cover the expected duration."""
     deadline = time.time() + timeout
+    last, stable = -1, 0
     while time.time() < deadline:
-        matches = glob.glob('/tmp/*-%s.csv' % name)
-        if matches:
-            path = Path(matches[0])
-            size = path.stat().st_size
-            time.sleep(0.3)
-            if size > 0 and path.stat().st_size == size:
+        files = glob.glob(pattern)
+        if files:
+            path = max(files, key=os.path.getmtime)
+            size = os.path.getsize(path)
+            stable = stable + 1 if size > 0 and size == last else 0
+            last = size
+            if stable >= 2 and capture_span(path) >= 0.9 * min_span_sec:
                 return path
-        time.sleep(0.2)
-    raise TimeoutError('accelerometer csv for %s did not appear in /tmp' % name)
+        time.sleep(poll)
+    raise TimeoutError('capture for %s incomplete after %.0fs' % (pattern, timeout))
+
+
+def wait_for_csv(name: str, min_span_sec: float = 0.0, timeout: float = CSV_WAIT_SEC) -> Path:
+    try:
+        # 0.05s polls: this wait sits on the hot path of EVERY csv measurement, and the
+        # old fixed 0.3+0.2s settle alone cost 40-90 minutes over a full grid
+        return Path(await_flushed('/tmp/*-%s.csv' % name, min_span_sec, timeout, poll=0.05))
+    except TimeoutError:
+        raise TimeoutError('accelerometer csv for %s did not appear/flush in /tmp' % name)
 
 
 def drop_stale_csv(name: str):
@@ -314,7 +350,7 @@ def capture_stream(hw: Hardware, script: str, duration: float) -> 'tuple[float, 
     return t_end, np.array(samples, dtype=float)
 
 
-def capture_csv(hw: Hardware, name: str, script: str) -> np.ndarray:
+def capture_csv(hw: Hardware, name: str, script: str, min_span_sec: float = 0.0) -> np.ndarray:
     drop_stale_csv(name)
     measure = 'ACCELEROMETER_MEASURE CHIP=%s NAME=%s' % (hw.accel_chip, name)
     try:
@@ -327,7 +363,7 @@ def capture_csv(hw: Hardware, name: str, script: str) -> np.ndarray:
         except KlippyError:
             pass
         raise
-    csv_path = wait_for_csv(name)
+    csv_path = wait_for_csv(name, min_span_sec)
     with open(csv_path) as f:
         data = parse_accel_csv(f)
     os.unlink(csv_path)
@@ -340,7 +376,7 @@ def measure_baseline(hw: Hardware, ds: Dataset, args, done: set):
     record = {'id': 'baseline', 'kind': 'baseline', 'source': args.source, 'ts': now()}
     dwell = 'G4 P%d' % int(args.measure_time * 1000)
     if args.csv:
-        data = capture_csv(hw, 'baseline', dwell)
+        data = capture_csv(hw, 'baseline', dwell, args.measure_time)
     else:
         _, data = capture_stream(hw, dwell, args.measure_time)
     record['score'] = vibration_score(data, args.trim if args.csv else 0.0)
@@ -360,15 +396,15 @@ def measure_move(hw: Hardware, ds: Dataset, args, record: dict, speed: float, cr
     """
     move = 'FORCE_MOVE STEPPER=%s DISTANCE=%.3f VELOCITY=%.1f ACCEL=%.0f' \
            % (hw.stepper, travel * direction, speed, accel)
+    duration = travel / speed + speed / accel
     for attempt in (1, 2):
         try:
             before_move(direction, travel)
             if args.csv:
-                data = capture_csv(hw, record['id'], move)
+                data = capture_csv(hw, record['id'], move, duration)
                 record['score'] = vibration_score(data, args.trim)
             else:
                 overflows = hw.kl.overflows
-                duration = travel / speed + speed / accel
                 t_end, data = capture_stream(hw, move, duration)
                 steady = steady_window(t_end, speed, accel, cruise, args.trim)
                 sliced = window(data, *steady)
