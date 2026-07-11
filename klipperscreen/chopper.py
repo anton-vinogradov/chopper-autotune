@@ -22,6 +22,7 @@ STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/state.json")
 BELTS_STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/belts.json")
 ENVELOPE_STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/envelope.json")
 MAP_STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/map.json")
+CURRENT_STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/current.json")
 
 
 class Panel(ScreenPanel):
@@ -130,6 +131,12 @@ class Panel(ScreenPanel):
                 currents.append("%s %sA" % (name, section["run_current"]))
         if currents:
             lines.append(_("run_current: ") + "  ".join(currents))
+        skip = self.load_json(CURRENT_STATE)
+        if skip:
+            # the measured skip threshold behind the configured current (margin = ratio)
+            lines.append(_("skip threshold: ") + "  ".join(
+                "%s %.2fA (run %.2fA)" % (name, values["threshold"], values["recommended"])
+                for name, values in skip.items() if "threshold" in values))
         belts = self.load_json(BELTS_STATE)
         if belts.get("A") and belts.get("B"):
             # tension ~ f^2: a 3% frequency gap is a ~6% tension gap — show percent,

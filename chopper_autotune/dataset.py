@@ -3,9 +3,37 @@ from __future__ import annotations
 
 import gzip
 import json
+import os
 from pathlib import Path
 
 RESULTS_HOME = Path('~/printer_data/config/chopper-autotune').expanduser()
+
+
+def load_json(path) -> dict:
+    """Best-effort read of a small instrument-state JSON; {} when absent or unreadable."""
+    try:
+        with open(path) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return {}
+
+
+def save_json(path, data: dict, merge: bool = False):
+    """Best-effort atomic write of an instrument-state JSON. The KlipperScreen panel may
+    read these files at any moment, so write tmp + os.replace — a torn write must never
+    leave broken JSON. merge=True folds the new keys over the file's current content
+    (per-motor instruments must not erase each other's entries). Failures are swallowed:
+    remembering a result is not allowed to kill the run that produced it."""
+    path = Path(path)
+    try:
+        if merge:
+            data = {**load_json(path), **data}
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_name('.%s.tmp' % path.name)
+        tmp.write_text(json.dumps(data))
+        os.replace(tmp, path)
+    except OSError:
+        pass
 
 
 class Dataset:

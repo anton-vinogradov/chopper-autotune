@@ -10,11 +10,14 @@ the 0.2 mm creep resolution.
 from __future__ import annotations
 
 import math
+import os
 
 from .collect import Screen, coupled_xy, detect_hardware, refuse_if_printing, run_restore
+from .dataset import save_json
 from .klippy import Klippy, find_socket
 
 BELT_SPEEDS = (100, 150, 200)
+STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/current.json')
 STROKES_PER_SPEED = 3
 COARSE_STEP = 2.0          # fast approach step; the fine creep only covers the last one
 CREEP_STEP = 0.2          # fine step near the trigger, for the actual precision
@@ -160,7 +163,7 @@ def current_tune(kl: Klippy, args) -> int:
 
     refuse_if_printing(kl)
     screen = Screen(kl, board.display)
-    recommended = {}
+    recommended, thresholds = {}, {}
     try:
         kl.gcode('G28 X Y\nG90')
         for m in motors:
@@ -192,6 +195,7 @@ def current_tune(kl: Klippy, args) -> int:
             else:
                 threshold = bisect_threshold(holds, args.min_current, configured[m],
                                              args.resolution)
+            thresholds[m] = threshold
             recommended[m] = min(configured[m], round(threshold * args.margin, 2))
             print('  skip threshold ~%.2f A -> recommended run_current %.2f A (%.1fx margin)'
                   % (threshold, recommended[m], args.margin))
@@ -202,6 +206,12 @@ def current_tune(kl: Klippy, args) -> int:
                                    % (m, configured[m])) for m in motors],
             lambda: kl.gcode('M204 S%.0f\nG28 X Y' % board.max_accel))
 
+    save_json(STATE, {motor_label(m): {'threshold': thresholds[m], 'recommended': recommended[m],
+                                       'margin': args.margin} for m in motors},
+              merge=True)                              # the panel's Results shows these
+    screen.final('Current: ' + ' \u00b7 '.join(
+        '%s skip %.2fA -> run %.2fA' % (motor_label(m), thresholds[m], recommended[m])
+        for m in motors))
     print('\n=== Summary ===')
     for m in motors:
         print('[tmc%s stepper_%s]\nrun_current: %.2f' % (hw[m].driver.name, m, recommended[m]))

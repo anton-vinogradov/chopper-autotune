@@ -7,12 +7,12 @@ hotend's flow rate, which is a thermal, not a motion, measurement.
 """
 from __future__ import annotations
 
-import json
 import math
 import os
 
 from .collect import Screen, detect_hardware, enter_spreadcycle, exit_spreadcycle, refuse_if_printing, run_restore
 from .current import Referee, referee_axis, stress_vector
+from .dataset import save_json
 from .klippy import Klippy, find_socket
 
 STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/envelope.json')
@@ -30,19 +30,7 @@ def ceiling_label(hold, skip, kilo: bool = False) -> str:
 def save_state(results: 'dict[str, dict]'):
     """Remember the measured ceilings so the panel's Results can show the achieved
     speed/acceleration at any time. Merged per motor: MOTOR=B must not erase A."""
-    try:
-        merged = {}
-        try:
-            with open(STATE) as handle:
-                merged = json.load(handle)
-        except (OSError, ValueError):
-            pass
-        merged.update(results)
-        os.makedirs(os.path.dirname(STATE), exist_ok=True)
-        with open(STATE, 'w') as handle:
-            json.dump(merged, handle)
-    except OSError:
-        pass
+    save_json(STATE, results, merge=True)
 
 MARGIN = 1.3                                  # recommend ceiling / margin
 STRESS_REPS = 3
