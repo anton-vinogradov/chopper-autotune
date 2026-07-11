@@ -213,6 +213,14 @@ def test_belts_show_args():
     assert args.show == 'b'
 
 
+def test_agreeing_tolerance_covers_pump_line_scatter():
+    from chopper_autotune.belts import agreeing
+    # field: front-span pump tries landed 308.3 and 301.6 (2.2% apart) and were
+    # rejected at 2% — the pump lines scatter wider than the fundamentals
+    assert agreeing([308.3], 301.6) is not None
+    assert agreeing([308.3], 295.0) is None          # 4.4%: still a real disagreement
+
+
 def test_state_default_paths_split_pluck_from_sweep():
     # belts.json is what the panel renders as TENSION — the sweep's structural
     # frequencies must live in their own file (the falsified reading, measured)
