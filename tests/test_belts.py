@@ -309,3 +309,17 @@ def test_resolver_refuses_when_no_shared_family():
     from chopper_autotune.belts import resolve_pair
     assert resolve_pair([{'freq': 88, 'cls': 'Y', 'tries': 2, 'snr': 300}],
                         [{'freq': 293, 'cls': 'X', 'tries': 2, 'snr': 300}]) is None
+
+
+def test_resolver_frequency_window_rejects_cross_mode_pairs():
+    """Field: same-polarization matching alone paired a 315 Hz mode of belt A with an
+    invisible 91 Hz family of belt B — a +1107% verdict no belt pair can produce."""
+    from chopper_autotune.belts import resolve_pair
+    fams_a = [{'freq': 315.4, 'cls': 'Y', 'tries': 2, 'snr': 127}]
+    fams_b = [{'freq': 90.8, 'cls': 'Y', 'tries': 2, 'snr': 171},
+              {'freq': 288.9, 'cls': '?', 'tries': 2, 'snr': 246}]
+    pair = resolve_pair(fams_a, fams_b)
+    assert pair is not None
+    fam_a, fam_b = pair
+    assert fam_b['freq'] == 288.9                   # the near-frequency partner wins
+    assert resolve_pair(fams_a, [fams_b[0]]) is None  # only the 91 Hz mode: refuse
