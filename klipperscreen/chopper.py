@@ -273,11 +273,16 @@ class Panel(ScreenPanel):
             lines.append(_("belts: ") + "A %.0f / B %.0f Hz (%s %+.0f%%, T~f²)"
                          % (belts["A"], belts["B"], _("tension"), gap))
         envelope = self.load_json(ENVELOPE_STATE)
+        recommend = envelope.pop("recommend", None) if envelope else None
         if envelope:
             # "350+" = held the whole tested range (the motor is not the limit there)
             lines.append(_("envelope: ") + "  ".join(
                 "%s %s mm/s, %s acc" % (name, values.get("speed"), values.get("accel"))
                 for name, values in envelope.items()))
+        if recommend:
+            lines.append(_("recommended: ") + "≤%s mm/s · accel ≤%s (%s)"
+                         % (recommend.get("max_velocity"), recommend.get("max_accel"),
+                            recommend.get("limited_by", "")))
         vfa_map = self.load_json(MAP_STATE)
         for name, entry in vfa_map.items():
             peaks = ",".join(str(s) for s in entry.get("peaks", [])) or "—"
