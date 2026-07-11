@@ -401,6 +401,54 @@ def agreeing(seen: 'list[float]', new: float, tol: float = 0.03) -> 'float | Non
     return None
 
 
+def tone_families(tries: 'list[list[tuple]]', tol: float = 0.03) -> 'list[dict]':
+    """Cluster every line seen across the plucks into families (within tol); a family
+    counts once per try. The strongest single line is not the verdict — the FAMILY
+    seen most consistently is (field: the true front-span pump sat one SNR notch
+    below a side-span line and kept losing a greedy accept)."""
+    families = []
+    for try_no, tones in enumerate(tries):
+        for tone in tones:
+            freq = tone[0]
+            for fam in families:
+                if abs(freq - fam['freq']) <= tol * freq:
+                    if try_no not in fam['try_nos']:
+                        fam['try_nos'].add(try_no)
+                        fam['freqs'].append(freq)
+                        fam['freq'] = sum(fam['freqs']) / len(fam['freqs'])
+                    fam['snr'] = max(fam['snr'], tone[1])
+                    cls = polar_class(tone)
+                    if cls != '?':
+                        fam['classes'].append(cls)
+                    break
+            else:
+                cls = polar_class(tone)
+                families.append({'freq': freq, 'freqs': [freq], 'try_nos': {try_no},
+                                 'snr': tone[1], 'classes': [cls] if cls != '?' else []})
+    for fam in families:
+        fam['tries'] = len(fam['try_nos'])
+        fam['cls'] = (max(set(fam['classes']), key=fam['classes'].count)
+                      if fam['classes'] else '?')
+    return [f for f in families if f['tries'] >= 2]
+
+
+def resolve_pair(fams_a: 'list[dict]', fams_b: 'list[dict]') -> 'tuple[dict, dict] | None':
+    """The A/B verdict pair: prefer families with the SAME clean polarization (the
+    same span type on both belts — comparing a side line of one belt against a front
+    line of the other produced the field's flip-flopping verdicts), then the most
+    consistently seen, then the loudest."""
+    best = None
+    for fa in fams_a:
+        for fb in fams_b:
+            same = fa['cls'] == fb['cls'] and fa['cls'] in ('X', 'Y')
+            score = (same, fa['tries'] + fb['tries'], fa['snr'] + fb['snr'])
+            if best is None or score > best[0]:
+                best = (score, fa, fb)
+    if best is None or not best[0][0]:
+        return None                                 # no same-class pair exists
+    return best[1], best[2]
+
+
 def polar_class(tone: tuple) -> str:
     """'X'/'Y' when a line's energy is clearly along one machine axis, '?' otherwise
     (mixed = a structural mode, not a clean belt line)."""
@@ -498,61 +546,33 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
                                     'ambiguous — falling back to unpolarized analysis'))
 
     def measure_belt(label):
-        paired_seen, lone_seen = [], []
+        tries = []
         for attempt in range(1, args.plucks + 1):
             cue('Ready: belt %s in 3s' % label)
             kl.gcode('G4 P3000')
             cue('PLUCK belt %s now! (listening 5s...)' % label)
             _, samples = capture_stream(hw, 'G4 P5000', 4.8)
             tones = pluck_tones(samples, ambient=ambient, rot=rot)
-            freq, paired = fundamental(tones)
-            if freq is None:
+            if not tones:
                 cue('Belt %s: nothing heard — again' % label)
                 print('   belt %s try %d: nothing heard' % (label, attempt))
                 continue
-            cls = next((polar_class(t) for t in tones if abs(t[0] - freq) < 1.0), '?')
-            note = 'f=%.1f Hz %s%s  [%s]' % (
-                freq, 'paired f+2f' if paired else 'unpaired',
-                ' pol=%s' % cls if cls != '?' else '',
-                ', '.join('%.0f(x%.0f)' % t[:2] for t in tones[:3]))
-            print('   belt %s try %d: %s' % (label, attempt, note))
-            if paired:
-                match = agreeing(paired_seen, freq)
-                if match is not None:
-                    print('   belt %s: %.1f / %.1f Hz agree — accepted' % (label, match, freq))
-                    return {'fund': (match + freq) / 2, 'line': (match + freq) / 2,
-                            'via': 'paired', 'cls': cls}
-                paired_seen.append(freq)
-                cue('Belt %s heard %.0f Hz — once more' % (label, freq))
-                continue
-            # no (f, 2f) pair: through the STRUCTURE the tension pump (2f, along the
-            # belt) often arrives alone — the transverse f dies in the stiff frame
-            # (measured on a 120 mm V0; a phone's microphone hears f through the AIR,
-            # which is why it needs no such reasoning). A repeated lone line polarized
-            # along one machine axis IS that pump: halve it for the fundamental.
-            match = agreeing(lone_seen, freq)
-            if match is not None:
-                line = (match + freq) / 2
-                if cls in ('X', 'Y'):
-                    fund = line / 2
-                    if args.span and tension_newtons(fund, args.span, args.mu) < 2.5:
-                        # a sagging span pulses its tension at f too (asymmetry), not
-                        # only 2f — when halving implies a tension no ringing belt can
-                        # have, the line IS the fundamental arriving axially
-                        print('   belt %s: %.1f / %.1f Hz agree, polarized %s — axial, '
-                              'but halving would mean <2.5 N at SPAN=%.1f; keeping %.1f Hz '
-                              'as the fundamental (sag ripple)'
-                              % (label, match, freq, cls, args.span, line))
-                        return {'fund': line, 'line': line, 'via': 'pump', 'cls': cls}
-                    print('   belt %s: %.1f / %.1f Hz agree, polarized %s — the axial '
-                          'pump; fundamental = %.1f Hz' % (label, match, freq, cls, fund))
-                    return {'fund': fund, 'line': line, 'via': 'pump', 'cls': cls}
-                print('   belt %s: %.1f / %.1f Hz agree (unpaired, mixed polarization) — '
-                      'accepted by repeatability, harmonic order UNKNOWN'
-                      % (label, match, freq))
-                return {'fund': line, 'line': line, 'via': 'lone', 'cls': cls}
-            lone_seen.append(freq)
-            cue('Belt %s heard %.0f Hz (unpaired) — once more' % (label, freq))
+            tries.append(tones)
+            print('   belt %s try %d: [%s]' % (label, attempt, ', '.join(
+                '%.0f(x%.0f%s)' % (t[0], t[1],
+                                   ' %s' % polar_class(t) if polar_class(t) != '?' else '')
+                for t in tones[:3])))
+            fams = tone_families(tries)
+            if fams:
+                strongest = max(fams, key=lambda f: (f['tries'], f['snr']))
+                print('   belt %s: family %.1f Hz seen %dx (pol=%s)'
+                      % (label, strongest['freq'], strongest['tries'], strongest['cls']))
+                if strongest['tries'] >= 2 and attempt >= 2:
+                    return tone_families(tries)
+            cue('Belt %s heard — once more' % label)
+        fams = tone_families(tries)
+        if fams:
+            return fams
         cue('FAILED: belt %s gave no stable tone' % label)         # the display must say why
         raise SystemExit('belt %s: no two agreeing plucks in %d tries — pluck harder, '
                          'mid-span, and re-run' % (label, args.plucks))
@@ -568,24 +588,32 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
         run_restore(lambda: kl.gcode('SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=0\n'
                                      'SET_STEPPER_ENABLE STEPPER=stepper_y ENABLE=0'))
 
-    ra, rb = fundamentals['A'], fundamentals['B']
-    # comparing different span families (an X-polarized front line vs a Y-polarized
-    # side line, or unknown harmonic orders) produced flip-flopping verdicts in the
-    # field — refuse instead of comparing apples to echoes of oranges
-    if 'lone' in (ra['via'], rb['via']):
-        raise SystemExit('harmonic order unknown for belt %s — pluck the SAME span on '
-                         'both belts and re-run (the lines had mixed polarization)'
-                         % ('A' if ra['via'] == 'lone' else 'B'))
-    if ra['via'] == rb['via'] == 'pump' and '?' not in (ra['cls'], rb['cls']) \
-            and ra['cls'] != rb['cls']:
-        raise SystemExit('belts A and B answered from DIFFERENT span families '
-                         '(A along %s, B along %s) — pluck the SAME span on both '
-                         'belts and re-run' % (ra['cls'], rb['cls']))
-    fa, fb = ra['fund'], rb['fund']
-    for label, r in (('A', ra), ('B', rb)):
-        if r['via'] == 'pump':
-            print('belt %s: measured %.1f Hz along %s = the tension pump (2f) -> '
-                  'fundamental %.1f Hz' % (label, r['line'], r['cls'], r['fund']))
+    pair = resolve_pair(fundamentals['A'], fundamentals['B'])
+    if pair is None:
+        raise SystemExit('no matching span family on both belts (A: %s / B: %s) — pluck '
+                         'the SAME span on both and re-run'
+                         % (', '.join('%.0fHz pol=%s' % (f['freq'], f['cls'])
+                                      for f in fundamentals['A']),
+                            ', '.join('%.0fHz pol=%s' % (f['freq'], f['cls'])
+                                      for f in fundamentals['B'])))
+    fam_a, fam_b = pair
+
+    def interpret(label, fam):
+        """A clean-polarization family is the axial pump: halve for the fundamental —
+        unless SPAN says the halved tension is one no ringing belt carries (a sagging
+        span pulses its tension at f too)."""
+        line = fam['freq']
+        fund = line / 2
+        if args.span and tension_newtons(fund, args.span, args.mu) < 2.5:
+            print('belt %s: %.1f Hz along %s — axial, but halving means <2.5 N at '
+                  'SPAN=%.1f; keeping it as the fundamental (sag ripple)'
+                  % (label, line, fam['cls'], args.span))
+            return line
+        print('belt %s: %.1f Hz along %s = the tension pump (2f) -> fundamental %.1f Hz'
+              % (label, line, fam['cls'], fund))
+        return fund
+
+    fa, fb = interpret('A', fam_a), interpret('B', fam_b)
     # tension goes as the SQUARE of frequency, so a 3% frequency gap is a ~6% tension
     # gap — say it in percent with the f^2 hint, or the number reads as a contradiction
     tension_gap = ((fa / fb) ** 2 - 1) * 100

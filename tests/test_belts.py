@@ -277,3 +277,35 @@ def test_exclude_ambient_handles_polarized_tuples():
     ambient = [(285.5, 40.0, 0.5, 0.5)]                 # 4-tuples on both sides
     left = exclude_ambient(tones, ambient)
     assert [t[0] for t in left] == [144.0]
+
+
+def test_families_and_resolver_reproduce_the_field_verdict():
+    """The exact failing field run: belt A's true front-span pump (293, pol=X) sat one
+    SNR notch below a side-span line (88, pol=Y) and lost a greedy accept; the family
+    resolver must pick the X pair shared with belt B -> matched fundamentals."""
+    from chopper_autotune.belts import resolve_pair, tone_families
+    a_tries = [
+        [(331.1, 39.0, 0.8, 0.2)],
+        [(367.2, 88.0, 0.5, 0.5)],
+        [(133.5, 98.0, 0.8, 0.2), (293.0, 42.0, 0.8, 0.2)],
+        [(87.7, 333.0, 0.2, 0.8), (294.0, 316.0, 0.8, 0.2), (134.0, 87.0, 0.7, 0.3)],
+        [(86.5, 341.0, 0.2, 0.8), (274.0, 212.0, 0.5, 0.5)],
+    ]
+    b_tries = [
+        [(293.6, 302.0, 0.8, 0.2), (276.0, 212.0, 0.5, 0.5), (91.0, 171.0, 0.3, 0.7)],
+        [(292.8, 43.0, 0.8, 0.2)],
+    ]
+    fams_a, fams_b = tone_families(a_tries), tone_families(b_tries)
+    assert any(f['cls'] == 'Y' for f in fams_a)      # the side-span decoy IS there
+    pair = resolve_pair(fams_a, fams_b)
+    assert pair is not None
+    fam_a, fam_b = pair
+    assert fam_a['cls'] == fam_b['cls'] == 'X'       # the shared front-span family wins
+    assert abs(fam_a['freq'] - 293.5) < 2 and abs(fam_b['freq'] - 293.2) < 2
+    # halved: ~146.8 vs ~146.6 -> matched, exactly what the phone said
+
+
+def test_resolver_refuses_when_no_shared_family():
+    from chopper_autotune.belts import resolve_pair
+    assert resolve_pair([{'freq': 88, 'cls': 'Y', 'tries': 2, 'snr': 300}],
+                        [{'freq': 293, 'cls': 'X', 'tries': 2, 'snr': 300}]) is None
