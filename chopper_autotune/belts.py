@@ -391,6 +391,16 @@ def fundamental(tones: 'list[tuple[float, float]]') -> 'tuple[float | None, bool
     return (tones[0][0], False) if tones else (None, False)
 
 
+def agreeing(seen: 'list[float]', new: float, tol: float = 0.03) -> 'float | None':
+    """The match for `new` among earlier tries, within tol — repeatability is the
+    control, and it need not be consecutive (mixed excitations between plucks). 3%:
+    the pump lines scatter wider than the fundamentals (field: 308.3 vs 301.6)."""
+    for seen_freq in seen:
+        if abs(new - seen_freq) <= tol * new:
+            return seen_freq
+    return None
+
+
 def polar_class(tone: tuple) -> str:
     """'X'/'Y' when a line's energy is clearly along one machine axis, '?' otherwise
     (mixed = a structural mode, not a clean belt line)."""
@@ -487,14 +497,6 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
                                     'tension pump at 2f)' if rot else
                                     'ambiguous — falling back to unpolarized analysis'))
 
-    def agreeing(seen: 'list[float]', new: float, tol: float = 0.02) -> 'float | None':
-        """The match for `new` among earlier tries, within tol — repeatability is the
-        control, and it need not be consecutive (mixed excitations between plucks)."""
-        for old in seen:
-            if abs(new - old) <= tol * new:
-                return old
-        return None
-
     def measure_belt(label):
         paired_seen, lone_seen = [], []
         for attempt in range(1, args.plucks + 1):
@@ -532,9 +534,19 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
             if match is not None:
                 line = (match + freq) / 2
                 if cls in ('X', 'Y'):
+                    fund = line / 2
+                    if args.span and tension_newtons(fund, args.span, args.mu) < 2.5:
+                        # a sagging span pulses its tension at f too (asymmetry), not
+                        # only 2f — when halving implies a tension no ringing belt can
+                        # have, the line IS the fundamental arriving axially
+                        print('   belt %s: %.1f / %.1f Hz agree, polarized %s — axial, '
+                              'but halving would mean <2.5 N at SPAN=%.1f; keeping %.1f Hz '
+                              'as the fundamental (sag ripple)'
+                              % (label, match, freq, cls, args.span, line))
+                        return {'fund': line, 'line': line, 'via': 'pump', 'cls': cls}
                     print('   belt %s: %.1f / %.1f Hz agree, polarized %s — the axial '
-                          'pump; fundamental = %.1f Hz' % (label, match, freq, cls, line / 2))
-                    return {'fund': line / 2, 'line': line, 'via': 'pump', 'cls': cls}
+                          'pump; fundamental = %.1f Hz' % (label, match, freq, cls, fund))
+                    return {'fund': fund, 'line': line, 'via': 'pump', 'cls': cls}
                 print('   belt %s: %.1f / %.1f Hz agree (unpaired, mixed polarization) — '
                       'accepted by repeatability, harmonic order UNKNOWN'
                       % (label, match, freq))
