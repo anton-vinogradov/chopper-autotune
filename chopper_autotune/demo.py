@@ -12,9 +12,9 @@ from datetime import datetime
 
 from . import __version__, tmc
 from .collect import (MOVE_MARGIN, Screen, capture_stream, coupled_xy, default_dataset_root,
-                      detect_hardware, enter_spreadcycle, exit_spreadcycle, make_parker,
-                      measure_baseline, motor_label, now, park, refuse_if_printing,
-                      run_measurement, run_restore, travel_for)
+                      detect_hardware, enter_spreadcycle, exit_spreadcycle, fit_measure_time,
+                      make_parker, measure_baseline, motor_label, now, park,
+                      refuse_if_printing, run_measurement, run_restore, travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, KlippyError, find_socket
 from .metrics import vibration_score
@@ -204,10 +204,16 @@ def demo(kl: Klippy, args) -> int:
                 raise SystemExit('no clear resonance speed found; pass SPEED=')
 
     accel = args.accel or hw.max_accel / 10
-    cruise = args.measure_time
+    # a high resonance speed can push the default cruise past the axis (measured: the
+    # re-tensioned rig moved motor B's resonance to ~100 mm/s and the demo refused) —
+    # shrink the cruise like collect does instead of skipping the motor
+    cruise = fit_measure_time([int(speed)], accel, hw.axis_span * MOVE_MARGIN,
+                              args.measure_time)
+    if cruise < args.measure_time:
+        print('Cruise %.2fs does not fit the axis at %d mm/s: shrinking to %.2fs'
+              % (args.measure_time, speed, cruise))
+        args.measure_time = cruise               # run_measurement slices by this window
     travel = travel_for(speed, accel, cruise)
-    if travel > hw.axis_span * MOVE_MARGIN:
-        raise SystemExit('travel too long for the motor; lower MEASURE_TIME or raise ACCEL')
 
     live = not args.report
     mode = 'live showcase, %d rounds' % args.rounds if live else 'measure %d each' % args.iterations
