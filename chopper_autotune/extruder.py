@@ -84,7 +84,7 @@ FIELD_RANGES = (Range(0, 3), Range(1, 8), Range(0, 7), Range(0, 15))   # tbl/tof
 
 
 def descent(hw, kl, driver, speed: float, audible_weight: float, screen: Screen,
-            rounds: int = 2) -> 'tuple[tmc.Chopper, dict]':
+            rounds: int = 2, budget: 'int | None' = None) -> 'tuple[tmc.Chopper, dict]':
     """Multi-start coordinate descent (search.py — the same engine as the axis tune:
     joint tbl+toff phase and spanning hend seeds, closing the measured toff x hend
     blind spot a per-field single-start walk re-created), evaluating each candidate
@@ -97,7 +97,9 @@ def descent(hw, kl, driver, speed: float, audible_weight: float, screen: Screen,
             magnitude, clicks = measure(hw, speed)
             cache[combo] = penalized_score(combo, [magnitude], driver, audible_weight,
                                            clicks_per_move=float(clicks))
-            screen.update('Chopper E cand %d: %.0f' % (len(cache), cache[combo]))
+            screen.update('Chopper E cand %d%s: %.0f'
+                          % (len(cache), ' of <=%d' % budget if budget else '',
+                             cache[combo]))
         return cache[combo]
 
     winner = multi_start_descent(driver, *FIELD_RANGES, None, tmc.KLIPPER_DEFAULT,
@@ -242,7 +244,8 @@ def extruder_tune(kl: Klippy, args) -> int:
                   % (speed, '  (weak peak — the field may be flat here)' if flat else ''))
 
         print('Register descent at %.1f mm/s...' % speed)
-        winner, cache = descent(hw, kl, driver, speed, args.audible_weight, screen)
+        winner, cache = descent(hw, kl, driver, speed, args.audible_weight, screen,
+                                budget=budget)
 
         # winner's curse guard: re-measure the descent's top few before recommending
         top = sorted(cache, key=cache.get)[:VALIDATE_TOP]
