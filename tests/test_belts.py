@@ -241,3 +241,23 @@ def test_window_tones_polarization_follows_the_motion_axis():
     tones = _window_tones(acc, fs, (40.0, 1000.0), 3, rot=rot)
     assert tones and abs(tones[0][0] - 285.0) < 2.0
     assert tones[0][2] > 0.9                              # X share dominates
+
+
+def test_axis_direction_pca_separates_a_45_degree_mount():
+    # per-axis RMS reads both jogs of a 45deg-mounted chip as the same direction;
+    # the principal component keeps the sign and tells them apart
+    import numpy as np
+    fs = 3200.0
+    t = np.arange(int(fs * 1.0)) / fs
+    burst = np.sin(2 * np.pi * 30 * t) * 2000
+    x_jog = np.stack([burst * 0.707, burst * 0.707, np.zeros_like(burst)], axis=1)
+    y_jog = np.stack([burst * 0.707, -burst * 0.707, np.zeros_like(burst)], axis=1)
+
+    def pca(acc):
+        _, vecs = np.linalg.eigh(np.cov(acc.T))
+        return vecs[:, -1]
+
+    ex, ey = pca(x_jog), pca(y_jog)
+    assert abs(float(np.dot(ex, ey))) < 0.1          # orthogonal, as they truly are
+    rms = lambda a: np.sqrt((a ** 2).mean(axis=0)) / np.linalg.norm(np.sqrt((a ** 2).mean(axis=0)))
+    assert abs(float(np.dot(rms(x_jog), rms(y_jog)))) > 0.9   # the bug PCA fixes
