@@ -217,3 +217,27 @@ def test_state_default_paths_split_pluck_from_sweep():
     # belts.json is what the panel renders as TENSION — the sweep's structural
     # frequencies must live in their own file (the falsified reading, measured)
     assert belts_mod.SWEEP_STATE != belts_mod.STATE
+
+
+def test_polar_class_names_the_clean_axis():
+    from chopper_autotune.belts import polar_class
+    assert polar_class((285.0, 150.0, 0.9, 0.1)) == 'X'
+    assert polar_class((285.0, 150.0, 0.2, 0.8)) == 'Y'
+    assert polar_class((285.0, 150.0, 0.5, 0.5)) == '?'   # mixed = structural mode
+    assert polar_class((285.0, 150.0)) == '?'             # no polarization data
+
+
+def test_window_tones_polarization_follows_the_motion_axis():
+    import numpy as np
+
+    from chopper_autotune.belts import _window_tones
+    fs, seconds = 3200.0, 1.2
+    t = np.arange(int(fs * seconds)) / fs
+    tone = np.sin(2 * np.pi * 285.0 * t)
+    # motion purely along chip axis 0; machine X mapped to that axis
+    acc = np.stack([tone * 4000, np.random.default_rng(1).normal(0, 3, t.size),
+                    np.random.default_rng(2).normal(0, 3, t.size)], axis=1)
+    rot = (np.array([1.0, 0.0, 0.0]), np.array([0.0, 1.0, 0.0]))
+    tones = _window_tones(acc, fs, (40.0, 1000.0), 3, rot=rot)
+    assert tones and abs(tones[0][0] - 285.0) < 2.0
+    assert tones[0][2] > 0.9                              # X share dominates

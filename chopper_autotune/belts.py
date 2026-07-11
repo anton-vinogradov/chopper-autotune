@@ -307,23 +307,38 @@ def belts(kl: Klippy, args) -> int:
 
 
 def _window_tones(acc: np.ndarray, fs: float, band: 'tuple[float, float]',
-                  count: int) -> 'list[tuple[float, float]]':
+                  count: int, rot: 'tuple | None' = None) -> 'list[tuple]':
     acc = acc - acc.mean(axis=0)
     n = acc.shape[0]
     window = np.hanning(n)[:, None]
     nfft = 1 << int(np.ceil(np.log2(4 * n)))
-    spec = (np.abs(np.fft.rfft(acc * window, n=nfft, axis=0)) ** 2).sum(axis=1)
+    ffts = np.fft.rfft(acc * window, n=nfft, axis=0)
+    spec = (np.abs(ffts) ** 2).sum(axis=1)
+    if rot is not None:
+        # power of each line along the MACHINE axes: the axial tension pump shakes the
+        # frame along the belt, the transverse wave across it — polarization tells the
+        # harmonic's nature where a phone's microphone would just hear the fundamental
+        ex, ey = rot
+        px = np.abs(ffts @ ex) ** 2
+        py = np.abs(ffts @ ey) ** 2
     freqs = np.fft.rfftfreq(nfft, 1 / fs)
     mask = (freqs >= band[0]) & (freqs <= band[1])
     f, p = freqs[mask], spec[mask]
     median = np.median(p)
-    peaks = [(p[i], f[i]) for i in range(2, len(p) - 2)
+    peaks = [(p[i], f[i], i) for i in range(2, len(p) - 2)
              if p[i - 1] < p[i] > p[i + 1] and p[i] > PLUCK_SNR * median]
     peaks.sort(reverse=True)
+    if rot is not None:
+        fx, fy = px[mask], py[mask]
     out, taken = [], []
-    for power, freq in peaks:
+    for power, freq, i in peaks:
         if all(abs(freq - t) > 5.0 for t in taken):
-            out.append((float(freq), float(power / median)))
+            if rot is not None:
+                total = fx[i] + fy[i]
+                shares = (float(fx[i] / total), float(fy[i] / total)) if total > 0 else (0.5, 0.5)
+                out.append((float(freq), float(power / median)) + shares)
+            else:
+                out.append((float(freq), float(power / median)))
             taken.append(freq)
         if len(out) >= count:
             break
@@ -342,7 +357,7 @@ def exclude_ambient(tones: 'list[tuple[float, float]]',
 
 def pluck_tones(samples: np.ndarray, band: 'tuple[float, float]' = PLUCK_BAND,
                 ambient: 'list[tuple[float, float]] | None' = None,
-                count: int = 6) -> 'list[tuple[float, float]]':
+                count: int = 6, rot: 'tuple | None' = None) -> 'list[tuple]':
     """Tonal peaks of a pluck capture as (freq, snr-over-median), strongest first.
     The pluck ring lives in a fraction of the capture and decays fast, so a whole-window
     FFT dilutes it below the noise (measured: near-head plucks read "nothing heard");
@@ -352,7 +367,8 @@ def pluck_tones(samples: np.ndarray, band: 'tuple[float, float]' = PLUCK_BAND,
     step = max(1, int(1.2 * fs))
     best, best_snr = [], 0.0
     for start in range(0, max(1, acc.shape[0] - step + 1), step // 2):
-        tones = exclude_ambient(_window_tones(acc[start:start + step], fs, band, count), ambient)
+        tones = exclude_ambient(_window_tones(acc[start:start + step], fs, band, count,
+                                              rot=rot), ambient)
         if tones and tones[0][1] > best_snr:
             best, best_snr = tones, tones[0][1]
     return best
@@ -364,8 +380,8 @@ def fundamental(tones: 'list[tuple[float, float]]') -> 'tuple[float | None, bool
     (f, 2f) pair identifies the fundamental unambiguously; a lone line is returned
     unpaired=False — it may be a harmonic of a weak pluck (measured: 4f at 400 Hz)."""
     best = None
-    for freq, snr in tones:
-        for freq2, snr2 in tones:
+    for freq, snr, *_ in tones:
+        for freq2, snr2, *_ in tones:
             if freq2 > freq and abs(freq2 - 2 * freq) <= PAIR_TOLERANCE * freq2:
                 combined = snr + snr2
                 if best is None or combined > best[1]:
@@ -373,6 +389,39 @@ def fundamental(tones: 'list[tuple[float, float]]') -> 'tuple[float | None, bool
     if best is not None:
         return best[0], True
     return (tones[0][0], False) if tones else (None, False)
+
+
+def polar_class(tone: tuple) -> str:
+    """'X'/'Y' when a line's energy is clearly along one machine axis, '?' otherwise
+    (mixed = a structural mode, not a clean belt line)."""
+    if len(tone) < 4:
+        return '?'
+    _, _, share_x, share_y = tone[:4]
+    if share_x >= 0.65:
+        return 'X'
+    if share_y >= 0.65:
+        return 'Y'
+    return '?'
+
+
+def machine_axes(hw, kl) -> 'tuple | None':
+    """Map the chip's axes to the MACHINE's by feeling two gentle jogs: the phone app
+    hears the fundamental because its microphone lives in the air; our chip lives on
+    the structure and hears the tension pump at 2f along the belt — telling along from
+    across is what lets us halve the right lines. None when the jogs read ambiguous."""
+    from .collect import capture_stream
+
+    def direction(letter):
+        _, s = capture_stream(hw, 'G91\nG1 %s-5 F1800\nG1 %s5 F1800\nG90\nM400'
+                              % (letter, letter), 1.2)
+        acc = s[:, 1:4] - s[:, 1:4].mean(axis=0)
+        rms = np.sqrt((acc ** 2).mean(axis=0))
+        return rms / np.linalg.norm(rms)
+
+    ex, ey = direction('X'), direction('Y')
+    if abs(float(np.dot(ex, ey))) > 0.5:            # jogs read alike: mounting is odd,
+        return None                                 # fall back to unpolarized analysis
+    return ex, ey
 
 
 def tension_newtons(freq: float, span_cm: float, mu_g_per_m: float = GT2_MU) -> float:
@@ -409,13 +458,18 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
     rear_y = float(kl.settings()['stepper_y']['position_max']) - 3.0
     kl.gcode('G28 X Y\nG90\nG1 X%.1f Y%.1f F6000\nM400' % (cx, rear_y))
 
+    rot = machine_axes(hw, kl)
+    print('Axis calibration: %s' % ('ok — lines will carry polarization (along-belt = '
+                                    'tension pump at 2f)' if rot else
+                                    'ambiguous — falling back to unpolarized analysis'))
+
     def cue(text):
         screen.update(text, force=True)
         print('>> %s' % text, flush=True)
 
     print('Capturing the quiet reference (do not touch)...')
     _, quiet = capture_stream(hw, 'G4 P3000', 2.8)
-    ambient = pluck_tones(quiet)
+    ambient = pluck_tones(quiet, rot=rot)
     if ambient:
         print('   ambient lines excluded: %s' % ', '.join('%.0f Hz' % f for f, _ in ambient))
 
@@ -434,32 +488,43 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
             kl.gcode('G4 P3000')
             cue('PLUCK belt %s now! (listening 5s...)' % label)
             _, samples = capture_stream(hw, 'G4 P5000', 4.8)
-            tones = pluck_tones(samples, ambient=ambient)
+            tones = pluck_tones(samples, ambient=ambient, rot=rot)
             freq, paired = fundamental(tones)
             if freq is None:
                 cue('Belt %s: nothing heard — again' % label)
                 print('   belt %s try %d: nothing heard' % (label, attempt))
                 continue
-            note = 'f=%.1f Hz %s  [%s]' % (freq, 'paired f+2f' if paired else 'unpaired',
-                                           ', '.join('%.0f(x%.0f)' % t for t in tones[:3]))
+            cls = next((polar_class(t) for t in tones if abs(t[0] - freq) < 1.0), '?')
+            note = 'f=%.1f Hz %s%s  [%s]' % (
+                freq, 'paired f+2f' if paired else 'unpaired',
+                ' pol=%s' % cls if cls != '?' else '',
+                ', '.join('%.0f(x%.0f)' % t[:2] for t in tones[:3]))
             print('   belt %s try %d: %s' % (label, attempt, note))
             if paired:
                 match = agreeing(paired_seen, freq)
                 if match is not None:
                     print('   belt %s: %.1f / %.1f Hz agree — accepted' % (label, match, freq))
-                    return (match + freq) / 2
+                    return {'fund': (match + freq) / 2, 'line': (match + freq) / 2,
+                            'via': 'paired', 'cls': cls}
                 paired_seen.append(freq)
                 cue('Belt %s heard %.0f Hz — once more' % (label, freq))
                 continue
-            # no (f, 2f) pair — the 2f pump is geometry-dependent (weak on the side spans
-            # a small printer plucks, field-measured on a 120 mm V0). Repeatability is
-            # then the control: the same lone line twice within 2% is a fundamental, a
-            # wandering one is a harmonic of a pluck too weak to show its base.
+            # no (f, 2f) pair: through the STRUCTURE the tension pump (2f, along the
+            # belt) often arrives alone — the transverse f dies in the stiff frame
+            # (measured on a 120 mm V0; a phone's microphone hears f through the AIR,
+            # which is why it needs no such reasoning). A repeated lone line polarized
+            # along one machine axis IS that pump: halve it for the fundamental.
             match = agreeing(lone_seen, freq)
             if match is not None:
-                print('   belt %s: %.1f / %.1f Hz agree (unpaired) — accepted by '
-                      'repeatability' % (label, match, freq))
-                return (match + freq) / 2
+                line = (match + freq) / 2
+                if cls in ('X', 'Y'):
+                    print('   belt %s: %.1f / %.1f Hz agree, polarized %s — the axial '
+                          'pump; fundamental = %.1f Hz' % (label, match, freq, cls, line / 2))
+                    return {'fund': line / 2, 'line': line, 'via': 'pump', 'cls': cls}
+                print('   belt %s: %.1f / %.1f Hz agree (unpaired, mixed polarization) — '
+                      'accepted by repeatability, harmonic order UNKNOWN'
+                      % (label, match, freq))
+                return {'fund': line, 'line': line, 'via': 'lone', 'cls': cls}
             lone_seen.append(freq)
             cue('Belt %s heard %.0f Hz (unpaired) — once more' % (label, freq))
         cue('FAILED: belt %s gave no stable tone' % label)         # the display must say why
@@ -477,7 +542,24 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
         run_restore(lambda: kl.gcode('SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=0\n'
                                      'SET_STEPPER_ENABLE STEPPER=stepper_y ENABLE=0'))
 
-    fa, fb = fundamentals['A'], fundamentals['B']
+    ra, rb = fundamentals['A'], fundamentals['B']
+    # comparing different span families (an X-polarized front line vs a Y-polarized
+    # side line, or unknown harmonic orders) produced flip-flopping verdicts in the
+    # field — refuse instead of comparing apples to echoes of oranges
+    if 'lone' in (ra['via'], rb['via']):
+        raise SystemExit('harmonic order unknown for belt %s — pluck the SAME span on '
+                         'both belts and re-run (the lines had mixed polarization)'
+                         % ('A' if ra['via'] == 'lone' else 'B'))
+    if ra['via'] == rb['via'] == 'pump' and '?' not in (ra['cls'], rb['cls']) \
+            and ra['cls'] != rb['cls']:
+        raise SystemExit('belts A and B answered from DIFFERENT span families '
+                         '(A along %s, B along %s) — pluck the SAME span on both '
+                         'belts and re-run' % (ra['cls'], rb['cls']))
+    fa, fb = ra['fund'], rb['fund']
+    for label, r in (('A', ra), ('B', rb)):
+        if r['via'] == 'pump':
+            print('belt %s: measured %.1f Hz along %s = the tension pump (2f) -> '
+                  'fundamental %.1f Hz' % (label, r['line'], r['cls'], r['fund']))
     # tension goes as the SQUARE of frequency, so a 3% frequency gap is a ~6% tension
     # gap — say it in percent with the f^2 hint, or the number reads as a contradiction
     tension_gap = ((fa / fb) ** 2 - 1) * 100
