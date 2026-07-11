@@ -56,3 +56,15 @@ def test_envelope_state_round_trips(tmp_path, monkeypatch):
                 'B': {'speed': '300', 'accel': '40k+'}}
     envelope_mod.save_state(achieved)
     assert json.load(open(envelope_mod.STATE)) == achieved
+
+
+def test_envelope_state_merges_per_motor(tmp_path, monkeypatch):
+    import json
+
+    from chopper_autotune import envelope as envelope_mod
+    monkeypatch.setattr(envelope_mod, 'STATE', str(tmp_path / 'envelope.json'))
+    envelope_mod.save_state({'A': {'speed': '350+', 'accel': '40k+'}})
+    envelope_mod.save_state({'B': {'speed': '300', 'accel': '30k'}})   # MOTOR=B alone
+    saved = json.load(open(envelope_mod.STATE))
+    assert saved['A'] == {'speed': '350+', 'accel': '40k+'}            # A survives
+    assert saved['B'] == {'speed': '300', 'accel': '30k'}

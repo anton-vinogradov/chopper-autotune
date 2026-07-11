@@ -16,12 +16,10 @@ import json
 import os
 import statistics
 
-import numpy as np
-
 from . import tmc
 from .collect import Screen, capture_stream, detect_hardware, refuse_if_printing, run_restore
 from .klippy import Klippy, find_socket
-from .metrics import transients
+from .metrics import transients, vibration_score
 from .search import penalized_score
 
 AMP_CAP = 3.0               # max half-stroke, mm of filament (a retraction-scale swing)
@@ -88,9 +86,7 @@ def measure(hw, speed: float) -> 'tuple[float, int]':
     cycles = max(2, int(CRUISE_SEC / (2 * amp / speed)))
     duration = min(2.0, cycles * 2 * amp / speed - 0.2)
     _, samples = capture_stream(hw, oscillation(speed, amp, cycles), duration)
-    acc = samples[:, 1:4] - samples[:, 1:4].mean(axis=0)
-    magnitude = float(np.median(np.linalg.norm(acc, axis=1)))
-    return magnitude, transients(samples)['clicks']
+    return vibration_score(samples, 0.0)['median_magnitude'], transients(samples)['clicks']
 
 
 def descent(hw, kl, driver, speed: float, audible_weight: float, screen: Screen,
@@ -121,7 +117,7 @@ def descent(hw, kl, driver, speed: float, audible_weight: float, screen: Screen,
     return current, cache
 
 
-def extruder_show(kl: Klippy, args, driver, driver_name: str, baseline_regs: dict,
+def extruder_show(kl: Klippy, args, baseline_regs: dict, stealth: 'tuple | None',
                   temp: float) -> int:
     """Audible before/after for the E motor: alternate Klipper defaults and the saved
     registers at the resonance speed so the change can be heard — the E analogue of
@@ -133,11 +129,17 @@ def extruder_show(kl: Klippy, args, driver, driver_name: str, baseline_regs: dic
     kl.subscribe_accel(hw.accel_chip)
     screen = Screen(kl, hw.display)
     speed = args.speed or 5.0
-    screen.update('Chopper E show: heating to %.0fC' % temp, force=True)
-    kl.gcode('M104 S%.0f' % temp)
-    kl.gcode('TEMPERATURE_WAIT SENSOR=extruder MINIMUM=%.0f' % (temp - 3))
     magnitudes = {'defaults': [], 'tuned': []}
     try:
+        # the heater goes on INSIDE the try — a SIGTERM during the long heat-up must
+        # still reach the M104 S0 in the finally
+        screen.update('Chopper E show: heating to %.0fC' % temp, force=True)
+        kl.gcode('M104 S%.0f' % temp)
+        kl.gcode('TEMPERATURE_WAIT SENSOR=extruder MINIMUM=%.0f' % (temp - 3))
+        if stealth:
+            # chopper registers only act in spreadCycle: without the force, both phases
+            # would measure stealthChop vs stealthChop and report a fake 1.0x
+            kl.gcode(tmc.set_fields_script('extruder', {stealth[0]: stealth[1]}))
         for round_no in (1, 2):
             for label, fields in (('defaults', tmc.KLIPPER_DEFAULT.fields()),
                                   ('tuned', baseline_regs)):
@@ -149,10 +151,13 @@ def extruder_show(kl: Klippy, args, driver, driver_name: str, baseline_regs: dic
                 print('   magnitude %.0f' % magnitude)
         d = sum(magnitudes['defaults']) / len(magnitudes['defaults'])
         t = sum(magnitudes['tuned']) / len(magnitudes['tuned'])
+        from .demo import write_state
+        write_state('extruder', tmc.baseline_chopper(baseline_regs), d / t)
         screen.final('Extruder: %.1fx less vibration (%.0f -> %.0f)' % (d / t, d, t))
     finally:
         run_restore(
             lambda: kl.gcode(tmc.set_fields_script('extruder', baseline_regs)),
+            lambda: stealth and kl.gcode(tmc.set_fields_script('extruder', {stealth[0]: stealth[2]})),
             lambda: kl.gcode('M104 S0'),
             lambda: kl.gcode('M84'))
     return 0
@@ -187,7 +192,16 @@ def extruder_tune(kl: Klippy, args) -> int:
         raise SystemExit('TEMP=%.0f is below min_extrude_temp (%.0f) — the filament could '
                          'not move; raise TEMP or unload the filament' % (temp, min_temp))
     if args.demo:
-        return extruder_show(kl, args, driver, driver_name, baseline_regs, temp)
+        # the demo heats and force-moves exactly like the tune: same guards apply
+        print('Extruder demo: Klipper defaults vs the saved registers at the E resonance; '
+              'the hotend will HEAT to %.0fC (filament stays in)' % temp)
+        if args.dry_run:
+            return 0
+        if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):
+            print('Aborted')
+            return 1
+        refuse_if_printing(kl)
+        return extruder_show(kl, args, baseline_regs, stealth, temp)
     speeds = [float(v) for v in range(args.min_speed, args.max_speed + 1)]
 
     print('Extruder chopper tune: tmc%s, current registers %s' % (
@@ -207,12 +221,14 @@ def extruder_tune(kl: Klippy, args) -> int:
     kl.subscribe_accel(hw.accel_chip)
     screen = Screen(kl, hw.display)
 
-    screen.update('Chopper E: heating to %.0fC' % temp, force=True)
-    print('Heating hotend to %.0fC...' % temp)
-    kl.gcode('M104 S%.0f' % temp)
-    kl.gcode('TEMPERATURE_WAIT SENSOR=extruder MINIMUM=%.0f' % (temp - 3))
-
     try:
+        # the heater goes on INSIDE the try: heating is the longest wait of the whole
+        # run, and a SIGTERM/Ctrl-C there must still reach the M104 S0 in the finally
+        screen.update('Chopper E: heating to %.0fC' % temp, force=True)
+        print('Heating hotend to %.0fC...' % temp)
+        kl.gcode('M104 S%.0f' % temp)
+        kl.gcode('TEMPERATURE_WAIT SENSOR=extruder MINIMUM=%.0f' % (temp - 3))
+
         if stealth:
             field, force, _ = stealth
             print('stealthChop is configured on the extruder: forcing spreadCycle')
@@ -275,7 +291,10 @@ def extruder_tune(kl: Klippy, args) -> int:
         return 0
     finally:
         run_restore(
-            lambda: baseline_regs and kl.gcode(tmc.set_fields_script('extruder', baseline_regs)),
+            # a stock config carries no driver_* lines (empty baseline) — fall back to
+            # Klipper defaults rather than silently leaving the last swept combo active
+            lambda: kl.gcode(tmc.set_fields_script(
+                'extruder', baseline_regs or tmc.KLIPPER_DEFAULT.fields())),
             lambda: stealth and kl.gcode(tmc.set_fields_script('extruder', {stealth[0]: stealth[2]})),
             lambda: kl.gcode('M104 S0'),
             lambda: kl.gcode('M84'))

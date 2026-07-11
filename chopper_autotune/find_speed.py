@@ -20,6 +20,8 @@ MIN_CRUISE_SEC = 0.25
 
 def cruise_for(speed: float, accel: float, travel_limit: float, requested: float) -> float:
     """Cruise time that keeps the whole move within the travel limit."""
+    if speed <= 0:
+        return 0.0
     available = (travel_limit - speed * speed / accel) / speed
     return min(requested, available)
 
@@ -229,16 +231,16 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
 
     print('Preparing: home XY, park at center, disable motors')
     park(kl, hw)
-    enter_spreadcycle(kl, hw)
-    # scan with the stock chopper: a well-tuned config suppresses the very resonance
-    # peaks the scan is looking for (measured: 897 vs 2676 at the same speed)
-    kl.gcode(tmc.set_fields_script(hw.stepper, tmc.KLIPPER_DEFAULT.fields()))
-    print('Scanning with Klipper default registers %s — the current tuning would mask the peaks'
-          % tmc.KLIPPER_DEFAULT.label())
     started = time.time()
     screen = Screen(kl, hw.display)
     before_move = make_parker(kl, hw)
     try:
+        enter_spreadcycle(kl, hw)
+        # scan with the stock chopper: a well-tuned config suppresses the very resonance
+        # peaks the scan is looking for (measured: 897 vs 2676 at the same speed)
+        kl.gcode(tmc.set_fields_script(hw.stepper, tmc.KLIPPER_DEFAULT.fields()))
+        print('Scanning with Klipper default registers %s — the current tuning would mask the peaks'
+              % tmc.KLIPPER_DEFAULT.label())
         failed = run_sweep(hw, ds, args, plan, accel, screen, before_move, done)
         curve = build_curve(ds)
         peaks = find_peaks(smooth([magnitude for _, magnitude in curve])) if curve else []
@@ -247,19 +249,21 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
         # extend the scan upward as far as the axis allows instead of aborting the tune
         ceiling = fit_max_speed(accel, limit, args.measure_time, args.step)
         while curve and not peaks and rising_at_edge(curve, args.max_speed, args.step) \
-                and args.max_speed < ceiling:
+                and args.max_speed + args.step <= ceiling:
             new_max = min(ceiling, args.max_speed + max(4 * args.step, 40))
             print('The curve is still rising at %d mm/s — extending the scan to %d'
                   % (args.max_speed, new_max))
             args.min_speed, args.max_speed = args.max_speed + args.step, new_max
             extension = build_speed_plan(args, accel, limit)
+            done = ds.done_ids()               # else every round re-measures the baseline
             failed += run_sweep(hw, ds, args, extension, accel, screen, before_move, done)
             curve = build_curve(ds)
             peaks = find_peaks(smooth([magnitude for _, magnitude in curve]))
     finally:
         print('Restoring registers, homing')
         run_restore(
-            lambda: hw.baseline and kl.gcode(tmc.set_fields_script(hw.stepper, hw.baseline)),
+            lambda: kl.gcode(tmc.set_fields_script(
+                hw.stepper, hw.baseline or tmc.KLIPPER_DEFAULT.fields())),
             lambda: exit_spreadcycle(kl, hw),
             lambda: kl.gcode('G28 X Y'))
 
