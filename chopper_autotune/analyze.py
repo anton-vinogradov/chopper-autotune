@@ -4,6 +4,7 @@ Works offline on a collected dataset; the printer is only needed for --apply.
 """
 from __future__ import annotations
 
+import os
 import re
 import statistics
 from collections import defaultdict
@@ -328,6 +329,21 @@ def tuned_tmc_sections(files: 'dict[str, str]') -> 'list[str]':
     return found
 
 
+# a rollback restarts the plan: the panel's step marks and Results read these files,
+# and their numbers were measured against the registers being rolled away (the skip
+# threshold, the envelope ceilings and the map are chopper properties). The extruder
+# winner memory (extruder.json) survives — SAVE_LAST must still be able to re-apply it.
+STALE_ON_RESTORE = ('belts.json', 'current.json', 'envelope.json', 'map.json', 'state.json')
+
+
+def _reset_instrument_state():
+    for name in STALE_ON_RESTORE:
+        try:
+            os.remove(RESULTS_HOME / name)
+        except OSError:
+            pass
+
+
 def run_restore_config(args) -> int:
     """The panel's undo: DEFAULTS=1 writes the stock chopper registers into every
     tuned TMC section (run_current stays — it is a measured safety setting);
@@ -347,6 +363,7 @@ def run_restore_config(args) -> int:
             original = name[:-len(BACKUP_SUFFIX)] + '.cfg'
             mk.upload_config(original, mk.download_config(name))
             print('restored %s from %s' % (original, name))
+        _reset_instrument_state()
         mk.gcode('RESTART')
         print('Klipper is restarting on the pre-save config (registers AND currents)')
         return 0
@@ -361,6 +378,7 @@ def run_restore_config(args) -> int:
     _persist(mk, [(section,
                    lambda text, s: updated_config(text, s, tmc.KLIPPER_DEFAULT.fields()))
                   for section in sections], 'the Klipper default registers')
+    _reset_instrument_state()
     return 0
 
 

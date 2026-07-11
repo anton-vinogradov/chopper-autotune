@@ -282,3 +282,21 @@ def test_restore_needs_exactly_one_mode(monkeypatch):
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: FakeMk({}))
     with pytest.raises(SystemExit, match='pick one'):
         analyze.run_restore_config(SimpleNamespace(defaults=False, backup=False, url=''))
+
+
+def test_restore_resets_the_plan_marks(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import chopper_autotune.analyze as analyze
+    monkeypatch.setattr(analyze, 'RESULTS_HOME', tmp_path)
+    for name in ('belts.json', 'current.json', 'envelope.json', 'map.json',
+                 'state.json', 'extruder.json'):
+        (tmp_path / name).write_text('{}')
+    mk = FakeMk({'printer.cfg': CONFIG_WITH_TUNING})
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    analyze.run_restore_config(SimpleNamespace(defaults=True, backup=False, url=''))
+    # thresholds/ceilings/map were measured against the rolled-away registers
+    for name in ('belts.json', 'current.json', 'envelope.json', 'map.json', 'state.json'):
+        assert not (tmp_path / name).exists(), name
+    # the extruder winner memory survives: SAVE_LAST must still be able to re-apply it
+    assert (tmp_path / 'extruder.json').exists()
