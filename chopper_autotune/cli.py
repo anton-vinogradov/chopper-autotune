@@ -265,6 +265,9 @@ def build_parser() -> argparse.ArgumentParser:
                      default='xy', help='motor a/b/ab (a=stepper_x, b=stepper_y); default ab')
     cur.add_argument('--margin', type=float, default=2.0,
                      help='recommended current = skip threshold x this margin, default 2.0')
+    cur.add_argument('--per-motor', action='store_true',
+                     help='keep the measured per-motor recommendations; by default coupled-XY '
+                          'motors both get the max of the two (same part, drag drifts)')
     cur.add_argument('--min-current', type=float, default=0.3,
                      help='search floor in amps, default 0.3')
     cur.add_argument('--resolution', type=float, default=0.05,

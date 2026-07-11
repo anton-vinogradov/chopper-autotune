@@ -126,3 +126,14 @@ def test_current_macro_args_translate():
     args = parser.parse_args(_gcode_args(
         ['current', 'MOTOR=A', 'MARGIN=1.5', 'SAVE=1'], boolean_flags(parser)))
     assert args.axis == 'x' and args.margin == 1.5 and args.save
+
+def test_unify_recommendation_maxes_coupled_twins_within_each_rating():
+    from chopper_autotune.current import unify_recommendation
+    rec, cfg = {'x': 0.95, 'y': 0.6}, {'x': 1.0, 'y': 1.0}
+    assert unify_recommendation(rec, cfg, coupled=True, per_motor=False) == {'x': 0.95, 'y': 0.95}
+    assert unify_recommendation(rec, cfg, coupled=True, per_motor=True) == rec    # opt-out
+    assert unify_recommendation(rec, cfg, coupled=False, per_motor=False) == rec  # cartesian differs
+    assert unify_recommendation({'x': 0.7}, cfg, coupled=True, per_motor=False) == {'x': 0.7}
+    # non-identical motors: the unified value never exceeds a motor's own configured current
+    assert unify_recommendation({'x': 1.0, 'y': 0.6}, {'x': 1.5, 'y': 0.8},
+                                coupled=True, per_motor=False) == {'x': 1.0, 'y': 0.8}
