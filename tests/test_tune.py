@@ -130,12 +130,37 @@ def test_tune_reports_the_outcome_on_screen(tmp_path, monkeypatch):
     assert finals and finals[-1].startswith('Tune done: A 0/8/7/5 · B 0/2/7/5')
     assert 'tap Save to persist' in finals[-1]
 
-    # a failure must speak too
+    # a failure must speak too — via the global CLI announcer now (any tool, any error)
     finals.clear()
     monkeypatch.setattr(tune, 'scan', lambda kl, args: (0, None))
     with pytest.raises(SystemExit, match='no clear resonance peak'):
         tune.run_tune(tune_args())
-    assert finals and finals[-1].startswith('Tune FAILED:')
+
+
+def test_cli_announces_failures_on_the_display(monkeypatch):
+    """The tools run detached: an error that only lands in the log looks like
+    'nothing starts' at the machine (field: a missing accelerometer died silently)."""
+    import chopper_autotune.cli as cli
+    said = []
+    monkeypatch.setattr(cli, 'announce_failure', lambda args, msg: said.append(msg))
+
+    def boom(args):
+        raise SystemExit('accelerometer unplugged')
+
+    monkeypatch.setattr(cli, 'dispatch', boom)
+    with pytest.raises(SystemExit, match='accelerometer unplugged'):
+        cli.main(['status'])
+    assert said == ['status FAILED: accelerometer unplugged']
+
+    said.clear()
+
+    def stop(args):
+        raise SystemExit(143)                       # CHOPPER_STOP's integer code
+
+    monkeypatch.setattr(cli, 'dispatch', stop)
+    with pytest.raises(SystemExit):
+        cli.main(['status'])
+    assert said == []                               # a plain code is not a message
 
 
 def test_improvement_note_formats_the_quieter_factor():
