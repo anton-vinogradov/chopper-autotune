@@ -43,17 +43,15 @@ class Panel(ScreenPanel):
         actions = [
             ("move", _("1 Belts"), "color1", "CHOPPER_BELTS",
              _("Step 1 — mechanics first. Measure belt tension: follow the display, pluck each belt's long front span hard, like a guitar string, twice per belt.")),
-            ("fine-tune", _("2,4 Tune"), "color2", "CHOPPER_TUNE MOTOR=AB",
-             _("Steps 2 AND 4 — tune both gantry motors' choppers at their resonances (~20 minutes of movement). Motor B is seeded with A's winner. Then Save. First pass: continue with 3 Current; after Current, come back here for the second pass — the chopper optimum depends on the current.")),
+            ("fine-tune", _("2,4 Tune"), "color2", "CHOPPER_TUNE MOTOR=AB SAVE=1",
+             _("Steps 2 AND 4 — tune both gantry motors' choppers at their resonances (~20 minutes of movement), SAVE the winners and restart Klipper. First pass: continue with 3 Current; after Current, come back here for the second pass — the chopper optimum depends on the current. Restore undoes.")),
             ("settings", _("3 Current"), "color3", "CHOPPER_CURRENT SAVE=1",
              _("Step 3 — find the minimal safe run current (worst-case stress + endstop referee) and WRITE it into the config. Afterwards step 4 = Tune again: the chopper optimum depends on the current.")),
-            ("extrude", _("5 Extruder"), "color4", "CHOPPER_EXTRUDER",
-             _("Step 5 — tune the extruder chopper. The hotend will HEAT to 200C (filament stays in), ~10 minutes; the heater turns off when done. Then Save.")),
+            ("extrude", _("5 Extruder"), "color4", "CHOPPER_EXTRUDER SAVE=1",
+             _("Step 5 — tune the extruder chopper, SAVE the winner and restart Klipper. The hotend will HEAT to 200C (filament stays in), ~10 minutes; the heater turns off when done. Restore undoes.")),
             # row 2 — the optional check + supporting actions
             ("increase", _("Envelope"), "color1", "CHOPPER_ENVELOPE",
              _("Optional check — verify the speed/acceleration headroom: worst-case stress with the endstop referee, ~7 minutes. Finish the plan with Klipper's Input Shaper panel.")),
-            ("complete", _("Save"), "color2", "CHOPPER_SAVE",
-             _("Save the latest tuning result for each motor (and the extruder's last winner) into the config and restart Klipper?")),
             ("resume", _("Show"), "color3", "CHOPPER_DEMO MOTOR=AB ROUNDS=2 REPEATS=2",
              _("Play the driver defaults against the tuned registers on both motors so you can hear the difference?")),
             ("move", _("Motor A"), "color4", "CHOPPER_BELTS SHOW=A",
@@ -70,13 +68,30 @@ class Panel(ScreenPanel):
             button.connect("clicked", self.run, command, confirm)
             grid.attach(button, index % 4, index // 4, 1, 1)
         # local buttons (no printer action): Results shows everything measured so far
+        restore = self._gtk.Button("refresh", _("Restore"), "color2")
+        restore.connect("clicked", self.show_restore)
+        grid.attach(restore, len(actions) % 4, len(actions) // 4, 1, 1)
         results = self._gtk.Button("info", _("Results"), "color1")
         results.connect("clicked", self.show_results)
-        grid.attach(results, len(actions) % 4, len(actions) // 4, 1, 1)
+        grid.attach(results, (len(actions) + 1) % 4, (len(actions) + 1) // 4, 1, 1)
         stop = self._gtk.Button("stop", _("Stop"), "color4")
         stop.connect("clicked", self.stop)
         # 4 columns keep the buttons to three rows, leaving the status area its height
-        grid.attach(stop, (len(actions) + 1) % 4, (len(actions) + 1) // 4, 1, 1)
+        grid.attach(stop, (len(actions) + 2) % 4, (len(actions) + 2) // 4, 1, 1)
+
+        # the Restore chooser: swapped in instead of the buttons, like Results
+        self.restore_menu = Gtk.Grid(column_homogeneous=True, row_homogeneous=True,
+                                     vexpand=False, no_show_all=True)
+        for column, (icon, label, style, command, confirm) in enumerate((
+                ("refresh", _("Klipper defaults"), "color1", "CHOPPER_RESTORE DEFAULTS=1",
+                 _("Write the stock chopper registers (2/3/5/0) into every tuned motor and restart Klipper? run_current stays as saved.")),
+                ("complete", _("Backup"), "color3", "CHOPPER_RESTORE BACKUP=1",
+                 _("Put back the config exactly as it was before the last save (registers AND currents) and restart Klipper?")),
+                ("stop", _("Cancel"), "color4", None, None))):
+            button = self._gtk.Button(icon, label, style)
+            button.connect("clicked", self.pick_restore, command, confirm)
+            button.set_no_show_all(False)
+            self.restore_menu.attach(button, column, 0, 1, 1)
 
         self.status = Gtk.Label(hexpand=True, vexpand=True, halign=Gtk.Align.CENTER,
                                 valign=Gtk.Align.CENTER, wrap=True,
@@ -97,6 +112,7 @@ class Panel(ScreenPanel):
 
         self.grid = grid
         self.content.add(grid)
+        self.content.add(self.restore_menu)
         self.content.add(scroll)
         self.content.show_all()
 
@@ -130,6 +146,25 @@ class Panel(ScreenPanel):
         else:
             self.status.set_markup(
                 f"<span font_family='monospace' size='medium'>{GLib.markup_escape_text(self.register_table())}</span>")
+
+    def show_restore(self, widget=None):
+        """What exactly to roll back to is a real choice — swap the button grid for it."""
+        self.grid.hide()
+        self.restore_menu.show()
+        for child in self.restore_menu.get_children():
+            child.show()
+        self.status.set_markup(
+            "<span size='large'>" + GLib.markup_escape_text(_(
+                "Restore what? Klipper defaults = stock chopper registers, tuning off "
+                "(run_current stays). Backup = the config exactly as before the last save, "
+                "currents included.")) + "</span>")
+
+    def pick_restore(self, widget, command, confirm):
+        self.restore_menu.hide()
+        self.grid.show()
+        self.show_status(self._printer.get_stat("display_status", "message"))
+        if command:
+            self.run(widget, command, confirm)
 
     def show_results(self, widget=None):
         """Full-screen summary of everything measured so far: the report has outgrown

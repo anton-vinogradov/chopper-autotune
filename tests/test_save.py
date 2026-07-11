@@ -194,3 +194,91 @@ def test_run_save_uploads_all_backups_before_edits():
     assert set(mk.uploads[2:]) == {'printer.cfg', 'extra.cfg'}
     assert mk.scripts == ['RESTART']
     assert 'driver_TOFF: 6' in mk.files['extra.cfg']
+
+
+CONFIG_WITH_TUNING = """[tmc2209 stepper_x]
+uart_pin: PA1
+run_current: 1.0
+driver_TBL: 0
+driver_TOFF: 2
+driver_HSTRT: 7
+driver_HEND: 11
+
+[tmc2209 stepper_y]
+uart_pin: PA2
+run_current: 1.0
+
+[tmc2209 extruder]
+uart_pin: PA3
+run_current: 0.65
+driver_TBL: 3
+driver_TOFF: 7
+driver_HSTRT: 6
+driver_HEND: 0
+"""
+
+
+def test_tuned_tmc_sections_finds_only_tuned_motors():
+    from chopper_autotune.analyze import tuned_tmc_sections
+    sections = tuned_tmc_sections({'printer.cfg': CONFIG_WITH_TUNING})
+    # stepper_y carries no driver_* lines: already stock, must not be rewritten
+    assert sections == ['tmc2209 stepper_x', 'tmc2209 extruder']
+
+
+class FakeMk:
+    def __init__(self, files):
+        self.files = dict(files)
+        self.gcodes = []
+        self.printing = False
+
+    def is_printing(self):
+        return self.printing
+
+    def list_config_files(self):
+        return list(self.files)
+
+    def download_config(self, name):
+        return self.files[name]
+
+    def upload_config(self, name, content):
+        self.files[name] = content
+
+    def gcode(self, script):
+        self.gcodes.append(script)
+
+
+def test_restore_defaults_rewrites_tuned_sections_only(monkeypatch):
+    from types import SimpleNamespace
+
+    import chopper_autotune.analyze as analyze
+    mk = FakeMk({'printer.cfg': CONFIG_WITH_TUNING})
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    analyze.run_restore_config(SimpleNamespace(defaults=True, backup=False, url=''))
+    text = mk.files['printer.cfg']
+    x = text[text.index('[tmc2209 stepper_x]'):text.index('[tmc2209 stepper_y]')]
+    assert 'driver_TBL: 2' in x and 'driver_HEND: 0' in x    # stock registers written
+    assert 'run_current: 1.0' in x                           # the current is untouched
+    assert mk.files['printer.chopper-backup.cfg']            # snapshot taken first
+    assert mk.gcodes == ['RESTART']
+
+
+def test_restore_backup_puts_snapshots_back(monkeypatch):
+    from types import SimpleNamespace
+
+    import chopper_autotune.analyze as analyze
+    mk = FakeMk({'printer.cfg': 'edited', 'printer.chopper-backup.cfg': 'pristine'})
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    analyze.run_restore_config(SimpleNamespace(defaults=False, backup=True, url=''))
+    assert mk.files['printer.cfg'] == 'pristine'
+    assert mk.gcodes == ['RESTART']
+
+
+def test_restore_needs_exactly_one_mode(monkeypatch):
+    from types import SimpleNamespace
+
+    import pytest
+
+    import chopper_autotune.analyze as analyze
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: FakeMk({}))
+    with pytest.raises(SystemExit, match='pick one'):
+        analyze.run_restore_config(SimpleNamespace(defaults=False, backup=False, url=''))

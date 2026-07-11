@@ -250,6 +250,15 @@ def build_parser() -> argparse.ArgumentParser:
     sv.add_argument('--audible-weight', type=float, default=0.25)
     sv.add_argument('--url', default='http://127.0.0.1:7125')
 
+    rs = sub.add_parser('restore', help="roll back the tool's config changes")
+    rs.add_argument('--defaults', action='store_true',
+                    help='write the Klipper default chopper registers (2/3/5/0) into every '
+                         'tuned TMC section; run_current stays as saved')
+    rs.add_argument('--backup', action='store_true',
+                    help='restore the *.chopper-backup.cfg snapshots taken before the last '
+                         'save (registers AND run currents)')
+    rs.add_argument('--url', default='http://127.0.0.1:7125')
+
     cur = sub.add_parser('current', help='find the minimal safe run current per motor '
                                          '(worst-case stress, endstop referee)')
     cur.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y', 'xy'),
@@ -322,6 +331,9 @@ def main(argv=None) -> int:
     if args.command == 'save':
         from .analyze import run_save_latest
         return run_save_latest(args)
+    if args.command == 'restore':
+        from .analyze import run_restore_config
+        return run_restore_config(args)
     if args.command == 'current':
         from .current import run_current_tune
         return run_current_tune(args)

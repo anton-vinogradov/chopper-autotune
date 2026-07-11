@@ -308,6 +308,62 @@ def run_save_currents(mk, items: 'list[tuple[str, str, float]]'):
                   for driver, stepper, amps in items], 'the new run currents')
 
 
+TUNED_FIELD_RE = re.compile(r'^\s*driver_(tbl|toff|hstrt|hend)\s*[:=]',
+                            re.IGNORECASE | re.MULTILINE)
+
+
+def tuned_tmc_sections(files: 'dict[str, str]') -> 'list[str]':
+    """TMC sections of the tool's motors that carry active driver_* tuning lines —
+    the ones a defaults-restore must rewrite (a section without them already runs
+    the Klipper defaults, adding explicit lines there would only be churn)."""
+    found = []
+    for text in files.values():
+        lines = text.splitlines(keepends=True)
+        for match in re.finditer(r'^\[(tmc\w+ (?:stepper_x|stepper_y|extruder))\]',
+                                 text, re.MULTILINE):
+            section = match.group(1)
+            start, end = _section_span(lines, section)
+            if TUNED_FIELD_RE.search(''.join(lines[start + 1:end])):
+                found.append(section)
+    return found
+
+
+def run_restore_config(args) -> int:
+    """The panel's undo: DEFAULTS=1 writes the stock chopper registers into every
+    tuned TMC section (run_current stays — it is a measured safety setting);
+    BACKUP=1 puts back the pre-save snapshots wholesale, currents included."""
+    mk = Moonraker(args.url)
+    if args.defaults == args.backup:
+        raise SystemExit('pick one: DEFAULTS=1 (stock chopper registers) or '
+                         'BACKUP=1 (the pre-save %s snapshots)' % BACKUP_SUFFIX)
+    if args.backup:
+        if mk.is_printing():
+            raise SystemExit('printer is busy printing, not touching the config')
+        backups = [name for name in mk.list_config_files() if name.endswith(BACKUP_SUFFIX)]
+        if not backups:
+            raise SystemExit('no %s snapshots found — this tool has not saved anything yet'
+                             % BACKUP_SUFFIX)
+        for name in backups:
+            original = name[:-len(BACKUP_SUFFIX)] + '.cfg'
+            mk.upload_config(original, mk.download_config(name))
+            print('restored %s from %s' % (original, name))
+        mk.gcode('RESTART')
+        print('Klipper is restarting on the pre-save config (registers AND currents)')
+        return 0
+
+    files = {name: content for name, content in active_config_files(mk).items()
+             if not name.endswith(BACKUP_SUFFIX)}
+    sections = tuned_tmc_sections(files)
+    if not sections:
+        raise SystemExit('no tuned TMC sections found — the config already runs stock registers')
+    print('Writing Klipper default registers %s into: %s (run_current untouched)'
+          % (tmc.KLIPPER_DEFAULT.label(), ', '.join(sections)))
+    _persist(mk, [(section,
+                   lambda text, s: updated_config(text, s, tmc.KLIPPER_DEFAULT.fields()))
+                  for section in sections], 'the Klipper default registers')
+    return 0
+
+
 def run_save_latest(args) -> int:
     """Persist the most recent tuning result for each motor into the config, batched into
     one restart. Backs the panel's Save button: save what the last tuning achieved, whether
