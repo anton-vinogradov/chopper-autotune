@@ -584,10 +584,11 @@ def validate_top(kl: Klippy, hw: Hardware, ds: Dataset, args, speeds: 'list[int]
 def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None',
                 speeds: 'list[int]', travel: float, accel: float, done: set,
                 before_move, screen: Screen) -> 'tuple[int, int]':
-    from .search import (dataset_history, dataset_transients, multi_start_descent,
-                         penalized_score, seed_start)
+    from .search import (dataset_history, dataset_transients, descent_budget,
+                         multi_start_descent, penalized_score, seed_start)
 
     stats = {'ok': 0, 'failed': 0}
+    budget = descent_budget(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd)
     history = dataset_history(ds)
     clicks = dataset_transients(ds)
 
@@ -622,7 +623,9 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
         print('  %s -> %s' % (combo.label(),
                               'failed' if score == float('inf') else '%.1f%s' % (score, note)))
         if score != float('inf'):
-            screen.update('Chopper cand %d: %.0f' % (len(cache), score))
+            # without the bound the counter reads as endless (field: run stopped by hand)
+            screen.update('Chopper %s cand %d of <=%d: %.0f'
+                          % (hw.motor, len(cache), budget, score))
         return score
 
     if args.seed_from:
