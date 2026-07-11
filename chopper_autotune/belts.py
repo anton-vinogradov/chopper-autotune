@@ -28,11 +28,11 @@ from __future__ import annotations
 
 import glob
 import os
-import time
 
 import numpy as np
 
-from .collect import Screen, coupled_xy, detect_hardware, motor_label, refuse_if_printing, run_restore
+from .collect import (Screen, await_flushed, capture_span, coupled_xy, detect_hardware,
+                      motor_label, refuse_if_printing, run_restore)
 from .current import stress_vector
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
@@ -93,48 +93,18 @@ def insensitive(freqs: 'dict[str, float]', prev: 'dict | None', threshold_hz: fl
             and abs(freqs['B'] - prev['B']) < threshold_hz)
 
 
-def capture_span(path: str) -> float:
-    """Seconds of data in a Klipper raw-accel CSV, reading only the file's edges (the
-    last line may still be mid-write — skipped defensively)."""
-    first = last = None
-    with open(path, 'rb') as fh:
-        for line in fh:
-            if not line.startswith(b'#') and b',' in line:
-                first = float(line.split(b',', 1)[0])
-                break
-        fh.seek(0, os.SEEK_END)
-        fh.seek(-min(fh.tell(), 4096), os.SEEK_END)
-        for line in reversed(fh.read().splitlines()):
-            try:
-                last = float(line.split(b',', 1)[0])
-                break
-            except (ValueError, IndexError):
-                continue
-    return (last - first) if first is not None and last is not None else 0.0
-
-
 def wait_for_capture(pattern: str, min_span_sec: float = 0.0, timeout: float = 30.0) -> str:
-    """Wait for Klipper's raw-accel CSV to appear and finish flushing. TEST_RESONANCES
-    returns before its background writer has flushed the file, and the writer pauses
-    between batches — a size that merely stopped growing for one poll can still be a
-    TRUNCATED sweep (measured: a cut at ~60 s read as a phantom 156 Hz peak). So demand
-    the size stay stable across two polls AND the capture cover the sweep duration."""
-    deadline = time.time() + timeout
-    last, stable = -1, 0
-    path = None
-    while time.time() < deadline:
+    """collect.await_flushed with a sweep-shaped error: TEST_RESONANCES returns before
+    the background writer has flushed the raw CSV, and a truncated sweep reads as a
+    phantom peak at whatever frequency the cut landed on (measured: '156 Hz')."""
+    try:
+        return await_flushed(pattern, min_span_sec, timeout, poll=0.3)
+    except TimeoutError:
         files = glob.glob(pattern)
-        if files:
-            path = max(files, key=os.path.getmtime)
-            size = os.path.getsize(path)
-            stable = stable + 1 if size > 0 and size == last else 0
-            last = size
-            if stable >= 2 and capture_span(path) >= 0.9 * min_span_sec:
-                return path
-        time.sleep(0.3)
-    raise SystemExit('capture incomplete for %s: %.0fs of the %.0fs sweep flushed — '
-                     'check the [resonance_tester] output path'
-                     % (pattern, capture_span(path) if path else 0.0, min_span_sec))
+        newest = max(files, key=os.path.getmtime) if files else None
+        raise SystemExit('capture incomplete for %s: %.0fs of the %.0fs sweep flushed — '
+                         'check the [resonance_tester] output path'
+                         % (pattern, capture_span(newest) if newest else 0.0, min_span_sec))
 
 
 def welch_psd(path: str) -> 'tuple[np.ndarray, np.ndarray]':
