@@ -136,3 +136,12 @@ def test_tune_reports_the_outcome_on_screen(tmp_path, monkeypatch):
     with pytest.raises(SystemExit, match='no clear resonance peak'):
         tune.run_tune(tune_args())
     assert finals and finals[-1].startswith('Tune FAILED:')
+
+
+def test_improvement_note_formats_the_quieter_factor():
+    from chopper_autotune.tune import improvement_note
+    assert improvement_note({'improvement': 1.85}) == ' -46%'
+    assert improvement_note({'improvement': 1.0}) == ''      # nothing won
+    assert improvement_note({'improvement': 1.003}) == ''     # a statistical tie is not -0%
+    assert improvement_note({'improvement': 0.9}) == ''      # defaults measured quieter
+    assert improvement_note({}) == ''                        # reference never measured
