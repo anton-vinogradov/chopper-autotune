@@ -352,7 +352,7 @@ def exclude_ambient(tones: 'list[tuple[float, float]]',
     if not ambient:
         return tones
     return [t for t in tones
-            if all(abs(t[0] - a) > max(6.0, 0.02 * a) for a, _ in ambient)]
+            if all(abs(t[0] - a) > max(6.0, 0.02 * a) for a, *_ in ambient)]
 
 
 def pluck_tones(samples: np.ndarray, band: 'tuple[float, float]' = PLUCK_BAND,
@@ -474,7 +474,7 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
     _, quiet = capture_stream(hw, 'G4 P3000', 2.8)
     ambient = pluck_tones(quiet, rot=rot)
     if ambient:
-        print('   ambient lines excluded: %s' % ', '.join('%.0f Hz' % f for f, _ in ambient))
+        print('   ambient lines excluded: %s' % ', '.join('%.0f Hz' % f for f, *_ in ambient))
 
     def agreeing(seen: 'list[float]', new: float, tol: float = 0.02) -> 'float | None':
         """The match for `new` among earlier tries, within tol — repeatability is the

@@ -261,3 +261,11 @@ def test_axis_direction_pca_separates_a_45_degree_mount():
     assert abs(float(np.dot(ex, ey))) < 0.1          # orthogonal, as they truly are
     rms = lambda a: np.sqrt((a ** 2).mean(axis=0)) / np.linalg.norm(np.sqrt((a ** 2).mean(axis=0)))
     assert abs(float(np.dot(rms(x_jog), rms(y_jog)))) > 0.9   # the bug PCA fixes
+
+
+def test_exclude_ambient_handles_polarized_tuples():
+    from chopper_autotune.belts import exclude_ambient
+    tones = [(285.0, 150.0, 0.9, 0.1), (144.0, 90.0, 0.2, 0.8)]
+    ambient = [(285.5, 40.0, 0.5, 0.5)]                 # 4-tuples on both sides
+    left = exclude_ambient(tones, ambient)
+    assert [t[0] for t in left] == [144.0]
