@@ -389,17 +389,25 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
     span has defined ends) and are released at the end: the user's next move is a
     tensioner screw, and holding motors would fight it."""
     from .collect import capture_stream
-    print('Pluck test: on the display cue, pluck the LONGEST free span of each belt (across '
-          'the front on most CoreXY) mid-span, like a guitar string — pull ~5 mm sideways, '
-          'release sharply. Pluck HARD; the same span on both belts. Each belt needs two '
-          'agreeing plucks.')
+    print('Pluck test: the head parks at the REAR so the side spans are at their longest. '
+          'On the display cue, pluck the LONGEST free span of each belt (a side span on '
+          'small printers, the front span on big ones) mid-span, like a guitar string — '
+          'pull ~5 mm sideways, release sharply. Pluck HARD; equal spans for both belts. '
+          'Each belt needs two agreeing plucks.')
     if args.dry_run:
         return 0
     refuse_if_printing(kl)
     screen = Screen(kl, hw.display)
     kl.subscribe_accel(hw.accel_chip)
-    cx, cy = hw.center
-    kl.gcode('G28 X Y\nG90\nG1 X%.1f Y%.1f F6000\nM400' % (cx, cy))
+    # park at the REAR, X centered (user idea, field-born on a 120 mm V0): the side
+    # spans between the front idlers and the gantry are then at their longest — twice
+    # the center-parked length. f ~ 1/L, but the win is amplitude and ring time: a
+    # longer span is softer at mid-point and decays slower, which is exactly what a
+    # short stiff belt lacked. Left/right side spans stay equal (X centered), so the
+    # A-vs-B comparison stays honest; the front span is unchanged for big machines.
+    cx, _ = hw.center
+    rear_y = float(kl.settings()['stepper_y']['position_max']) - 3.0
+    kl.gcode('G28 X Y\nG90\nG1 X%.1f Y%.1f F6000\nM400' % (cx, rear_y))
 
     def cue(text):
         screen.update(text, force=True)
