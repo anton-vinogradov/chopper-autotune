@@ -130,6 +130,21 @@ def run_rung(kl: Klippy, board, motor: str, current: float, configured: float,
     kl.gcode('SET_TMC_CURRENT STEPPER=stepper_%s CURRENT=%.2f' % (motor, configured))
 
 
+def unify_recommendation(recommended: 'dict[str, float]', configured: 'dict[str, float]',
+                         coupled: bool, per_motor: bool) -> 'dict[str, float]':
+    """On coupled XY both motors get the MAX of the two recommendations: they share
+    one kinematics, and their measured threshold gap is mechanical drag — which
+    drifts with tension and wear (measured: a per-motor 0.60 A hit a speed ceiling
+    its twin at 0.95 A did not). NEVER above each motor's own configured
+    run_current though: the config is the motor's rating boundary, and the A/B
+    motors are not guaranteed to be the same part. Cartesian axes keep per-motor
+    values (the X and Y motors often ARE different parts)."""
+    if per_motor or not coupled or len(recommended) < 2:
+        return recommended
+    top = max(recommended.values())
+    return {m: min(top, configured[m]) for m in recommended}
+
+
 def run_current_tune(args) -> int:
     kl = Klippy(find_socket(args.socket)).connect()
     try:
@@ -206,6 +221,14 @@ def current_tune(kl: Klippy, args) -> int:
                                    % (m, configured[m])) for m in motors],
             lambda: kl.gcode('M204 S%.0f\nG28 X Y' % board.max_accel))
 
+    unified = unify_recommendation(recommended, configured, coupled_xy(board.kinematics),
+                                   args.per_motor)
+    if unified != recommended:
+        print('\nCoupled-XY drive: both motors get the max of the recommendations '
+              '(%.2f A, capped by each motor\'s configured current) — shared '
+              'kinematics, and the threshold gap is mechanical drag that drifts. '
+              'PER_MOTOR=1 keeps the measured split.' % max(unified.values()))
+        recommended = unified
     save_json(STATE, {motor_label(m): {'threshold': thresholds[m], 'recommended': recommended[m],
                                        'margin': args.margin} for m in motors},
               merge=True)                              # the panel's Results shows these
