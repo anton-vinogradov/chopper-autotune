@@ -95,3 +95,33 @@ def test_await_flushed_demands_span_and_settled_size(tmp_path):
     # the same file against its true duration -> accepted
     assert await_flushed(str(tmp_path / '*-v060.csv'), min_span_sec=1.0,
                          timeout=5.0, poll=0.05) == str(csv)
+
+
+def test_report_winner_reports_improvement_vs_defaults(tmp_path, monkeypatch, capsys):
+    import json
+    from types import SimpleNamespace
+
+    from chopper_autotune import dataset as dataset_mod
+    from chopper_autotune import tmc
+    from chopper_autotune.collect import report_winner
+    from chopper_autotune.dataset import Dataset
+
+    monkeypatch.setattr(dataset_mod, 'RESULTS_HOME', tmp_path)
+    ds = Dataset.create(tmp_path / 'ds', {'mode': 'test'})
+    for combo, magnitude in ((tmc.KLIPPER_DEFAULT, 2000.0), (tmc.Chopper(0, 2, 4, 7), 1000.0)):
+        for direction in (1, -1):
+            ds.append({'id': '%s_%d' % (combo.label(), direction), 'kind': 'move',
+                       'status': 'ok', **combo.fields(), 'tpfd': None,
+                       'score': {'median_magnitude': magnitude, 'clicks': 0}})
+
+    finals = []
+    hw = SimpleNamespace(driver=tmc.DRIVERS['2209'], stepper='stepper_x')
+    args = SimpleNamespace(trim=0.1, audible_weight=0.25)
+    screen = SimpleNamespace(final=finals.append)
+    winner = report_winner(hw, ds, args, screen, top=5)
+
+    assert winner['chopper'] == tmc.Chopper(0, 2, 4, 7)
+    assert ds.manifest()['improvement'] == 2.0
+    assert 'less vibration' in finals[0]                 # the display says what it bought
+    state = json.loads((tmp_path / 'state.json').read_text())
+    assert state['x'] == {'regs': '0/2/4/7', 'quieter': 2.0}   # the panel column fills

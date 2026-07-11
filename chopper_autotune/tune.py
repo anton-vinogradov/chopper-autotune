@@ -63,6 +63,15 @@ def winner_of(root: str, audible_weight: float) -> 'tuple[dict, tmc.Chopper]':
     return manifest, ranked[0]['chopper']
 
 
+def improvement_note(manifest: dict) -> str:
+    """' -46%' when the run measured the winner quieter than Klipper defaults; ''
+    when the reference was not measured or did not lose."""
+    quieter = manifest.get('improvement') or 0
+    if quieter <= 1:
+        return ''
+    return ' -%d%%' % round((1 - 1 / quieter) * 100)
+
+
 def run_tune(args) -> int:
     axes = ['x', 'y'] if args.axis == 'xy' else [args.axis]
     kl = Klippy(find_socket(args.socket)).connect()
@@ -96,8 +105,8 @@ def run_tune(args) -> int:
         # say how it ended (popup included) while the connection is still alive
         if not args.dry_run and winners:
             labels = ' · '.join(
-                '%s %s' % (motor_label(manifest['stepper'].rsplit('_', 1)[-1]),
-                           compact_label(combo))
+                '%s %s%s' % (motor_label(manifest['stepper'].rsplit('_', 1)[-1]),
+                             compact_label(combo), improvement_note(manifest))
                 for manifest, combo in winners)
             screen.final('Tune done: %s%s' % (labels, ' — saving' if args.save
                                               else ' — tap Save to persist'))
@@ -113,6 +122,9 @@ def run_tune(args) -> int:
     print('\n=== Summary ===')
     for manifest, combo in winners:
         print(tmc.cfg_snippet(tmc.DRIVERS[manifest['driver']], manifest['stepper'], combo))
+        if manifest.get('improvement'):
+            print('# %.1fx less vibration than Klipper defaults\n'
+                  % manifest['improvement'])
         print()
     if args.save:
         from .analyze import run_save

@@ -502,9 +502,23 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
     # record the recommendation: save/tune must persist THIS combo, not whatever
     # unvalidated one floats to the top of a later full re-rank
     ds.update_manifest(winner=winner['chopper'].fields())
+    finale = 'Chopper: %s' % winner['chopper'].label()
+    magnitudes = {entry['chopper']: entry['magnitude'] for entry in ranked}
+    reference = magnitudes.get(tmc.KLIPPER_DEFAULT)
+    if reference and winner['chopper'] != tmc.KLIPPER_DEFAULT:
+        # the run measured Klipper defaults too, so it can say what the tuning bought —
+        # same-session numbers, the panel's vibration column fills without a Show run
+        quieter = reference / winner['magnitude']
+        ds.update_manifest(improvement=round(quieter, 2))
+        print('\nvs Klipper defaults %s: %.1fx less vibration (%.0f -> %.0f)'
+              % (tmc.KLIPPER_DEFAULT.label(), quieter, reference, winner['magnitude']))
+        from .demo import write_state
+        write_state(hw.stepper.rsplit('_', 1)[-1], winner['chopper'], quieter)
+        if quieter > 1:
+            finale += ' — %d%% less vibration' % round((1 - 1 / quieter) * 100)
     print('\nRecommended for printer.cfg:\n')
     print(tmc.cfg_snippet(hw.driver, hw.stepper, winner['chopper']))
-    screen.final('Chopper: %s' % winner['chopper'].label())
+    screen.final(finale)
     return winner
 
 
@@ -624,6 +638,12 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
     print('Descent best %s; validating top %d with extra runs' % (best.label(), len(finalists)))
     for combo in finalists:
         measure_candidate(combo, VALIDATE_EXTRA_ITERATIONS, first_iteration=args.iterations)
+
+    if tmc.KLIPPER_DEFAULT not in history:
+        # the improvement report needs the stock reference; the descent's spanning
+        # seeds usually visit it, this covers the runs where they did not (~10 s)
+        print('Measuring the Klipper-default reference for the improvement report')
+        measure_candidate(tmc.KLIPPER_DEFAULT, args.iterations)
 
     report_winner(hw, ds, args, screen, 10, trusted=set(finalists))
     return stats['ok'], stats['failed']
