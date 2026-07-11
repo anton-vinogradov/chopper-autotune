@@ -65,3 +65,21 @@ def test_save_json_merges_and_survives_garbage(tmp_path):
     save_json(path, {'D': 4}, merge=True)           # and merge over garbage still works
     assert load_json(path) == {'D': 4}
     assert not list(tmp_path.glob('.*.tmp'))        # atomic write leaves no droppings
+
+
+def test_store_raw_is_backgrounded_and_flush_lands_it(tmp_path):
+    from chopper_autotune.dataset import Dataset
+    ds = Dataset.create(tmp_path / 'ds', {'mode': 'test'})
+    rel = ds.store_raw_samples('m9', [[0.1, 1, 2, 3]])
+    assert rel == 'raw/m9.csv.gz'                   # the path is known synchronously
+    ds.flush_raw()
+    assert (ds.root / rel).exists()
+
+
+def test_store_raw_failure_warns_instead_of_killing_the_run(tmp_path, capsys):
+    from chopper_autotune.dataset import Dataset
+    ds = Dataset.create(tmp_path / 'ds', {'mode': 'test'})
+    ds.raw_dir.rmdir()                              # nowhere to write
+    ds.store_raw_samples('m1', [[0.1, 1, 2, 3]])
+    ds.flush_raw()
+    assert 'not stored' in capsys.readouterr().out
