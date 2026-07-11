@@ -68,3 +68,32 @@ def test_envelope_state_merges_per_motor(tmp_path, monkeypatch):
     saved = json.load(open(envelope_mod.STATE))
     assert saved['A'] == {'speed': '350+', 'accel': '40k+'}            # A survives
     assert saved['B'] == {'speed': '300', 'accel': '30k'}
+
+
+def test_recommend_limits_coupled_xy_and_shaper_cap():
+    from chopper_autotune.envelope import recommend_limits
+    rec = recommend_limits({'A': 350, 'B': 350}, {'A': 40000, 'B': 40000}, coupled=True,
+                           shaper={'x': ('ei', 106.8, 20770), 'y': ('mzv', 50.0, 7365)})
+    assert rec['max_velocity_axis'] == 269          # 350 / 1.3: both belts run at head speed
+    assert rec['max_velocity'] == 190               # /sqrt(2): a 45deg diagonal runs one belt faster
+    assert rec['max_accel'] == 7300                 # the Y shaper wins over motors (30769) and X
+    assert 'Y shaper' in rec['limited_by']
+
+
+def test_recommend_limits_without_shaper_and_cartesian():
+    from chopper_autotune.envelope import recommend_limits
+    rec = recommend_limits({'A': 200}, {'A': 13000}, coupled=False, shaper={})
+    assert rec['max_velocity'] == rec['max_velocity_axis'] == 153
+    assert rec['max_accel'] == 10000 and rec['limited_by'] == 'motor torque'
+
+
+def test_recommend_limits_refuses_a_first_rung_skip():
+    from chopper_autotune.envelope import recommend_limits
+    assert recommend_limits({'A': None, 'B': 350}, {'A': 40000, 'B': 40000},
+                            coupled=True, shaper={}) is None
+
+
+def test_shaper_accels_absent_klipper_is_quiet(monkeypatch):
+    from chopper_autotune import envelope as envelope_mod
+    monkeypatch.setattr(envelope_mod, 'KLIPPY_DIR', '/nonexistent')
+    assert envelope_mod.shaper_accels({'input_shaper': {'shaper_type_x': 'ei'}}) == {}

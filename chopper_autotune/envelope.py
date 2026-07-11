@@ -33,6 +33,58 @@ def save_state(results: 'dict[str, dict]'):
     save_json(STATE, results, merge=True)
 
 MARGIN = 1.3                                  # recommend ceiling / margin
+KLIPPY_DIR = os.path.expanduser('~/klipper/klippy')
+
+
+def shaper_accels(settings) -> 'dict[str, tuple[str, float, int]]':
+    """Klipper's own suggested max_accel per axis for the configured [input_shaper],
+    computed by importing the very shaper code this printer runs — no reimplemented
+    formula to drift (and none to copy: klippy is GPL, this repo is not)."""
+    shaper = settings.get('input_shaper')
+    if not shaper or not os.path.isdir(KLIPPY_DIR):
+        return {}
+    try:
+        import sys
+        if KLIPPY_DIR not in sys.path:
+            sys.path.insert(0, KLIPPY_DIR)
+        from extras import shaper_calibrate, shaper_defs
+        helper = shaper_calibrate.ShaperCalibrate(printer=None)
+        scv = float(settings.get('printer', {}).get('square_corner_velocity', 5.0))
+        out = {}
+        for axis in ('x', 'y'):
+            name = shaper.get('shaper_type_%s' % axis) or shaper.get('shaper_type')
+            freq = float(shaper.get('shaper_freq_%s' % axis) or 0)
+            cfg = next((s for s in shaper_defs.INPUT_SHAPERS if s.name == name), None)
+            if cfg and freq:
+                impulses = cfg.init_func(freq, shaper_defs.DEFAULT_DAMPING_RATIO)
+                out[axis] = (name, freq, int(helper.find_shaper_max_accel(impulses, scv)))
+        return out
+    except Exception as why:                       # any klippy-version surprise: no cap,
+        print('note: input-shaper cap unavailable (%s)' % why)
+        return {}                                  # the motor numbers still stand
+
+
+def recommend_limits(speed_holds: 'dict[str, float]', accel_holds: 'dict[str, float]',
+                     coupled: bool, shaper: 'dict[str, tuple[str, float, int]]',
+                     margin: float = MARGIN) -> 'dict | None':
+    """[printer] numbers from everything measured: velocity from the slowest motor's
+    belt ceiling (on coupled XY a pure X/Y move runs BOTH belts at head speed, and a 45
+    degree diagonal runs one belt sqrt(2) faster — the bulletproof number covers that);
+    accel = min(motor ceiling, the input shaper's own suggestion) — ringing usually wins."""
+    if not speed_holds or None in speed_holds.values() \
+            or not accel_holds or None in accel_holds.values():
+        return None                                # skipped at the first rung: fix that first
+    belt = min(speed_holds.values())
+    vel_axis = belt / margin
+    vel = vel_axis / math.sqrt(2) if coupled else vel_axis
+    caps = {'motor torque': min(accel_holds.values()) / margin}
+    for axis, (name, freq, accel) in shaper.items():
+        caps['%s shaper (%s@%.1f)' % (axis.upper(), name, freq)] = accel
+    limited_by = min(caps, key=caps.get)
+    return {'max_velocity': int(vel), 'max_velocity_axis': int(vel_axis),
+            'max_accel': int(caps[limited_by] // 100 * 100), 'limited_by': limited_by}
+
+
 STRESS_REPS = 3
 SKIP_HEAD_MM = 0.6                            # head offset that counts as a lost step (~0.8 mm quantum)
 
@@ -124,6 +176,7 @@ def envelope(kl: Klippy, args) -> int:
     refuse_if_printing(kl)
     screen = Screen(kl, board.display)
     achieved = {}
+    speed_holds, accel_holds = {}, {}
     try:
         kl.gcode('G28 X Y\nG90')
         for m in motors:
@@ -163,14 +216,39 @@ def envelope(kl: Klippy, args) -> int:
             print(' => accel: %s' % verdict(a_hold, a_skip, 'mm/s2'))
             achieved[label] = {'speed': ceiling_label(s_hold, s_skip),
                                'accel': ceiling_label(a_hold, a_skip, kilo=True)}
+            speed_holds[label], accel_holds[label] = s_hold, a_hold
     finally:
         run_restore(lambda: kl.gcode('M204 S%.0f\nG28 X Y' % board.max_accel))
 
+    finale = ''
     if achieved:
         save_state(achieved)                        # the panel's Results shows these
-        screen.final('Envelope: ' + ' · '.join(
+        finale = 'Envelope: ' + ' · '.join(
             '%s %s mm/s, %s acc' % (label, values['speed'], values['accel'])
-            for label, values in achieved.items()))
+            for label, values in achieved.items())
+
+    recommendation, shaper_caps = None, {}
+    if args.axis == 'xy':                           # both motors measured in THIS run
+        from .collect import coupled_xy
+        shaper_caps = shaper_accels(settings)
+        recommendation = recommend_limits(speed_holds, accel_holds,
+                                          coupled_xy(board.kinematics), shaper_caps)
+    if recommendation:
+        save_state({'recommend': recommendation})   # Results carries the numbers
+        print('\n=== Recommended [printer] limits ===')
+        print('max_velocity: %d   # slowest belt holds %g+ mm/s, /%.1f margin%s'
+              % (recommendation['max_velocity'], min(speed_holds.values()), MARGIN,
+                 ', /sqrt(2) for coupled-XY diagonals (%d for pure X/Y moves)'
+                 % recommendation['max_velocity_axis']
+                 if recommendation['max_velocity'] != recommendation['max_velocity_axis'] else ''))
+        print('max_accel: %d     # limited by %s'
+              % (recommendation['max_accel'], recommendation['limited_by']))
+        if not shaper_caps:
+            print('(no [input_shaper] found — run SHAPER_CALIBRATE for the ringing-side cap)')
+        finale += ' · rec <=%d mm/s, <=%.1fk acc' % (recommendation['max_velocity'],
+                                                     recommendation['max_accel'] / 1000)
+    if finale:
+        screen.final(finale)
     print('\nThis is the motor (torque) limit only. For which speeds are quiet vs ringy, '
           'run CHOPPER_FIND_SPEED; and the real top-speed limit is usually the hotend flow '
           'rate, which is not a motion measurement.')
