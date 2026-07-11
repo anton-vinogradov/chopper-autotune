@@ -419,8 +419,16 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
     if ambient:
         print('   ambient lines excluded: %s' % ', '.join('%.0f Hz' % f for f, _ in ambient))
 
+    def agreeing(seen: 'list[float]', new: float, tol: float = 0.02) -> 'float | None':
+        """The match for `new` among earlier tries, within tol — repeatability is the
+        control, and it need not be consecutive (mixed excitations between plucks)."""
+        for old in seen:
+            if abs(new - old) <= tol * new:
+                return old
+        return None
+
     def measure_belt(label):
-        agreed = []
+        paired_seen, lone_seen = [], []
         for attempt in range(1, args.plucks + 1):
             cue('Ready: belt %s in 3s' % label)
             kl.gcode('G4 P3000')
@@ -432,18 +440,28 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
                 cue('Belt %s: nothing heard — again' % label)
                 print('   belt %s try %d: nothing heard' % (label, attempt))
                 continue
-            note = 'f=%.1f Hz %s  [%s]' % (freq, 'paired f+2f' if paired else
-                                           'UNPAIRED — may be a harmonic, pluck harder',
+            note = 'f=%.1f Hz %s  [%s]' % (freq, 'paired f+2f' if paired else 'unpaired',
                                            ', '.join('%.0f(x%.0f)' % t for t in tones[:3]))
             print('   belt %s try %d: %s' % (label, attempt, note))
-            if not paired:
-                cue('Belt %s: unclear tone — pluck HARDER' % label)
+            if paired:
+                match = agreeing(paired_seen, freq)
+                if match is not None:
+                    print('   belt %s: %.1f / %.1f Hz agree — accepted' % (label, match, freq))
+                    return (match + freq) / 2
+                paired_seen.append(freq)
+                cue('Belt %s heard %.0f Hz — once more' % (label, freq))
                 continue
-            agreed.append(freq)
-            if len(agreed) >= 2 and abs(agreed[-1] - agreed[-2]) <= 0.02 * agreed[-1]:
-                print('   belt %s: %.1f / %.1f Hz agree — accepted' % (label, agreed[-2], agreed[-1]))
-                return (agreed[-1] + agreed[-2]) / 2
-            cue('Belt %s heard %.0f Hz — once more' % (label, freq))
+            # no (f, 2f) pair — the 2f pump is geometry-dependent (weak on the side spans
+            # a small printer plucks, field-measured on a 120 mm V0). Repeatability is
+            # then the control: the same lone line twice within 2% is a fundamental, a
+            # wandering one is a harmonic of a pluck too weak to show its base.
+            match = agreeing(lone_seen, freq)
+            if match is not None:
+                print('   belt %s: %.1f / %.1f Hz agree (unpaired) — accepted by '
+                      'repeatability' % (label, match, freq))
+                return (match + freq) / 2
+            lone_seen.append(freq)
+            cue('Belt %s heard %.0f Hz (unpaired) — once more' % (label, freq))
         cue('FAILED: belt %s gave no stable tone' % label)         # the display must say why
         raise SystemExit('belt %s: no two agreeing plucks in %d tries — pluck harder, '
                          'mid-span, and re-run' % (label, args.plucks))
