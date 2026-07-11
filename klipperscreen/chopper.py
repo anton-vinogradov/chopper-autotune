@@ -36,6 +36,22 @@ class Panel(ScreenPanel):
         KlipperScreen itself was restarted)."""
         return getattr(self._screen, "printer", None) or self._printer
 
+    def sensorless(self):
+        """virtual_endstop = StallGuard homing: the endstop referee (Current/Envelope)
+        physically cannot work — better to say so BEFORE the button is pressed."""
+        for stepper in ("stepper_x", "stepper_y"):
+            section = self.printer.get_config_section(stepper) or {}
+            if "virtual_endstop" in str(section.get("endstop_pin", "")):
+                return True
+        return False
+
+    def explain_unavailable(self, widget, what):
+        self.status.set_markup("<span size='large'>" + GLib.markup_escape_text(_(
+            "%s needs a physical endstop — this machine homes sensorless (StallGuard), "
+            "and the skip referee cannot creep into a virtual switch. The plan here is "
+            "shorter: tune once (no current step to adapt to), then 5 Extruder."
+        ) % what) + "</span>")
+
     def activate(self):
         """Called whenever the panel is (re)shown — recompute the marks and the idle
         table from the live config, not from whatever was true when it was built."""
@@ -76,12 +92,18 @@ class Panel(ScreenPanel):
              _("Map vibration vs speed on the current registers (~2 min, motor A)? Shows which speeds ring (VFAs) and which stay quiet; the peaks land in Results.")),
         ]
 
+        referee_tools = (_("3 Current"), _("Envelope"))
+        no_referee = self.sensorless()
         grid = Gtk.Grid(column_homogeneous=True, row_homogeneous=True, vexpand=False)
         self.buttons = {}
         for index, (icon, label, style, command, confirm) in enumerate(actions):
-            button = self._gtk.Button(icon, label, style)
-            button.connect("clicked", self.run, command, confirm)
-            self.buttons[label] = button
+            if no_referee and label in referee_tools:
+                button = self._gtk.Button(icon, label + " \u2717", style)
+                button.connect("clicked", self.explain_unavailable, label)
+            else:
+                button = self._gtk.Button(icon, label, style)
+                button.connect("clicked", self.run, command, confirm)
+                self.buttons[label] = button
             grid.attach(button, index % 4, index // 4, 1, 1)
         # local buttons (no printer action): Results shows everything measured so far
         restore = self._gtk.Button("refresh", _("Restore"), "color2")
