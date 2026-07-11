@@ -36,7 +36,11 @@ MARGIN = 1.3                                  # recommend ceiling / margin
 KLIPPY_DIR = os.path.expanduser('~/klipper/klippy')
 
 
-def shaper_accels(settings) -> 'dict[str, tuple[str, float, int]]':
+CRISP_SMOOTHING = 0.05      # Klipper docs' "less smoothing" band; their default target
+                            # (0.12 mm, hardcoded in find_shaper_max_accel) = plain good
+
+
+def shaper_accels(settings) -> 'dict[str, tuple[str, float, int, int]]':
     """Klipper's own suggested max_accel per axis for the configured [input_shaper],
     computed by importing the very shaper code this printer runs — no reimplemented
     formula to drift (and none to copy: klippy is GPL, this repo is not)."""
@@ -57,7 +61,14 @@ def shaper_accels(settings) -> 'dict[str, tuple[str, float, int]]':
             cfg = next((s for s in shaper_defs.INPUT_SHAPERS if s.name == name), None)
             if cfg and freq:
                 impulses = cfg.init_func(freq, shaper_defs.DEFAULT_DAMPING_RATIO)
-                out[axis] = (name, freq, int(helper.find_shaper_max_accel(impulses, scv)))
+                good = int(helper.find_shaper_max_accel(impulses, scv))
+                try:
+                    crisp = int(helper._bisect(
+                        lambda accel: helper._get_shaper_smoothing(impulses, accel, scv)
+                        <= CRISP_SMOOTHING))
+                except AttributeError:              # private API moved: keep the good number
+                    crisp = None
+                out[axis] = (name, freq, good, crisp)
         return out
     except Exception as why:                       # any klippy-version surprise: no cap,
         print('note: input-shaper cap unavailable (%s)' % why)
@@ -82,12 +93,15 @@ def recommend_limits(speed_holds: 'dict[str, float]', accel_holds: 'dict[str, fl
     belt = min(speed_holds.values())
     vel = belt / math.sqrt(2) if coupled else belt
     machine_accel = int(min(accel_holds.values()) / margin // 100 * 100)
-    print_accel = min((accel for _, _, accel in shaper.values()), default=None)
+    print_accel = min((good for _, _, good, _ in shaper.values()), default=None)
+    crisp_accels = [crisp for _, _, _, crisp in shaper.values() if crisp]
+    crisp_accel = min(crisp_accels) if crisp_accels else None
     slowest_shaper = min(shaper, key=lambda a: shaper[a][2]) if shaper else None
     return {'max_velocity': int(vel), 'max_velocity_margin': int(vel / margin),
             'belt_ceiling': belt,
             'max_accel': machine_accel,
             'print_accel': int(print_accel // 100 * 100) if print_accel else None,
+            'print_accel_crisp': int(crisp_accel // 100 * 100) if crisp_accel else None,
             'limited_by': ('%s shaper (%s@%.1f)' % (slowest_shaper.upper(),
                                                     *shaper[slowest_shaper][:2])
                            if slowest_shaper else None),
@@ -267,9 +281,12 @@ def envelope(kl: Klippy, args) -> int:
                  verdict_now(rec['now_accel'], rec['max_accel'],
                              over='above the motor margin'), MARGIN))
         if rec['print_accel']:
-            print('slicer print accel: <=%d\n    %s smoothing passes Klipper\'s 0.12 mm'
-                  ' guidance above this — print-move quality only'
-                  % (rec['print_accel'], rec['limited_by']))
+            crisp = (' (crisp detail: <=%d, smoothing under %.2f mm)'
+                     % (rec['print_accel_crisp'], CRISP_SMOOTHING)
+                     if rec.get('print_accel_crisp') else '')
+            print('slicer print accel: <=%d for good quality%s\n    %s smoothing passes'
+                  ' Klipper\'s 0.12 mm guidance above this — print-move quality only'
+                  % (rec['print_accel'], crisp, rec['limited_by']))
         else:
             print('(no [input_shaper] found — run SHAPER_CALIBRATE for the print-accel guidance)')
         finale += ' · set vel<=%d acc<=%dk print<=%.1fk' % (
