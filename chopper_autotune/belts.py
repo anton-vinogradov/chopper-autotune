@@ -412,16 +412,22 @@ def machine_axes(hw, kl) -> 'tuple | None':
     from .collect import capture_stream
 
     def direction(letter):
-        _, s = capture_stream(hw, 'G91\nG1 %s-5 F1800\nG1 %s5 F1800\nG90\nM400'
-                              % (letter, letter), 1.2)
+        # a slow multi-cycle shuttle at low accel, NOT a sharp jog: a 2 ms jerk mostly
+        # excites the frame's ring, and raw PCA then reads the ring's direction for
+        # BOTH axes (field: 'ambiguous' persisted after the sign fix). The commanded
+        # shuttle lives at ~3 Hz — low-pass it out from under the 85+ Hz ring.
+        shuttle = 'M204 S800\nG91\n' + 'G1 %s-3 F1200\nG1 %s3 F1200\n' % (letter, letter) * 3 \
+                  + 'G90\nM400'
+        _, s = capture_stream(hw, shuttle, 1.8)
+        fs = 1.0 / np.median(np.diff(s[:, 0]))
         acc = s[:, 1:4] - s[:, 1:4].mean(axis=0)
-        # the first principal component, not per-axis RMS: RMS drops the sign, and a
-        # chip mounted at 45 deg to the machine then reads X and Y jogs as the SAME
-        # direction (field: 'Axis calibration: ambiguous' on an honestly mounted V0)
-        _, vecs = np.linalg.eigh(np.cov(acc.T))
+        kernel = np.ones(max(1, int(fs * 0.04))) / max(1, int(fs * 0.04))
+        low = np.stack([np.convolve(acc[:, i], kernel, mode='same') for i in range(3)], axis=1)
+        _, vecs = np.linalg.eigh(np.cov(low.T))
         return vecs[:, -1]
 
     ex, ey = direction('X'), direction('Y')
+    kl.gcode('M204 S%.0f' % hw.max_accel)           # the shuttles lowered it
     if abs(float(np.dot(ex, ey))) > 0.5:            # jogs read alike: mounting is odd,
         return None                                 # fall back to unpolarized analysis
     return ex, ey
@@ -461,20 +467,25 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
     rear_y = float(kl.settings()['stepper_y']['position_max']) - 3.0
     kl.gcode('G28 X Y\nG90\nG1 X%.1f Y%.1f F6000\nM400' % (cx, rear_y))
 
-    rot = machine_axes(hw, kl)
-    print('Axis calibration: %s' % ('ok — lines will carry polarization (along-belt = '
-                                    'tension pump at 2f)' if rot else
-                                    'ambiguous — falling back to unpolarized analysis'))
 
     def cue(text):
         screen.update(text, force=True)
         print('>> %s' % text, flush=True)
 
     print('Capturing the quiet reference (do not touch)...')
+    kl.gcode('G4 P1500')                            # let the parking move's ring die out
     _, quiet = capture_stream(hw, 'G4 P3000', 2.8)
-    ambient = pluck_tones(quiet, rot=rot)
+    ambient = pluck_tones(quiet)
     if ambient:
         print('   ambient lines excluded: %s' % ', '.join('%.0f Hz' % f for f, *_ in ambient))
+
+    # the calibration shuttles ring the belts, so they run AFTER the quiet reference —
+    # a reference taken after them catches the belt's own lines and then subtracts the
+    # very signal the plucks are for (field: 321/361 'ambient' = the 4f family)
+    rot = machine_axes(hw, kl)
+    print('Axis calibration: %s' % ('ok — lines will carry polarization (along-belt = '
+                                    'tension pump at 2f)' if rot else
+                                    'ambiguous — falling back to unpolarized analysis'))
 
     def agreeing(seen: 'list[float]', new: float, tol: float = 0.02) -> 'float | None':
         """The match for `new` among earlier tries, within tol — repeatability is the
