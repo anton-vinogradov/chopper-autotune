@@ -85,8 +85,12 @@ class Panel(ScreenPanel):
         # clipping the register table off the bottom of the screen
         scroll = Gtk.ScrolledWindow(vexpand=True)
         scroll.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
-        scroll.add(self.status)
+        tappable = Gtk.EventBox()                   # the full-screen results close on tap
+        tappable.connect("button-release-event", self.close_results)
+        tappable.add(self.status)
+        scroll.add(tappable)
 
+        self.grid = grid
         self.content.add(grid)
         self.content.add(scroll)
         self.content.show_all()
@@ -110,6 +114,11 @@ class Panel(ScreenPanel):
             self.show_status(data["display_status"]["message"])
 
     def show_status(self, message):
+        if getattr(self, "results_open", False):
+            if not (message and message.strip()):
+                return                              # stay on the results page while idle
+            self.results_open = False
+            self.grid.show()
         if message and message.strip():
             self.status.set_markup(f"<span size='large'>{GLib.markup_escape_text(message.strip())}</span>")
         else:
@@ -117,10 +126,22 @@ class Panel(ScreenPanel):
                 f"<span font_family='monospace' size='medium'>{GLib.markup_escape_text(self.register_table())}</span>")
 
     def show_results(self, widget=None):
-        # on-demand summary of everything measured so far; a later status update
-        # overwrites it, tapping Results brings it back
+        """Full-screen summary of everything measured so far: the report has outgrown
+        the strip under the buttons (registers + currents + skip thresholds + belts +
+        envelope + map), so hide the button grid and give the text the whole panel;
+        tapping the summary (or a fresh status update) brings the buttons back."""
+        self.grid.hide()
+        self.results_open = True
         self.status.set_markup(
-            f"<span font_family='monospace' size='medium'>{GLib.markup_escape_text(self.results_text())}</span>")
+            f"<span font_family='monospace' size='medium'>{GLib.markup_escape_text(self.results_text())}</span>"
+            + "\n<span size='small'>" + _("tap to close") + "</span>")
+
+    def close_results(self, *_args):
+        if getattr(self, "results_open", False):
+            self.results_open = False
+            self.grid.show()
+            self.show_status(self._printer.get_stat("display_status", "message"))
+        return False
 
     def results_text(self):
         lines = [self.register_table()]
