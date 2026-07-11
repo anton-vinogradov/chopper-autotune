@@ -14,7 +14,6 @@ not "how fast should I print?".
 """
 from __future__ import annotations
 
-import json
 import os
 import time
 from datetime import datetime
@@ -24,7 +23,7 @@ from . import __version__
 from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen,
                       default_dataset_root, detect_hardware, enter_spreadcycle, exit_spreadcycle,
                       make_parker, now, park, refuse_if_printing, run_restore)
-from .dataset import Dataset
+from .dataset import Dataset, save_json
 from .find_speed import (build_curve, build_speed_plan, find_peaks, find_valleys, run_sweep,
                          smooth, write_report)
 from .klippy import Klippy, find_socket
@@ -37,19 +36,7 @@ STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/map.json')
 
 def save_state(motor: str, peaks: 'list[int]', dips: 'list[int]', advice: 'str | None'):
     """Remember the map per motor so the panel's Results can show where it rings."""
-    try:
-        state = {}
-        try:
-            with open(STATE) as handle:
-                state = json.load(handle)
-        except (OSError, ValueError):
-            pass
-        state[motor] = {'peaks': peaks, 'dips': dips, 'advice': advice}
-        os.makedirs(os.path.dirname(STATE), exist_ok=True)
-        with open(STATE, 'w') as handle:
-            json.dump(state, handle)
-    except OSError:
-        pass
+    save_json(STATE, {motor: {'peaks': peaks, 'dips': dips, 'advice': advice}}, merge=True)
 
 
 def render_map(curve: 'list[tuple[int, float]]', peaks: 'list[int]',

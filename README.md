@@ -146,7 +146,7 @@ If you run [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen), `ins
 - **Save** — write the latest tuning results (both motors and the extruder's last winner) into the config in one restart, backup first;
 - **Show** — set the defaults, then the tuned registers, on **both** motors and do coordinated moves so you can *hear* the whole printer change; it reports the combined drop in vibration;
 - **Motor A** / **Motor B** — jog just that motor for a moment so you can see which physical motor and belt it is, then release the motors so you can reach in;
-- **Results** — an on-demand summary of everything measured so far: default → tuned registers per motor (A/B/E) with the vibration drop, run currents, the last belt-tension plucks, the achieved envelope ceilings (speed/acceleration; `350+` = held the whole tested range), and the resonance-map peaks/dips;
+- **Results** — an on-demand summary of everything measured so far: default → tuned registers per motor (A/B/E) with the vibration drop, run currents with the measured skip thresholds behind them, the last belt-tension plucks, the achieved envelope ceilings (speed/acceleration; `350+` = held the whole tested range), and the resonance-map peaks/dips;
 - **Map** — the resonance map for motor A (~2 min): which speeds ring (VFAs) vs stay quiet;
 - **Stop** — abort a running job; the tool restores the registers, heaters and homing before it exits.
 

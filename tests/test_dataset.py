@@ -50,3 +50,18 @@ def test_raw_storage_roundtrip(tmp_path):
     assert lines[0] == '#time,accel_x,accel_y,accel_z'
     assert lines[1] == '0.100000,1.000000,2.000000,3.000000'
     assert len(lines) == 3
+
+
+def test_save_json_merges_and_survives_garbage(tmp_path):
+    from chopper_autotune.dataset import load_json, save_json
+    path = tmp_path / 'state.json'
+    save_json(path, {'A': 1})
+    save_json(path, {'B': 2}, merge=True)
+    assert load_json(path) == {'A': 1, 'B': 2}
+    save_json(path, {'C': 3})                       # no merge: replaces
+    assert load_json(path) == {'C': 3}
+    path.write_text('{torn')                        # a torn file reads as empty, not a crash
+    assert load_json(path) == {}
+    save_json(path, {'D': 4}, merge=True)           # and merge over garbage still works
+    assert load_json(path) == {'D': 4}
+    assert not list(tmp_path.glob('.*.tmp'))        # atomic write leaves no droppings

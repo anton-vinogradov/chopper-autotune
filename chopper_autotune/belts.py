@@ -27,7 +27,6 @@ newtons, T = mu * (2 * L * f)^2.
 from __future__ import annotations
 
 import glob
-import json
 import os
 import time
 
@@ -35,6 +34,7 @@ import numpy as np
 
 from .collect import Screen, coupled_xy, detect_hardware, motor_label, refuse_if_printing, run_restore
 from .current import stress_vector
+from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
 
 SEGMENT = 1024              # Welch window; ~0.3 s at the ADXL's ~3.2 kHz -> ~3 Hz resolution
@@ -58,21 +58,11 @@ def gap_pct(freq_a: float, freq_b: float) -> float:
 
 
 def load_state(path: 'str | None' = None) -> 'dict | None':
-    try:
-        with open(path or STATE) as handle:
-            return json.load(handle)
-    except (OSError, ValueError):
-        return None
+    return load_json(path or STATE) or None
 
 
 def save_state(freq_a: float, freq_b: float, path: 'str | None' = None):
-    path = path or STATE
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, 'w') as handle:
-            json.dump({'A': freq_a, 'B': freq_b}, handle)
-    except OSError:
-        pass
+    save_json(path or STATE, {'A': freq_a, 'B': freq_b})
 
 
 def progress_message(freq_a: float, freq_b: float, prev: 'dict | None',

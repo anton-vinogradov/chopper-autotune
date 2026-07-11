@@ -12,12 +12,12 @@ heater is switched off on every exit path.
 """
 from __future__ import annotations
 
-import json
 import os
 import statistics
 
 from . import tmc
 from .collect import Screen, capture_stream, detect_hardware, refuse_if_printing, run_restore
+from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
 from .metrics import transients, vibration_score
 from .search import penalized_score
@@ -31,20 +31,11 @@ STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/extruder.json
 def save_winner_state(driver_name: str, winner: tmc.Chopper):
     """The extruder has no dataset like the axes do; remember the winner so SAVE_LAST=1
     can persist it later without re-running the whole heated tune."""
-    try:
-        os.makedirs(os.path.dirname(STATE), exist_ok=True)
-        with open(STATE, 'w') as handle:
-            json.dump({'driver': driver_name, 'fields': winner.fields()}, handle)
-    except OSError:
-        pass
+    save_json(STATE, {'driver': driver_name, 'fields': winner.fields()})
 
 
 def load_winner_state() -> 'dict | None':
-    try:
-        with open(STATE) as handle:
-            return json.load(handle)
-    except (OSError, ValueError):
-        return None
+    return load_json(STATE) or None
 
 
 def extruder_context(settings) -> 'tuple[tmc.Driver, str, dict, tuple | None, float]':
