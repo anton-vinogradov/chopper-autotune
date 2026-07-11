@@ -280,6 +280,23 @@ def envelope(kl: Klippy, args) -> int:
               % (rec['max_accel'],
                  verdict_now(rec['now_accel'], rec['max_accel'],
                              over='above the motor margin'), MARGIN))
+        from .resonance_map import STATE as MAP_STATE
+        from .dataset import load_json
+        vfa = load_json(MAP_STATE)
+        motors_map = {m: v for m, v in vfa.items() if isinstance(v, dict) and 'dips' in v}
+        if motors_map:
+            dips = sorted({s for v in motors_map.values() for s in v.get('dips', [])})
+            peaks = sorted({s for v in motors_map.values() for s in v.get('peaks', [])})
+            advice = '; '.join('%s' % v['advice'] for v in motors_map.values() if v.get('advice'))
+            print('slicer print speed: good quality = whatever the hotend flow allows (the '
+                  'belts hold %g+ mm/s, VFA banding is the only motion-side cost); crisp '
+                  'walls = cruise in the dips (%s), avoid the VFA peaks (%s)%s'
+                  % (rec['belt_ceiling'], ', '.join(map(str, dips)) or '?',
+                     ', '.join(map(str, peaks)) or '-', ' — %s' % advice if advice else ''))
+        else:
+            print('slicer print speed: good quality = whatever the hotend flow allows (the '
+                  'belts hold %g+ mm/s); for crisp walls run CHOPPER_MAP PRINT_SPEED=<yours> '
+                  '(which cruise speeds ring = VFA)' % rec['belt_ceiling'])
         if rec['print_accel']:
             crisp = (' (crisp detail: <=%d, smoothing under %.2f mm)'
                      % (rec['print_accel_crisp'], CRISP_SMOOTHING)
