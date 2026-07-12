@@ -70,6 +70,9 @@ class FakeKl:
         triggered = self.phys is not None and self.phys >= ENDSTOP_POS - self.slip
         return {'stepper_x': 'TRIGGERED' if triggered else 'open', 'stepper_y': 'open'}
 
+    def settings(self):
+        return {}                                  # no homing_override on this machine
+
 
 SETTINGS = {'stepper_x': {'position_endstop': ENDSTOP_POS, 'position_min': 0.0,
                           'position_max': ENDSTOP_POS}}
@@ -139,11 +142,109 @@ def test_unify_recommendation_maxes_coupled_twins_within_each_rating():
                                 coupled=True, per_motor=False) == {'x': 1.0, 'y': 0.8}
 
 
-def test_referee_refuses_sensorless_endstops():
-    import pytest
+SENSORLESS = {'stepper_x': {'endstop_pin': 'tmc2209_stepper_x:virtual_endstop',
+                            'homing_speed': 20.0, 'position_min': 0.0,
+                            'position_endstop': 120, 'position_max': 120}}
 
-    from chopper_autotune.current import Referee
-    settings = {'stepper_x': {'endstop_pin': 'tmc2209_stepper_x:virtual_endstop',
-                              'position_endstop': 120, 'position_max': 120}}
-    with pytest.raises(SystemExit, match='sensorless'):
-        Referee(None, 'x', settings, 60.0)
+
+def test_make_referee_picks_the_judge_by_endstop_kind():
+    from chopper_autotune.current import TimingReferee, make_referee
+    assert isinstance(make_referee(None, 'x', SENSORLESS, 60.0), TimingReferee)
+    kl = FakeKl()
+    assert isinstance(make_referee(kl, 'x', SETTINGS, 60.0), Referee)
+
+
+class FakeStopwatchKl:
+    """print_time pairs: each timed homing consumes two calls, the second advancing
+    the clock by the next scripted duration."""
+
+    def __init__(self, durations):
+        self.durations = list(durations)
+        self.clock = 0.0
+        self.calls = 0
+        self.scripts = []
+
+    def gcode(self, script):
+        self.scripts.append(script)
+
+    def settings(self):
+        return {}
+
+    def print_time(self):
+        self.calls += 1
+        if self.calls % 2 == 0:
+            self.clock += self.durations.pop(0)
+        return self.clock
+
+
+def test_timing_referee_reads_slip_from_homing_duration():
+    from chopper_autotune.current import TimingReferee
+    # warm-up 9.4 (discarded, the first wall seat runs long), then a steady 10.0s bias;
+    # the verdict's homings run 0.1s SHORT = the head sits 2mm closer to the wall
+    kl = FakeStopwatchKl([9.4, 10.0, 10.0, 10.0, 10.0, 9.9, 9.9])
+    ref = TimingReferee(kl, 'x', SENSORLESS, park_other=60.0)
+    ref.calibrate()
+    assert ref.bias == pytest.approx(10.0)
+    assert ref.slipped() == pytest.approx(2.0, abs=1e-6)
+    assert any(s.startswith('G28 X') for s in kl.scripts)
+
+
+def test_timing_referee_refuses_a_noisy_stopwatch():
+    from chopper_autotune.current import TimingReferee
+    # calibration rituals 0.3s apart = 6mm at homing_speed 20 — beyond TIMING_MAX_SPREAD
+    kl = FakeStopwatchKl([9.4, 10.0, 10.0, 10.3, 10.3])
+    with pytest.raises(SystemExit, match='too noisy'):
+        TimingReferee(kl, 'x', SENSORLESS, park_other=60.0).calibrate()
+
+
+def test_envelope_still_refuses_sensorless():
+    from chopper_autotune.current import sensorless_pin
+    assert sensorless_pin(SENSORLESS, 'x') == 'tmc2209_stepper_x:virtual_endstop'
+    assert sensorless_pin(SETTINGS, 'x') is None
+
+
+class FakeOverrideKl:
+    """A machine whose homing_override forces Z belief to set_position_z and then
+    hops the bed: undo_override_z must walk it back with a relative move."""
+
+    def __init__(self, spz, z_after):
+        self.spz = spz
+        self.z_after = z_after
+        self.scripts = []
+
+    def settings(self):
+        return {'homing_override': {'set_position_z': self.spz}}
+
+    def request(self, method, params=None):
+        assert method == 'objects/query'
+        return {'status': {'toolhead': {'position': [60.0, 60.0, self.z_after, 0.0]}}}
+
+    def gcode(self, script):
+        self.scripts.append(script)
+
+
+def test_undo_override_z_walks_the_bed_back():
+    from chopper_autotune.collect import undo_override_z
+    kl = FakeOverrideKl(spz=0.0, z_after=5.0)
+    undo_override_z(kl)
+    assert any('G1 Z-5.000' in s and 'G91' in s for s in kl.scripts)
+
+
+def test_undo_override_z_skips_a_truly_homed_z():
+    from chopper_autotune.collect import undo_override_z
+    # belief far from set_position_z = the override actually homed Z; undoing that
+    # "shift" would crash the bed, so the guard must not move anything
+    kl = FakeOverrideKl(spz=0.0, z_after=119.0)
+    undo_override_z(kl)
+    assert kl.scripts == []
+
+
+def test_roar_ratio_gates_on_both_sides():
+    import numpy as np
+
+    from chopper_autotune.current import roar_ratio
+    t = np.linspace(0, 1, 200)
+    samples = np.stack([t, np.sin(40 * t), np.zeros_like(t), np.zeros_like(t)], axis=1)
+    assert roar_ratio(None, 100.0) is None
+    assert roar_ratio(samples, None) is None
+    assert roar_ratio(samples, 100.0) > 0

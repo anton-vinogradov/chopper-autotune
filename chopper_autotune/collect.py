@@ -245,8 +245,35 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 
+MAX_OVERRIDE_Z_SHIFT = 15.0     # a homing prologue hops a few mm; anything bigger means
+                                # the override actually homed Z and the undo would be wrong
+
+
+def undo_override_z(kl: Klippy):
+    """A [homing_override] with set_position_z physically shifts Z on EVERY G28 call
+    (the stock V0 override walks the bed 5 mm down per call: belief forced to 0, then
+    G0 Z5). The shift = Z belief after the call minus set_position_z; undo it with a
+    relative move so repeated homings — a current-tune ladder is ~30 of them — do not
+    walk the bed into the deck."""
+    settings = kl.settings()
+    shift_base = (settings.get('homing_override') or {}).get('set_position_z')
+    if shift_base is None:
+        return
+    result = kl.request('objects/query', {'objects': {'toolhead': ['position']}})
+    dz = float(result['status']['toolhead']['position'][2]) - float(shift_base)
+    if 0.01 < abs(dz) <= MAX_OVERRIDE_Z_SHIFT:
+        kl.gcode('G91\nG1 Z%.3f F600\nG90\nM400' % -dz)
+
+
+def home_axes(kl: Klippy, axes: str = 'X Y'):
+    """G28 for the given X/Y axes, compensating homing_override side effects on Z."""
+    kl.gcode('G28 ' + axes)
+    undo_override_z(kl)
+
+
 def park(kl: Klippy, hw: Hardware):
-    kl.gcode('G28 X Y\nG0 X%.1f Y%.1f F6000\nM400\nM18' % hw.center)
+    home_axes(kl)
+    kl.gcode('G0 X%.1f Y%.1f F6000\nM400\nM18' % hw.center)
 
 
 def refuse_if_printing(kl: Klippy):
@@ -799,7 +826,7 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
             lambda: kl.gcode(tmc.set_fields_script(
                 hw.stepper, hw.baseline or tmc.KLIPPER_DEFAULT.fields())),
             lambda: exit_spreadcycle(kl, hw),
-            lambda: kl.gcode('G28 X Y'),
+            lambda: home_axes(kl),
             ds.flush_raw)
 
     print('Done in %dm: %d ok, %d failed -> %s' % ((time.time() - started) // 60, ok, failed, root))

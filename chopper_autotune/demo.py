@@ -11,7 +11,7 @@ import statistics
 from datetime import datetime
 
 from . import __version__, tmc
-from .collect import (MOVE_MARGIN, Screen, capture_stream, coupled_xy, default_dataset_root,
+from .collect import (MOVE_MARGIN, Screen, capture_stream, coupled_xy, default_dataset_root, home_axes,
                       detect_hardware, enter_spreadcycle, exit_spreadcycle, fit_measure_time,
                       make_parker, measure_baseline, motor_label, now, park,
                       refuse_if_printing, run_measurement, run_restore, travel_for)
@@ -97,7 +97,8 @@ def showcase_together(kl, args) -> int:
     results = {name: [] for name, _ in configs}
     try:
         # home and hold at center with the motors ENABLED (park disables them) for G1 moves
-        kl.gcode('G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, *board.center))
+        home_axes(kl)
+        kl.gcode('G90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, *board.center))
         for axis in MOTORS:
             enter_spreadcycle(kl, hw[axis])
         for r in range(1, args.rounds + 1):
@@ -122,7 +123,8 @@ def showcase_together(kl, args) -> int:
                                                                tuned[axis].fields()))
               for axis in MOTORS],
             *[lambda axis=axis: exit_spreadcycle(kl, hw[axis]) for axis in MOTORS],
-            lambda: kl.gcode('M204 S%.0f\nG28 X Y' % board.max_accel))
+            lambda: kl.gcode('M204 S%.0f' % board.max_accel),
+            lambda: home_axes(kl))
 
     if not results['default'] or not results['tuned']:
         raise SystemExit('show failed to collect measurements')
@@ -254,7 +256,7 @@ def demo(kl: Klippy, args) -> int:
         run_restore(
             lambda: kl.gcode(tmc.set_fields_script(hw.stepper, tuned.fields())),
             lambda: exit_spreadcycle(kl, hw),
-            lambda: kl.gcode('G28 X Y'),
+            lambda: home_axes(kl),
             ds.flush_raw)
 
     if not results['default'] or not results['tuned']:

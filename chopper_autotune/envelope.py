@@ -10,8 +10,9 @@ from __future__ import annotations
 import math
 import os
 
-from .collect import Screen, detect_hardware, enter_spreadcycle, exit_spreadcycle, refuse_if_printing, run_restore
-from .current import Referee, referee_axis, stress_vector
+from .collect import (Screen, detect_hardware, enter_spreadcycle, exit_spreadcycle, home_axes,
+                      refuse_if_printing, run_restore)
+from .current import Referee, referee_axis, sensorless_pin, stress_vector
 from .dataset import save_json
 from .klippy import Klippy, find_socket
 
@@ -170,6 +171,15 @@ def envelope(kl: Klippy, args) -> int:
     hw = {m: detect_hardware(kl, m) for m in motors}
     board = hw[motors[0]]
     settings = kl.settings()
+    for m in motors:
+        pin = sensorless_pin(settings, referee_axis(board.kinematics, m))
+        if pin:
+            # the envelope probes NEW speed/accel territory where no healthy stream
+            # reference exists, and a ceiling-stall is symmetric (nets ~0 mm) — the
+            # sensorless two-signal referee of CHOPPER_CURRENT is not honest here yet
+            raise SystemExit('the referee endstop is sensorless (%s) — CHOPPER_ENVELOPE '
+                             'still needs a physical switch; CHOPPER_CURRENT works on '
+                             'this machine (G28-stopwatch + stream-roar referee)' % pin)
     base_accel = args.accel or board.max_accel
     speeds = tuple(range(args.min_speed, args.max_speed + 1, args.step))
     accels = tuple(round(base_accel * f, -2) for f in (1.0, 1.5, 2.0, 3.0, 4.0))
@@ -208,7 +218,8 @@ def envelope(kl: Klippy, args) -> int:
     achieved = {}
     speed_holds, accel_holds = {}, {}
     try:
-        kl.gcode('G28 X Y\nG90')
+        home_axes(kl)
+        kl.gcode('G90')
         for m in motors:
             label = motor_label(m)
             span = min(25.0, hw[m].axis_span / 8)
@@ -248,7 +259,8 @@ def envelope(kl: Klippy, args) -> int:
                                'accel': ceiling_label(a_hold, a_skip, kilo=True)}
             speed_holds[label], accel_holds[label] = s_hold, a_hold
     finally:
-        run_restore(lambda: kl.gcode('M204 S%.0f\nG28 X Y' % board.max_accel))
+        run_restore(lambda: kl.gcode('M204 S%.0f' % board.max_accel),
+                    lambda: home_axes(kl))
 
     finale = ''
     if achieved:

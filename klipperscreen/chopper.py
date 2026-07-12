@@ -37,8 +37,9 @@ class Panel(ScreenPanel):
         return getattr(self._screen, "printer", None) or self._printer
 
     def sensorless(self):
-        """virtual_endstop = StallGuard homing: the endstop referee (Current/Envelope)
-        physically cannot work — better to say so BEFORE the button is pressed."""
+        """virtual_endstop = StallGuard homing: Current runs on the G28-stopwatch +
+        stream-roar referee, but Envelope still needs a physical switch — better to
+        say so BEFORE the button is pressed."""
         for stepper in ("stepper_x", "stepper_y"):
             section = self.printer.get_config_section(stepper) or {}
             if "virtual_endstop" in str(section.get("endstop_pin", "")):
@@ -48,8 +49,8 @@ class Panel(ScreenPanel):
     def explain_unavailable(self, widget, what):
         self.status.set_markup("<span size='large'>" + GLib.markup_escape_text(_(
             "%s needs a physical endstop — this machine homes sensorless (StallGuard), "
-            "and the skip referee cannot creep into a virtual switch. The plan here is "
-            "shorter: tune once (no current step to adapt to), then 5 Extruder."
+            "and the envelope probes speeds where the timing referee has no honest "
+            "reference yet. The rest of the plan works, including 3 Current."
         ) % what) + "</span>")
 
     def activate(self):
@@ -76,7 +77,7 @@ class Panel(ScreenPanel):
             ("fine-tune", _("2,4 Tune"), "color2", "CHOPPER_TUNE MOTOR=AB SAVE=1",
              _("Steps 2 AND 4 — tune both gantry motors' choppers at their resonances (~20 minutes of movement), SAVE the winners and restart Klipper. First pass: continue with 3 Current; after Current, come back here for the second pass — the chopper optimum depends on the current. Restore undoes.")),
             ("settings", _("3 Current"), "color3", "CHOPPER_CURRENT SAVE=1",
-             _("Step 3 — find the minimal safe run current (worst-case stress + endstop referee) and WRITE it into the config. Afterwards step 4 = Tune again: the chopper optimum depends on the current.")),
+             _("Step 3 — find the minimal safe run current (worst-case stress + skip referee) and WRITE it into the config. Afterwards step 4 = Tune again: the chopper optimum depends on the current.")),
             ("extrude", _("5 Extruder"), "color4", "CHOPPER_EXTRUDER SAVE=1",
              _("Step 5 — tune the extruder chopper, SAVE the winner and restart Klipper. The hotend will HEAT to 200C (filament stays in), ~10 minutes; the heater turns off when done. Restore undoes.")),
             # row 2 — the optional check + supporting actions
@@ -92,7 +93,7 @@ class Panel(ScreenPanel):
              _("Map vibration vs speed on the current registers (~2 min, motor A)? Shows which speeds ring (VFAs) and which stay quiet; the peaks land in Results.")),
         ]
 
-        referee_tools = (_("3 Current"), _("Envelope"))
+        referee_tools = (_("Envelope"),)
         no_referee = self.sensorless()
         grid = Gtk.Grid(column_homogeneous=True, row_homogeneous=True, vexpand=False)
         self.buttons = {}

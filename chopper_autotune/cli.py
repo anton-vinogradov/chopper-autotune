@@ -260,7 +260,9 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument('--url', default='http://127.0.0.1:7125')
 
     cur = sub.add_parser('current', help='find the minimal safe run current per motor '
-                                         '(worst-case stress, endstop referee)')
+                                         '(worst-case stress; endstop referee, or the '
+                                         'G28-stopwatch + stream-roar referee on '
+                                         'sensorless machines)')
     cur.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y', 'xy'),
                      default='xy', help='motor a/b/ab (a=stepper_x, b=stepper_y); default ab')
     cur.add_argument('--margin', type=float, default=2.0,
