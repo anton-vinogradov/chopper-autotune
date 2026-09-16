@@ -65,7 +65,10 @@ def multi_start_descent(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Rang
                         rounds: int = 2) -> tmc.Chopper:
     """Coordinate descent from several seeds; the best result wins. evaluate caches,
     so seeds that converge to the same region cost nothing extra."""
-    starts = [baseline] + [c for c in _spanning_starts(tbl, toff, hstrt, hend) if c != baseline]
+    # the seeds take the start's tpfd spelling: a None next to an explicit value would be
+    # the same physical registers under two cache keys
+    seeds = [replace(c, tpfd=baseline.tpfd) for c in _spanning_starts(tbl, toff, hstrt, hend)]
+    starts = [baseline] + [c for c in seeds if c != baseline]
     best, best_score = None, float('inf')
     for start in starts:
         candidate = coordinate_descent(driver, tbl, toff, hstrt, hend, tpfd, start, evaluate, rounds)

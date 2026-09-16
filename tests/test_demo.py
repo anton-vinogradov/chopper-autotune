@@ -264,3 +264,15 @@ def test_demo_shrinks_the_cruise_instead_of_skipping_a_fast_motor():
     fitted = fit_measure_time([100], accel, span * MOVE_MARGIN, 1.0)
     assert 0.4 <= fitted < 1.0                       # shrunk, not refused
     assert travel_for(100, accel, fitted) <= span * MOVE_MARGIN
+
+
+def test_write_state_keeps_the_tpfd_register(tmp_path, monkeypatch):
+    import json
+
+    from chopper_autotune import tmc
+    monkeypatch.setattr('chopper_autotune.dataset.RESULTS_HOME', tmp_path)
+    demo_module.write_state('x', tmc.Chopper(2, 3, 5, 2, 4), 1.5)
+    demo_module.write_state('y', tmc.Chopper(0, 2, 7, 11), 1.2)
+    state = json.loads((tmp_path / 'state.json').read_text())
+    # the panel matches these against the config's registers, tpfd included on 2240/5160
+    assert state['x']['regs'] == '2/3/5/2/4' and state['y']['regs'] == '0/2/7/11'

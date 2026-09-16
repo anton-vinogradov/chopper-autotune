@@ -207,7 +207,7 @@ def run_belts(args) -> int:
 
 
 def belts(kl: Klippy, args) -> int:
-    hw = detect_hardware(kl, 'x')
+    hw = detect_hardware(kl, 'x', accel=not args.show)      # SHOW= only jogs a belt
     settings = kl.settings()
     if not coupled_xy(hw.kinematics):
         raise SystemExit('belt-tension match is a CoreXY/H-bot check (two belts drive one '

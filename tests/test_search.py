@@ -210,3 +210,26 @@ def test_edge_tiebreaker_never_overrides_a_real_vibration_win():
     loud_interior = tmc.Chopper(2, 1, 5, 3)  # h6, interior, but much louder
     assert penalized_score(quiet_edge, [1180.0], DRIVER, 0.25) < \
         penalized_score(loud_interior, [1650.0], DRIVER, 0.25)
+
+
+def test_every_candidate_shares_the_start_tpfd_spelling():
+    from chopper_autotune import tmc
+    from chopper_autotune.collect import Range
+    from chopper_autotune.search import multi_start_descent
+
+    def run(driver, tpfd_range, start):
+        seen = set()
+
+        def evaluate(combo):
+            seen.add(combo)
+            return float(combo.toff + combo.hend)
+        multi_start_descent(driver, Range(0, 3), Range(1, 8), Range(0, 7), Range(0, 15),
+                            tpfd_range, start, evaluate, rounds=1)
+        return seen
+
+    # no sweep: the spanning seeds must not reintroduce an explicit tpfd next to None
+    unswept = run(tmc.DRIVERS['2240'], None, tmc.Chopper(2, 3, 5, 2))
+    assert unswept and all(c.tpfd is None for c in unswept)
+    # sweep: no candidate may fall back to None (= the same registers under a second key)
+    swept = run(tmc.DRIVERS['2240'], Range(0, 15), tmc.Chopper(2, 3, 5, 2, 4))
+    assert swept and all(c.tpfd is not None for c in swept)

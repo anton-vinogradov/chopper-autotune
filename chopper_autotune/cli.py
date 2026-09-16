@@ -252,7 +252,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     rs = sub.add_parser('restore', help="roll back the tool's config changes")
     rs.add_argument('--defaults', action='store_true',
-                    help='write the Klipper default chopper registers (2/3/5/0) into every '
+                    help='write each driver\'s stock (Klipper default) chopper registers into every '
                          'tuned TMC section; run_current stays as saved')
     rs.add_argument('--backup', action='store_true',
                     help='restore the *.chopper-backup.cfg snapshots taken before the last '

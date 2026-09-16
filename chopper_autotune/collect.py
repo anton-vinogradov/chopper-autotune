@@ -9,7 +9,7 @@ import glob
 import itertools
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -81,7 +81,44 @@ class Hardware:
         return motor_label(self.stepper.rsplit('_', 1)[-1])
 
 
-def detect_hardware(kl: Klippy, axis: str) -> Hardware:
+ACCEL_SECTIONS = ('adxl345', 'lis2dw', 'lis3dh', 'mpu9250', 'icm20948')
+
+
+def resolve_accel_chip(settings: dict, axis: str) -> str:
+    """[resonance_tester] accel_chip, else the per-axis chip of a two-chip setup, else
+    the single accelerometer section in the config — never a guessed name (a bare
+    'adxl345' on a config with only [adxl345 hotend] would stream nothing)."""
+    resonance = settings.get('resonance_tester') or {}
+    chip = (resonance.get('accel_chip') or resonance.get('accel_chip_' + axis)
+            or resonance.get('accel_chip_x'))
+    if chip:
+        return chip
+    found = [name for name in settings if name.split()[0] in ACCEL_SECTIONS]
+    if len(found) == 1:
+        return found[0]
+    raise SystemExit('cannot pick the accelerometer: %s — set [resonance_tester] accel_chip'
+                     % ('no accelerometer section in the config' if not found
+                        else 'several sections (%s)' % ', '.join(found)))
+
+
+def gear_factor(ratio) -> float:
+    """[stepper] gear_ratio as Klipper keeps it in settings (pairs, [[80, 16]]) or as
+    written ('80:16, 2:1'): motor turns per output turn."""
+    if not ratio:
+        return 1.0
+    pairs = [pair.split(':') for pair in ratio.split(',')] if isinstance(ratio, str) else ratio
+    factor = 1.0
+    for a, b in pairs:
+        factor *= float(a) / float(b)
+    return factor
+
+
+def full_steps_per_mm(rail: dict) -> float:
+    return (float(rail.get('full_steps_per_rotation') or 200) * gear_factor(rail.get('gear_ratio'))
+            / float(rail['rotation_distance']))
+
+
+def detect_hardware(kl: Klippy, axis: str, accel: bool = True) -> Hardware:
     settings = kl.settings()
     stepper = 'stepper_' + axis
     driver = section = None
@@ -114,12 +151,12 @@ def detect_hardware(kl: Klippy, axis: str) -> Hardware:
     if driver.spreadcycle_switch and float(section.get('stealthchop_threshold') or 0) > 0:
         stealth = driver.spreadcycle_switch
 
-    resonance = settings.get('resonance_tester') or {}
     return Hardware(
         kl=kl,
         stepper=stepper,
         driver=driver,
-        accel_chip=resonance.get('accel_chip', 'adxl345'),
+        # the endstop-referee tools never stream: no demanding a chip they won't use
+        accel_chip=resolve_accel_chip(settings, axis) if accel else '',
         kinematics=kinematics,
         axis_span=span,
         center=(centers['x'], centers['y']),
@@ -352,7 +389,8 @@ def capture_stream(hw: Hardware, script: str, duration: float) -> 'tuple[float, 
 
 def capture_csv(hw: Hardware, name: str, script: str, min_span_sec: float = 0.0) -> np.ndarray:
     drop_stale_csv(name)
-    measure = 'ACCELEROMETER_MEASURE CHIP=%s NAME=%s' % (hw.accel_chip, name)
+    # the CHIP argument is the section's name word ('hotend' for [adxl345 hotend])
+    measure = 'ACCELEROMETER_MEASURE CHIP=%s NAME=%s' % (hw.accel_chip.split()[-1], name)
     try:
         hw.kl.gcode('\n'.join(['M400', measure, script, 'M400', measure]))
     except KlippyError:
@@ -482,6 +520,14 @@ def measure_combo(hw: Hardware, ds: Dataset, args, combo: tmc.Chopper, speeds: '
     return ok, failed, magnitudes, clicks
 
 
+def shown_registers(hw: Hardware, combo: tmc.Chopper) -> tmc.Chopper:
+    """The registers the panel reads back after a save: a winner spelled without tpfd
+    leaves the config's TPFD line (or the stock value) in force on a TPFD driver."""
+    if hw.driver.has_tpfd and combo.tpfd is None:
+        return replace(combo, tpfd=hw.baseline.get('tpfd', hw.driver.default.tpfd))
+    return combo
+
+
 def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
                   trusted: 'set | None' = None) -> 'dict | None':
     """Print the ranking and recommend a config. When `trusted` is given, the
@@ -504,16 +550,17 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
     ds.update_manifest(winner=winner['chopper'].fields())
     finale = 'Chopper: %s' % winner['chopper'].label()
     magnitudes = {entry['chopper']: entry['magnitude'] for entry in ranked}
-    reference = magnitudes.get(tmc.KLIPPER_DEFAULT)
-    if reference and winner['chopper'] != tmc.KLIPPER_DEFAULT:
+    stock = tmc.stock_chopper(hw.driver, getattr(args, 'tpfd', None) is not None)
+    reference = magnitudes.get(stock)
+    if reference and winner['chopper'] != stock:
         # the run measured Klipper defaults too, so it can say what the tuning bought —
         # same-session numbers, the panel's vibration column fills without a Show run
         quieter = reference / winner['magnitude']
         ds.update_manifest(improvement=round(quieter, 2))
         print('\nvs Klipper defaults %s: %.1fx less vibration (%.0f -> %.0f)'
-              % (tmc.KLIPPER_DEFAULT.label(), quieter, reference, winner['magnitude']))
+              % (stock.label(), quieter, reference, winner['magnitude']))
         from .demo import write_state
-        write_state(hw.stepper.rsplit('_', 1)[-1], winner['chopper'], quieter)
+        write_state(hw.stepper.rsplit('_', 1)[-1], shown_registers(hw, winner['chopper']), quieter)
         pct = round((1 - 1 / quieter) * 100)
         if pct >= 1:                                # a statistical tie is not a win
             finale += ' — %d%% less vibration' % pct
@@ -589,6 +636,7 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
 
     stats = {'ok': 0, 'failed': 0}
     budget = descent_budget(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd)
+    stock = tmc.stock_chopper(hw.driver, tpfd is not None)
     history = dataset_history(ds)
     clicks = dataset_transients(ds)
 
@@ -632,9 +680,12 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
         start = seed_start(Dataset.open(args.seed_from), hw.driver, args.audible_weight)
         print('Seeded from %s: starting at %s' % (args.seed_from, start.label()))
     else:
-        start = tmc.baseline_chopper(hw.baseline)
+        start = tmc.baseline_chopper(hw.baseline, default=stock)
     if tmc.validate(start) is not None:
-        start = tmc.Chopper(*tmc.KLIPPER_DEFAULT.fields().values(), hw.baseline.get('tpfd'))
+        start = stock
+    # one tpfd spelling per run: None when the register is not swept, explicit otherwise
+    start = replace(start, tpfd=None if stock.tpfd is None
+                    else (start.tpfd if start.tpfd is not None else stock.tpfd))
 
     best = multi_start_descent(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd,
                                start, evaluate)
@@ -643,11 +694,11 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
     for combo in finalists:
         measure_candidate(combo, VALIDATE_EXTRA_ITERATIONS, first_iteration=args.iterations)
 
-    if tmc.KLIPPER_DEFAULT not in history:
+    if stock not in history:
         # the improvement report needs the stock reference; the descent's spanning
         # seeds usually visit it, this covers the runs where they did not (~10 s)
         print('Measuring the Klipper-default reference for the improvement report')
-        measure_candidate(tmc.KLIPPER_DEFAULT, args.iterations)
+        measure_candidate(stock, args.iterations)
 
     report_winner(hw, ds, args, screen, 10, trusted=set(finalists))
     return stats['ok'], stats['failed']
@@ -797,7 +848,7 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
         print('Restoring baseline registers, homing')
         run_restore(
             lambda: kl.gcode(tmc.set_fields_script(
-                hw.stepper, hw.baseline or tmc.KLIPPER_DEFAULT.fields())),
+                hw.stepper, hw.baseline or hw.driver.default.fields())),
             lambda: exit_spreadcycle(kl, hw),
             lambda: kl.gcode('G28 X Y'),
             ds.flush_raw)

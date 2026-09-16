@@ -46,7 +46,7 @@ def extruder_context(settings) -> 'tuple[tmc.Driver, str, dict, tuple | None, fl
         if section is not None:
             driver = tmc.DRIVERS[name]
             regs = {f: int(section['driver_%s' % f])
-                    for f in ('tbl', 'toff', 'hstrt', 'hend')
+                    for f in ('tbl', 'toff', 'hstrt', 'hend') + (('tpfd',) if driver.has_tpfd else ())
                     if section.get('driver_%s' % f) is not None}
             stealth = None
             if driver.spreadcycle_switch and float(section.get('stealthchop_threshold') or 0) > 0:
@@ -102,17 +102,20 @@ def descent(hw, kl, driver, speed: float, audible_weight: float, screen: Screen,
                              cache[combo]))
         return cache[combo]
 
-    winner = multi_start_descent(driver, *FIELD_RANGES, None, tmc.KLIPPER_DEFAULT,
+    # the E descent never sweeps tpfd, so its stock is spelled without it — a carried
+    # constant would reach the winner unmeasured and overwrite the config's TPFD line
+    winner = multi_start_descent(driver, *FIELD_RANGES, None, tmc.stock_chopper(driver, False),
                                  evaluate, rounds)
     return winner, cache
 
 
-def extruder_show(kl: Klippy, args, baseline_regs: dict, stealth: 'tuple | None',
-                  temp: float) -> int:
+def extruder_show(kl: Klippy, args, driver: tmc.Driver, baseline_regs: dict,
+                  stealth: 'tuple | None', temp: float) -> int:
     """Audible before/after for the E motor: alternate Klipper defaults and the saved
     registers at the resonance speed so the change can be heard — the E analogue of
     CHOPPER_DEMO. Requires a tuned extruder; heats like the tune does."""
-    if not baseline_regs or baseline_regs == tmc.KLIPPER_DEFAULT.fields():
+    if not baseline_regs or \
+            tmc.baseline_chopper(baseline_regs, default=driver.default) == driver.default:
         raise SystemExit('the extruder is untuned (registers are Klipper defaults) — '
                          'run CHOPPER_EXTRUDER first, there is nothing to compare')
     hw = detect_hardware(kl, 'x')
@@ -131,7 +134,7 @@ def extruder_show(kl: Klippy, args, baseline_regs: dict, stealth: 'tuple | None'
             # would measure stealthChop vs stealthChop and report a fake 1.0x
             kl.gcode(tmc.set_fields_script('extruder', {stealth[0]: stealth[1]}))
         for round_no in (1, 2):
-            for label, fields in (('defaults', tmc.KLIPPER_DEFAULT.fields()),
+            for label, fields in (('defaults', tmc.stock_chopper(driver, False).fields()),
                                   ('tuned', baseline_regs)):
                 kl.gcode(tmc.set_fields_script('extruder', fields))
                 screen.update('E %d/2: %s' % (round_no, label.upper()), force=True)
@@ -142,7 +145,7 @@ def extruder_show(kl: Klippy, args, baseline_regs: dict, stealth: 'tuple | None'
         d = sum(magnitudes['defaults']) / len(magnitudes['defaults'])
         t = sum(magnitudes['tuned']) / len(magnitudes['tuned'])
         from .demo import write_state
-        write_state('extruder', tmc.baseline_chopper(baseline_regs), d / t)
+        write_state('extruder', tmc.baseline_chopper(baseline_regs, default=driver.default), d / t)
         screen.final('Extruder: %.1fx less vibration (%.0f -> %.0f)' % (d / t, d, t))
     finally:
         run_restore(
@@ -191,12 +194,12 @@ def extruder_tune(kl: Klippy, args) -> int:
             print('Aborted')
             return 1
         refuse_if_printing(kl)
-        return extruder_show(kl, args, baseline_regs, stealth, temp)
+        return extruder_show(kl, args, driver, baseline_regs, stealth, temp)
     speeds = [float(v) for v in range(args.min_speed, args.max_speed + 1)]
 
     budget = descent_budget(driver, *FIELD_RANGES, None)
     print('Extruder chopper tune: tmc%s, current registers %s' % (
-        driver_name, baseline_regs or tmc.KLIPPER_DEFAULT.fields()))
+        driver_name, baseline_regs or tmc.stock_chopper(driver, False).fields()))
     print('  hotend will HEAT to %.0fC (filament stays in); scan %s mm/s on stock '
           'registers%s; then a multi-start register descent at the resonance '
           '(<=%d candidates x ~%.0fs, usually far fewer — converging starts share the cache)'
@@ -229,7 +232,7 @@ def extruder_tune(kl: Klippy, args) -> int:
         speed = args.speed
         if speed is None:
             # scan on stock registers — a tuned chopper would mask the very peak we need
-            kl.gcode(tmc.set_fields_script('extruder', tmc.KLIPPER_DEFAULT.fields()))
+            kl.gcode(tmc.set_fields_script('extruder', tmc.stock_chopper(driver, False).fields()))
             print('Scanning filament speeds on Klipper-default registers...')
             curve = []
             for v in speeds:
@@ -287,7 +290,7 @@ def extruder_tune(kl: Klippy, args) -> int:
             # a stock config carries no driver_* lines (empty baseline) — fall back to
             # Klipper defaults rather than silently leaving the last swept combo active
             lambda: kl.gcode(tmc.set_fields_script(
-                'extruder', baseline_regs or tmc.KLIPPER_DEFAULT.fields())),
+                'extruder', baseline_regs or tmc.stock_chopper(driver, False).fields())),
             lambda: stealth and kl.gcode(tmc.set_fields_script('extruder', {stealth[0]: stealth[2]})),
             lambda: kl.gcode('M104 S0'),
             lambda: kl.gcode('M84'))
