@@ -218,7 +218,7 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
         'accel_chip': hw.accel_chip,
         'kinematics': hw.kinematics,
         'registers': hw.baseline,
-        'scan_registers': tmc.KLIPPER_DEFAULT.fields(),
+        'scan_registers': hw.driver.default.fields(),
         'accel': accel,
         'measure_time': args.measure_time,
         'trim': args.trim,
@@ -238,9 +238,9 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
         enter_spreadcycle(kl, hw)
         # scan with the stock chopper: a well-tuned config suppresses the very resonance
         # peaks the scan is looking for (measured: 897 vs 2676 at the same speed)
-        kl.gcode(tmc.set_fields_script(hw.stepper, tmc.KLIPPER_DEFAULT.fields()))
+        kl.gcode(tmc.set_fields_script(hw.stepper, hw.driver.default.fields()))
         print('Scanning with Klipper default registers %s — the current tuning would mask the peaks'
-              % tmc.KLIPPER_DEFAULT.label())
+              % hw.driver.default.label())
         failed = run_sweep(hw, ds, args, plan, accel, screen, before_move, done)
         curve = build_curve(ds)
         peaks = find_peaks(smooth([magnitude for _, magnitude in curve])) if curve else []
@@ -263,7 +263,7 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
         print('Restoring registers, homing')
         run_restore(
             lambda: kl.gcode(tmc.set_fields_script(
-                hw.stepper, hw.baseline or tmc.KLIPPER_DEFAULT.fields())),
+                hw.stepper, hw.baseline or hw.driver.default.fields())),
             lambda: exit_spreadcycle(kl, hw),
             lambda: kl.gcode('G28 X Y'),
             ds.flush_raw)

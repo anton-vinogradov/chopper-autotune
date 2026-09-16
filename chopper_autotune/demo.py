@@ -19,7 +19,6 @@ from .dataset import Dataset
 from .klippy import Klippy, KlippyError, find_socket
 from .metrics import vibration_score
 
-KLIPPER_DEFAULT = tmc.KLIPPER_DEFAULT
 BAR_WIDTH = 40
 
 
@@ -66,9 +65,9 @@ def showcase_together(kl, args) -> int:
     drop in vibration."""
     hw = {axis: detect_hardware(kl, axis) for axis in MOTORS}
     tpfd = {axis: hw[axis].baseline.get('tpfd') for axis in MOTORS}
-    tuned = {axis: tmc.baseline_chopper(hw[axis].baseline, tpfd[axis]) for axis in MOTORS}
-    default = {axis: (args.default if args.default is not None
-                      else tmc.Chopper(*KLIPPER_DEFAULT.fields().values(), tpfd[axis]))
+    tuned = {axis: tmc.baseline_chopper(hw[axis].baseline, tpfd[axis], hw[axis].driver.default)
+             for axis in MOTORS}
+    default = {axis: args.default if args.default is not None else hw[axis].driver.default
                for axis in MOTORS}
     if all(tuned[axis] == default[axis] for axis in MOTORS):
         raise SystemExit('current registers equal the defaults on both motors — tune and save first')
@@ -178,9 +177,8 @@ def demo(kl: Klippy, args) -> int:
 
     hw = detect_hardware(kl, args.axis)
     tpfd = hw.baseline.get('tpfd')
-    tuned = tmc.baseline_chopper(hw.baseline, tpfd)
-    default = (args.default if args.default is not None
-               else tmc.Chopper(*KLIPPER_DEFAULT.fields().values(), tpfd))
+    tuned = tmc.baseline_chopper(hw.baseline, tpfd, hw.driver.default)
+    default = args.default if args.default is not None else hw.driver.default
     if tuned == default:
         raise SystemExit('current registers equal the defaults — nothing to demo '
                          '(tune and save the motor first)')
@@ -281,7 +279,7 @@ def write_state(axis: str, tuned: tmc.Chopper, quieter: float):
     once the motor is retuned."""
     from .dataset import RESULTS_HOME, save_json
     save_json(RESULTS_HOME / 'state.json',
-              {axis: {'regs': '%d/%d/%d/%d' % (tuned.tbl, tuned.toff, tuned.hstrt, tuned.hend),
+              {axis: {'regs': '/'.join(str(v) for v in tuned.fields().values()),
                       'quieter': round(quieter, 2)}}, merge=True)
 
 

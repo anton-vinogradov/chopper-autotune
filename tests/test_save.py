@@ -300,3 +300,40 @@ def test_restore_resets_the_plan_marks(tmp_path, monkeypatch):
         assert not (tmp_path / name).exists(), name
     # the extruder winner memory survives: SAVE_LAST must still be able to re-apply it
     assert (tmp_path / 'extruder.json').exists()
+
+
+CONFIG_2240_TUNED = """[tmc2240 stepper_x]
+cs_pin: PA1
+run_current: 1.0
+driver_TBL: 1
+driver_TOFF: 8
+driver_HSTRT: 4
+driver_HEND: 8
+driver_TPFD: 14
+
+[tmc2240 stepper_y]
+cs_pin: PA2
+run_current: 1.0
+driver_TPFD: 7
+"""
+
+
+def test_restore_defaults_writes_the_drivers_own_stock_registers(monkeypatch):
+    from types import SimpleNamespace
+
+    import chopper_autotune.analyze as analyze
+    mk = FakeMk({'printer.cfg': CONFIG_2240_TUNED})
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    analyze.run_restore_config(SimpleNamespace(defaults=True, backup=False, url=''))
+    text = mk.files['printer.cfg']
+    x = text[text.index('[tmc2240 stepper_x]'):text.index('[tmc2240 stepper_y]')]
+    # the 2240 stock is hend 2 / tpfd 4, not the 2209's hend 0 — and the tuned TPFD
+    # line must not survive a "restore" that claims stock registers
+    assert 'driver_HEND: 2' in x and 'driver_TPFD: 4' in x
+    assert 'driver_TPFD: 14' not in x and 'driver_HEND: 0' not in x
+
+
+def test_tuned_tmc_sections_sees_a_tpfd_only_tuning():
+    from chopper_autotune.analyze import tuned_tmc_sections
+    assert tuned_tmc_sections({'printer.cfg': CONFIG_2240_TUNED}) \
+        == ['tmc2240 stepper_x', 'tmc2240 stepper_y']

@@ -125,3 +125,114 @@ def test_report_winner_reports_improvement_vs_defaults(tmp_path, monkeypatch, ca
     assert 'less vibration' in finals[0]                 # the display says what it bought
     state = json.loads((tmp_path / 'state.json').read_text())
     assert state['x'] == {'regs': '0/2/4/7', 'quieter': 2.0}   # the panel column fills
+
+
+def test_resolve_accel_chip_never_guesses_a_name():
+    import pytest
+
+    from chopper_autotune.collect import resolve_accel_chip
+    assert resolve_accel_chip({'resonance_tester': {'accel_chip': 'adxl345 hotend'}}, 'x') \
+        == 'adxl345 hotend'
+    # two-chip setups name the chip per axis
+    two = {'resonance_tester': {'accel_chip_x': 'adxl345 head', 'accel_chip_y': 'adxl345 bed'}}
+    assert resolve_accel_chip(two, 'x') == 'adxl345 head'
+    assert resolve_accel_chip(two, 'y') == 'adxl345 bed'
+    # no [resonance_tester]: the single accelerometer section is unambiguous
+    assert resolve_accel_chip({'adxl345 hotend': {}, 'printer': {}}, 'x') == 'adxl345 hotend'
+    with pytest.raises(SystemExit, match='no accelerometer'):
+        resolve_accel_chip({'printer': {}}, 'x')
+    with pytest.raises(SystemExit, match='several'):
+        resolve_accel_chip({'adxl345': {}, 'lis2dw bed': {}}, 'x')
+
+
+def test_full_steps_per_mm_honours_gearing():
+    from chopper_autotune.collect import full_steps_per_mm, gear_factor
+    assert gear_factor(None) == 1.0
+    assert gear_factor('80:16') == 5.0
+    assert gear_factor([[80.0, 16.0]]) == 5.0            # as Klipper keeps it in settings
+    assert gear_factor('80:16, 2:1') == 10.0
+    # the project's own anchor: rotation 40 -> 5 full steps/mm, 290 fs/s = 58 mm/s
+    assert full_steps_per_mm({'rotation_distance': 40}) == 5.0
+    assert 290 / full_steps_per_mm({'rotation_distance': 40}) == pytest.approx(58.0)
+    # a belted Z (80:16 on a 40 mm pulley) is 8 mm/turn like a T8x8 screw
+    assert full_steps_per_mm({'rotation_distance': 40, 'gear_ratio': [[80, 16]]}) == 25.0
+    assert full_steps_per_mm({'rotation_distance': 8, 'full_steps_per_rotation': 400}) == 50.0
+
+
+def test_capture_csv_names_the_chip_by_its_section_word(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    import chopper_autotune.collect as collect
+    csv = tmp_path / 'hotend-v060.csv'
+    csv.write_text('#time,x,y,z\n' + ''.join('%.4f,0,0,0\n' % (t / 100) for t in range(50)))
+    monkeypatch.setattr(collect, 'drop_stale_csv', lambda name: None)
+    monkeypatch.setattr(collect, 'wait_for_csv', lambda name, span: str(csv))
+    scripts = []
+    hw = SimpleNamespace(kl=SimpleNamespace(gcode=scripts.append), accel_chip='adxl345 hotend')
+    collect.capture_csv(hw, 'v060', 'G4 P100')
+    # ACCELEROMETER_MEASURE CHIP= takes the name word of [adxl345 hotend], not the section
+    assert 'ACCELEROMETER_MEASURE CHIP=hotend NAME=v060' in scripts[0]
+    assert 'CHIP=adxl345 hotend' not in scripts[0]
+
+
+def test_report_winner_finds_the_stock_reference_when_tpfd_is_not_swept(tmp_path, monkeypatch):
+    import json
+    from types import SimpleNamespace
+
+    from chopper_autotune import dataset as dataset_mod
+    from chopper_autotune import tmc
+    from chopper_autotune.collect import report_winner
+    from chopper_autotune.dataset import Dataset
+
+    monkeypatch.setattr(dataset_mod, 'RESULTS_HOME', tmp_path)
+    ds = Dataset.create(tmp_path / 'ds', {'mode': 'test'})
+    # a grid without --tpfd on a TMC2240 spells every combo with tpfd=None
+    for combo, magnitude in ((tmc.Chopper(2, 3, 5, 2), 2000.0), (tmc.Chopper(0, 2, 4, 7), 1000.0)):
+        for direction in (1, -1):
+            ds.append({'id': '%s_%d' % (combo.label(), direction), 'kind': 'move',
+                       'status': 'ok', **combo.fields(), 'tpfd': None,
+                       'score': {'median_magnitude': magnitude, 'clicks': 0}})
+    hw = SimpleNamespace(driver=tmc.DRIVERS['2240'], stepper='stepper_x', baseline={})
+    args = SimpleNamespace(trim=0.1, audible_weight=0.25, tpfd=None)
+    report_winner(hw, ds, args, SimpleNamespace(final=lambda text: None), top=5)
+    assert ds.manifest()['improvement'] == 2.0
+    # the panel reads the fifth (TPFD) register from the config or Klipper's stock value
+    state = json.loads((tmp_path / 'state.json').read_text())
+    assert state['x']['regs'] == '0/2/4/7/4'
+
+
+def test_shown_registers_carry_the_configs_tpfd():
+    from types import SimpleNamespace
+
+    from chopper_autotune import tmc
+    from chopper_autotune.collect import shown_registers
+    hw = SimpleNamespace(driver=tmc.DRIVERS['2240'], baseline={'tpfd': 7})
+    assert shown_registers(hw, tmc.Chopper(0, 2, 4, 7)) == tmc.Chopper(0, 2, 4, 7, 7)
+    assert shown_registers(hw, tmc.Chopper(0, 2, 4, 7, 1)) == tmc.Chopper(0, 2, 4, 7, 1)
+    hw = SimpleNamespace(driver=tmc.DRIVERS['2209'], baseline={})
+    assert shown_registers(hw, tmc.Chopper(0, 2, 4, 7)) == tmc.Chopper(0, 2, 4, 7)
+
+
+def test_endstop_tools_need_no_accelerometer():
+    import pytest
+
+    from chopper_autotune.collect import detect_hardware
+
+    class FakeKl:
+        def __init__(self, settings):
+            self._settings = settings
+
+        def settings(self):
+            return self._settings
+
+        def object_list(self):
+            return []
+
+    settings = {'printer': {'kinematics': 'corexy', 'max_accel': 10000},
+                'stepper_x': {'position_min': 0, 'position_max': 260},
+                'stepper_y': {'position_min': 0, 'position_max': 260},
+                'tmc2209 stepper_x': {}}
+    # CHOPPER_CURRENT / CHOPPER_ENVELOPE judge by the endstop and never stream
+    assert detect_hardware(FakeKl(settings), 'x', accel=False).accel_chip == ''
+    with pytest.raises(SystemExit, match='accelerometer'):
+        detect_hardware(FakeKl(settings), 'x')

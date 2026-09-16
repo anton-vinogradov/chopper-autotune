@@ -17,7 +17,13 @@ from ks_includes.screen_panel import ScreenPanel
 
 REGISTERS = ("driver_tbl", "driver_toff", "driver_hstrt", "driver_hend")
 DRIVERS = ("tmc2209", "tmc2208", "tmc2240", "tmc5160", "tmc2130", "tmc2660")
-DEFAULT = (2, 3, 5, 0)  # Klipper's chopper defaults — the "before" the show compares against
+# Klipper's stock chopper per driver (klippy/extras/tmcXXXX.py) — the "before" the show
+# compares against; the TPFD drivers carry a fifth register
+DEFAULTS = {
+    "tmc2209": (2, 3, 5, 0), "tmc2208": (2, 3, 5, 0),
+    "tmc2240": (2, 3, 5, 2, 4), "tmc5160": (2, 3, 5, 2, 4),
+    "tmc2130": (1, 4, 0, 7), "tmc2660": (2, 4, 3, 3),
+}
 STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/state.json")
 BELTS_STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/belts.json")
 ENVELOPE_STATE = os.path.expanduser("~/printer_data/config/chopper-autotune/envelope.json")
@@ -122,7 +128,7 @@ class Panel(ScreenPanel):
                                      vexpand=False, no_show_all=True)
         for column, (icon, label, style, command, confirm) in enumerate((
                 ("refresh", _("Klipper defaults"), "color1", "CHOPPER_RESTORE DEFAULTS=1",
-                 _("Write the stock chopper registers (2/3/5/0) into every tuned motor and restart Klipper? run_current stays as saved.")),
+                 _("Write each driver's stock chopper registers into every tuned motor and restart Klipper? run_current stays as saved.")),
                 ("complete", _("Backup"), "color3", "CHOPPER_RESTORE BACKUP=1",
                  _("Put back the config exactly as it was before the last save (registers AND currents) and restart Klipper?")),
                 ("stop", _("Cancel"), "color4", None, None))):
@@ -180,10 +186,8 @@ class Panel(ScreenPanel):
     def step_states(self):
         """Which plan steps already left their mark — read from the same sources
         Results uses: saved registers in the live config and the state files."""
-        default = "/".join(str(v) for v in DEFAULT)
-
         def tuned(stepper):
-            return self.tuned_registers(stepper) not in ("", default)
+            return self.tuned_registers(stepper) not in ("", self.default_registers(stepper))
 
         return {
             _("1 Belts"): bool(self.load_json(BELTS_STATE)),
@@ -276,7 +280,7 @@ class Panel(ScreenPanel):
         lines = [self.register_table()]
         currents = []
         for stepper, name in self.motors:
-            section = self.tmc_section(stepper)
+            section = self.tmc_section(stepper)[1]
             if section and section.get("run_current") is not None:
                 currents.append("%s %sA" % (name, section["run_current"]))
         if currents:
@@ -318,16 +322,16 @@ class Panel(ScreenPanel):
         return "\n".join(lines)
 
     def register_table(self):
-        default = "/".join(str(v) for v in DEFAULT)
         state = self.load_state()
-        rows = ["%-3s %7s   %-10s %s" % ("", _("default"), _("tuned"), _("vibration"))]
+        rows = ["%-3s %9s   %-10s %s" % ("", _("default"), _("tuned"), _("vibration"))]
         for stepper, name in self.motors:
+            default = self.default_registers(stepper)
             tuned = self.tuned_registers(stepper)
             axis = stepper.rsplit("_", 1)[-1]
             # explicit stock lines (a defaults-Restore writes them) read as untuned too:
             # "2/3/5/0 -> 2/3/5/0" looks like a comparison of something with something
             shown = tuned if tuned and tuned != default else _("untuned")
-            rows.append("%-3s %7s → %-10s %s" % (name, default, shown,
+            rows.append("%-3s %9s → %-10s %s" % (name, default, shown,
                                                  self.noise_change(axis, tuned, state)))
         return "\n".join(rows)
 
@@ -335,20 +339,33 @@ class Panel(ScreenPanel):
         for driver in DRIVERS:
             section = self.printer.get_config_section(f"{driver} {stepper}")
             if section:
-                return section
-        return None
+                return driver, section
+        return None, None
+
+    def default_registers(self, stepper):
+        driver = self.tmc_section(stepper)[0]
+        return "/".join(str(v) for v in DEFAULTS.get(driver, DEFAULTS["tmc2209"]))
 
     def tuned_registers(self, stepper):
-        section = self.tmc_section(stepper)
+        driver, section = self.tmc_section(stepper)
         if section:
             values = [section.get(reg) for reg in REGISTERS]
             if all(value is not None for value in values):
+                default = DEFAULTS.get(driver, DEFAULTS["tmc2209"])
+                if len(default) == 5:
+                    # TPFD drivers: a missing line runs Klipper's stock value, and the
+                    # tuned/state strings must carry the register or a 2240 never matches
+                    values.append(section.get("driver_tpfd", default[4]))
                 return "/".join(str(value) for value in values)
         return ""
 
     def noise_change(self, axis, tuned, state):
         entry = state.get(axis)
-        if not tuned or not entry or entry.get("regs") != tuned or not entry.get("quieter"):
+        if not tuned or not entry or not entry.get("quieter"):
+            return ""
+        saved = str(entry.get("regs", ""))
+        # a state.json written before the fifth (TPFD) register was recorded carries four
+        if saved != tuned and saved.split("/") != tuned.split("/")[:4]:
             return ""
         pct = round((1 - 1 / entry["quieter"]) * 100)
         # quieter < 1 means the demo measured MORE vibration: show +N%, not "--N%"

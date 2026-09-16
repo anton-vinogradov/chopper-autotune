@@ -52,3 +52,32 @@ def test_label_and_snippet():
     assert 'driver_TOFF: 5' in snippet
     assert 'driver_TPFD: 2' in snippet
     assert 'TPFD' not in tmc.cfg_snippet(tmc.DRIVERS['2209'], 'stepper_x', tmc.Chopper(1, 5, 4, 4))
+
+
+def test_stock_registers_are_a_driver_property():
+    # klippy/extras/tmcXXXX.py program these when the config carries no driver_* lines
+    assert tmc.DRIVERS['2209'].default == tmc.Chopper(2, 3, 5, 0)
+    assert tmc.DRIVERS['2208'].default == tmc.Chopper(2, 3, 5, 0)
+    assert tmc.DRIVERS['2240'].default == tmc.Chopper(2, 3, 5, 2, 4)
+    assert tmc.DRIVERS['5160'].default == tmc.Chopper(2, 3, 5, 2, 4)
+    assert tmc.DRIVERS['2130'].default == tmc.Chopper(1, 4, 0, 7)
+    assert tmc.DRIVERS['2660'].default == tmc.Chopper(2, 4, 3, 3)
+    assert tmc.driver_default('tmc2240').tpfd == 4
+    assert tmc.driver_default('tmc9999') == tmc.KLIPPER_DEFAULT
+
+
+def test_baseline_chopper_falls_back_to_the_drivers_defaults():
+    stock_2240 = tmc.baseline_chopper({}, default=tmc.DRIVERS['2240'].default)
+    assert stock_2240 == tmc.Chopper(2, 3, 5, 2, 4)
+    # explicit registers win, a missing tpfd line means Klipper's stock tpfd
+    assert tmc.baseline_chopper({'tbl': 0, 'toff': 8}, default=tmc.DRIVERS['2240'].default) \
+        == tmc.Chopper(0, 8, 5, 2, 4)
+    assert tmc.baseline_chopper({}) == tmc.KLIPPER_DEFAULT
+
+
+def test_stock_spelling_follows_the_run():
+    # a run that does not sweep tpfd spells it None on every candidate; the stock
+    # reference must be spelled the same way to be found among the measurements
+    assert tmc.stock_chopper(tmc.DRIVERS['2240'], sweep_tpfd=False) == tmc.Chopper(2, 3, 5, 2)
+    assert tmc.stock_chopper(tmc.DRIVERS['2240'], sweep_tpfd=True) == tmc.Chopper(2, 3, 5, 2, 4)
+    assert tmc.stock_chopper(tmc.DRIVERS['2209'], sweep_tpfd=True) == tmc.KLIPPER_DEFAULT

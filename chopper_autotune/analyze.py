@@ -309,7 +309,7 @@ def run_save_currents(mk, items: 'list[tuple[str, str, float]]'):
                   for driver, stepper, amps in items], 'the new run currents')
 
 
-TUNED_FIELD_RE = re.compile(r'^\s*driver_(tbl|toff|hstrt|hend)\s*[:=]',
+TUNED_FIELD_RE = re.compile(r'^\s*driver_(tbl|toff|hstrt|hend|tpfd)\s*[:=]',
                             re.IGNORECASE | re.MULTILINE)
 
 
@@ -373,11 +373,14 @@ def run_restore_config(args) -> int:
     sections = tuned_tmc_sections(files)
     if not sections:
         raise SystemExit('no tuned TMC sections found — the config already runs stock registers')
-    print('Writing Klipper default registers %s into: %s (run_current untouched)'
-          % (tmc.KLIPPER_DEFAULT.label(), ', '.join(sections)))
+    # stock registers are a property of the driver: a 2240 restored to the 2209 values
+    # would sit in a third state that is neither stock nor tuned
+    defaults = {section: tmc.driver_default(section.split()[0]) for section in sections}
+    print('Writing Klipper default registers into: %s (run_current untouched)'
+          % ', '.join('%s (%s)' % (s, d.label()) for s, d in defaults.items()))
     _persist(mk, [(section,
-                   lambda text, s: updated_config(text, s, tmc.KLIPPER_DEFAULT.fields()))
-                  for section in sections], 'the Klipper default registers')
+                   lambda text, s, d=default: updated_config(text, s, d.fields()))
+                  for section, default in defaults.items()], 'the Klipper default registers')
     _reset_instrument_state()
     return 0
 

@@ -1,7 +1,7 @@
 """TMC driver models and datasheet-derived math: register constraints, chopper frequency."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Optional
 
 BLANK_TIME_CLOCKS = (16, 24, 36, 54)
@@ -14,26 +14,6 @@ CAUTION_FREQ_HZ = 30000.0
 HYST_CAP = 16.0                 # datasheet max effective hysteresis
 FREQ_MARGIN_WEIGHT = 0.05       # tie-breaker only: a real vibration win always overrides
 HYST_EDGE_WEIGHT = 0.05
-
-
-@dataclass(frozen=True)
-class Driver:
-    name: str
-    fclk_hz: float
-    has_tpfd: bool
-    # (field, value forcing spreadCycle, value restoring stealthChop); None = no stealthChop
-    spreadcycle_switch: 'Optional[tuple[str, int, int]]' = None
-    blank_times: 'tuple[int, ...]' = BLANK_TIME_CLOCKS
-
-
-DRIVERS = {
-    '2130': Driver('2130', 13.2e6, False, ('en_pwm_mode', 0, 1)),
-    '2208': Driver('2208', 12.0e6, False, ('en_spreadcycle', 1, 0), BLANK_TIME_CLOCKS_220X),
-    '2209': Driver('2209', 12.0e6, False, ('en_spreadcycle', 1, 0), BLANK_TIME_CLOCKS_220X),
-    '2660': Driver('2660', 15.0e6, False),
-    '2240': Driver('2240', 12.5e6, True, ('en_pwm_mode', 0, 1)),
-    '5160': Driver('5160', 12.0e6, True, ('en_pwm_mode', 0, 1)),
-}
 
 
 @dataclass(frozen=True)
@@ -54,17 +34,57 @@ class Chopper:
         return '_'.join('%s%d' % (name, value) for name, value in self.fields().items())
 
 
-KLIPPER_DEFAULT = Chopper(2, 3, 5, 0)
+# the registers Klipper programs when the config carries no driver_* lines — they
+# differ per driver (klippy/extras/tmcXXXX.py), so "stock" is a driver property
+KLIPPER_DEFAULT = Chopper(2, 3, 5, 0)                 # tmc2208 / tmc2209
+KLIPPER_DEFAULT_2130 = Chopper(1, 4, 0, 7)
+KLIPPER_DEFAULT_2660 = Chopper(2, 4, 3, 3)
+KLIPPER_DEFAULT_TPFD = Chopper(2, 3, 5, 2, 4)          # tmc2240 / tmc5160
 
 
-def baseline_chopper(registers: dict, tpfd: 'Optional[int]' = None) -> Chopper:
+@dataclass(frozen=True)
+class Driver:
+    name: str
+    fclk_hz: float
+    has_tpfd: bool
+    # (field, value forcing spreadCycle, value restoring stealthChop); None = no stealthChop
+    spreadcycle_switch: 'Optional[tuple[str, int, int]]' = None
+    blank_times: 'tuple[int, ...]' = BLANK_TIME_CLOCKS
+    default: Chopper = KLIPPER_DEFAULT
+
+
+DRIVERS = {
+    '2130': Driver('2130', 13.2e6, False, ('en_pwm_mode', 0, 1), default=KLIPPER_DEFAULT_2130),
+    '2208': Driver('2208', 12.0e6, False, ('en_spreadcycle', 1, 0), BLANK_TIME_CLOCKS_220X),
+    '2209': Driver('2209', 12.0e6, False, ('en_spreadcycle', 1, 0), BLANK_TIME_CLOCKS_220X),
+    '2660': Driver('2660', 15.0e6, False, default=KLIPPER_DEFAULT_2660),
+    '2240': Driver('2240', 12.5e6, True, ('en_pwm_mode', 0, 1), default=KLIPPER_DEFAULT_TPFD),
+    '5160': Driver('5160', 12.0e6, True, ('en_pwm_mode', 0, 1), default=KLIPPER_DEFAULT_TPFD),
+}
+
+
+def stock_chopper(driver: Driver, sweep_tpfd: bool) -> Chopper:
+    """The driver's stock registers in the spelling a run uses: a run that does not
+    sweep tpfd spells it None on every candidate ('leave the register alone'), and the
+    stock reference must share that spelling to be found among the measurements."""
+    return driver.default if sweep_tpfd else replace(driver.default, tpfd=None)
+
+
+def driver_default(section_type: str) -> Chopper:
+    """Stock chopper for a config section type like 'tmc2240'."""
+    driver = DRIVERS.get(section_type[3:] if section_type.startswith('tmc') else section_type)
+    return driver.default if driver else KLIPPER_DEFAULT
+
+
+def baseline_chopper(registers: dict, tpfd: 'Optional[int]' = None,
+                     default: Chopper = KLIPPER_DEFAULT) -> Chopper:
     """The chopper currently configured on a driver; missing fields fall back to
-    the Klipper defaults. The single owner of those fallback values."""
-    return Chopper(registers.get('tbl', KLIPPER_DEFAULT.tbl),
-                   registers.get('toff', KLIPPER_DEFAULT.toff),
-                   registers.get('hstrt', KLIPPER_DEFAULT.hstrt),
-                   registers.get('hend', KLIPPER_DEFAULT.hend),
-                   tpfd if tpfd is not None else registers.get('tpfd'))
+    that driver's Klipper defaults."""
+    return Chopper(registers.get('tbl', default.tbl),
+                   registers.get('toff', default.toff),
+                   registers.get('hstrt', default.hstrt),
+                   registers.get('hend', default.hend),
+                   tpfd if tpfd is not None else registers.get('tpfd', default.tpfd))
 
 
 def validate(c: Chopper) -> Optional[str]:

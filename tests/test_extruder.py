@@ -113,3 +113,14 @@ def test_extruder_descent_measures_live_and_caches(monkeypatch):
     assert winner in cache
     assert len(measured) == len(cache)          # every combo measured exactly once (cache)
     assert (winner.tbl, winner.toff) == (2, 3)  # stayed inside the forced ranges
+
+
+def test_extruder_context_reads_tpfd_on_tpfd_drivers():
+    settings = {'tmc2240 extruder': {'driver_tbl': 2, 'driver_toff': 3, 'driver_hstrt': 5,
+                                     'driver_hend': 2, 'driver_tpfd': 4},
+                'extruder': {'min_extrude_temp': 170}}
+    driver, name, regs, _, _ = extruder_context(settings)
+    assert name == '2240' and regs['tpfd'] == 4
+    # explicit stock lines read as stock, so the demo guard can refuse honestly
+    from chopper_autotune import tmc
+    assert tmc.baseline_chopper(regs, default=driver.default) == driver.default

@@ -10,7 +10,8 @@ from __future__ import annotations
 import math
 import os
 
-from .collect import Screen, detect_hardware, enter_spreadcycle, exit_spreadcycle, refuse_if_printing, run_restore
+from .collect import (Screen, detect_hardware, enter_spreadcycle, exit_spreadcycle, full_steps_per_mm,
+                      refuse_if_printing, run_restore)
 from .current import Referee, referee_axis, stress_vector
 from .dataset import save_json
 from .klippy import Klippy, find_socket
@@ -167,7 +168,7 @@ def run_envelope(args) -> int:
 def envelope(kl: Klippy, args) -> int:
     from .collect import motor_label
     motors = ['x', 'y'] if args.axis == 'xy' else [args.axis]
-    hw = {m: detect_hardware(kl, m) for m in motors}
+    hw = {m: detect_hardware(kl, m, accel=False) for m in motors}
     board = hw[motors[0]]
     settings = kl.settings()
     base_accel = args.accel or board.max_accel
@@ -193,7 +194,7 @@ def envelope(kl: Klippy, args) -> int:
     if rail.get('rotation_distance') and rail.get('microsteps'):
         # the ladder's real ceiling is usually the MCU's step generation, not the motor:
         # show the step rate so a Klipper "step rate" shutdown is no surprise
-        steps_per_mm = 200 * int(rail['microsteps']) / float(rail['rotation_distance'])
+        steps_per_mm = full_steps_per_mm(rail) * int(rail['microsteps'])
         print('  ladder top %d mm/s = %.0fk steps/s at %sx microstepping — if Klipper '
               'shuts down on step rate, lower MAX_SPEED'
               % (speeds[-1], speeds[-1] * steps_per_mm / 1000, rail['microsteps']))
