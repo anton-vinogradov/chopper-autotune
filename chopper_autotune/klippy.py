@@ -12,6 +12,7 @@ SOCKET_CANDIDATES = ('~/printer_data/comms/klippy.sock', '/tmp/klippy_uds')
 SEPARATOR = b'\x03'
 ACCEL_KEY = 'accel'
 OUTPUT_KEY = 'gcode_output'
+OUTPUT_MAX = 256           # the console subscription is broadcast and permanent: keep a tail
 
 
 class KlippyError(RuntimeError):
@@ -45,7 +46,7 @@ class Klippy:
         self._wakeup = threading.Condition(self._lock)
         self._responses = {}
         self._samples = deque()
-        self._output = []
+        self._output = deque(maxlen=OUTPUT_MAX)
         self._output_subscribed = False
         self._next_id = 0
         self._closed = False
@@ -137,17 +138,32 @@ class Klippy:
 
     def gcode_output(self, script: str) -> 'list[str]':
         """Run a script and return the console lines it printed (DUMP_TMC, QUERY_*...).
-        Output messages travel the same socket ahead of the script's own response, so
-        everything is in the buffer by the time the request returns."""
+        The console subscription is shared by every client and console lines travel
+        the same socket ahead of the script's own response, so the script is fenced
+        with ECHO markers and only the lines between them are returned."""
         if not self._output_subscribed:
             self.request('gcode/subscribe_output', {'response_template': {'key': OUTPUT_KEY}})
             self._output_subscribed = True
+        with self._lock:
+            self._next_id += 1
+            token = 'CHOPPER-%d' % self._next_id
+        begin, end = 'ECHO %s-BEGIN' % token, 'ECHO %s-END' % token
         with self._wakeup:
             self._output.clear()
-        self.gcode(script)
+        self.gcode('%s\n%s\n%s' % (begin, script, end))
         with self._wakeup:
-            lines, self._output = self._output, []
-        return lines
+            lines = list(self._output)
+            self._output.clear()
+        inside, fenced = False, []
+        for line in lines:
+            text = line.strip().lstrip('/').strip()      # console lines carry a '// ' prefix
+            if text == begin:
+                inside, fenced = True, []
+            elif text == end:
+                break
+            elif inside:
+                fenced.append(line)
+        return fenced
 
     def settings(self) -> dict:
         result = self.request('objects/query', {'objects': {'configfile': ['settings']}})

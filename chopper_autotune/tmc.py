@@ -1,6 +1,7 @@
 """TMC driver models and datasheet-derived math: register constraints, chopper frequency."""
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, replace
 from typing import Optional
 
@@ -147,18 +148,23 @@ def cfg_snippet(driver: Driver, stepper: str, c: Chopper) -> str:
 
 
 def parse_dump_field(lines: 'list[str]', register: str, field: str) -> 'int | None':
-    """A field's value from DUMP_TMC output ('GCONF:  0000000e en_pwm_mode=1 ...'):
-    Klipper prints only the non-zero fields, so a present register line without the
-    field means 0; None when the register line is missing altogether."""
-    for line in lines:
-        if line.strip().startswith(register + ':'):
-            for token in line.split()[2:]:
-                name, _, value = token.partition('=')
-                if name == field:
-                    try:
-                        return int(value)
-                    except ValueError:
-                        return None
+    """A field's value from DUMP_TMC output ('// GCONF:  0000000e en_pwm_mode=1 ...'):
+    Klipper prefixes console lines with '// ', joins multi-line answers with '\\n// ',
+    prints only the non-zero fields (a present register line without the field means
+    0) and formats some values ('3(32usteps)') — the numeric head is the value. None
+    when the register line is missing altogether."""
+    for message in lines:
+        for raw in str(message).split('\n'):
+            line = raw.strip()
+            if line.startswith('//'):
+                line = line[2:].strip()
+            if not line.startswith(register + ':'):
+                continue
+            for token in line.split()[1:]:
+                name, sep, value = token.partition('=')
+                if sep and name == field:
+                    head = re.match(r'-?(0x[0-9a-fA-F]+|\d+)', value)
+                    return int(head.group(0), 0) if head else None
             return 0
     return None
 

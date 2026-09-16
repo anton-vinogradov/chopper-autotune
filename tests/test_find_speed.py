@@ -22,6 +22,9 @@ def test_scan_sweeps_on_stock_registers_and_restores(tmp_path, monkeypatch):
         def gcode(self, script):
             self.scripts.append(script)
 
+        def gcode_output(self, script):
+            return []
+
         def subscribe_accel(self, chip):
             pass
 

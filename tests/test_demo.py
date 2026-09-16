@@ -153,6 +153,7 @@ def test_show_writes_state_for_both_motors(tmp_path, monkeypatch):
     sweeps = iter([[2000.0], [1000.0]] * 2)
     monkeypatch.setattr(demo_module, '_sweep', lambda *a, **kw: next(sweeps))
     kl = type('K', (), {'gcode': lambda self, s: None,
+                        'gcode_output': lambda self, s: [],
                         'subscribe_accel': lambda self, chip: None,
                         'is_printing': lambda self: False})()
 

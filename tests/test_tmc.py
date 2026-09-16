@@ -83,11 +83,15 @@ def test_stock_spelling_follows_the_run():
     assert tmc.stock_chopper(tmc.DRIVERS['2209'], sweep_tpfd=True) == tmc.KLIPPER_DEFAULT
 
 
-def test_parse_dump_field_reads_klippers_nonzero_only_format():
-    lines = ['GCONF:      00000004 en_spreadcycle=1 pdn_disable=1',
-             'CHOPCONF:   331082f1 toff=1 hstrt=7 hend=5 tbl=1 tpfd=1']
+def test_parse_dump_field_reads_klippers_console_format():
+    lines = ['// GCONF:      00000004 en_spreadcycle=1 pdn_disable=1',
+             '// CHOPCONF:   331082f1 toff=1 hstrt=7 hend=5 tbl=1 tpfd=1 mres=3(32usteps) intpol=1']
     assert tmc.parse_dump_field(lines, 'GCONF', 'en_spreadcycle') == 1
     assert tmc.parse_dump_field(lines, 'CHOPCONF', 'hend') == 5
+    assert tmc.parse_dump_field(lines, 'CHOPCONF', 'mres') == 3       # formatted value: numeric head
     # Klipper prints only non-zero fields: a present register without the field = 0
-    assert tmc.parse_dump_field(['GCONF:      00000000'], 'GCONF', 'en_spreadcycle') == 0
+    assert tmc.parse_dump_field(['// GCONF:      00000080 pdn_disable=1'], 'GCONF', 'en_spreadcycle') == 0
+    # a multi-line answer arrives as ONE message joined with '\n// '
+    joined = '// GCONF:      0000000e en_pwm_mode=1\n// CHOPCONF:   000100c3 toff=3'
+    assert tmc.parse_dump_field([joined], 'CHOPCONF', 'toff') == 3
     assert tmc.parse_dump_field(lines, 'PWMCONF', 'pwm_freq') is None

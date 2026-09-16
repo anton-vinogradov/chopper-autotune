@@ -235,6 +235,7 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
     screen = Screen(kl, hw.display)
     before_move = make_parker(kl, hw)
     try:
+        measure_baseline(hw, ds, args, done)       # the noise floor: motors still off
         enter_spreadcycle(kl, hw)
         # scan with the stock chopper: a well-tuned config suppresses the very resonance
         # peaks the scan is looking for (measured: 897 vs 2676 at the same speed)

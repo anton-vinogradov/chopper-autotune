@@ -135,7 +135,7 @@ def test_newest_dataset_picks_latest(tmp_path):
 
 
 class LiveKlippy(FakeKlippy):
-    """A printer whose DUMP_TMC answers with the given GCONF line."""
+    """A printer whose DUMP_TMC answers with the given console line (Klipper format)."""
 
     def __init__(self, settings, gconf_line):
         super().__init__(settings)
@@ -146,23 +146,93 @@ class LiveKlippy(FakeKlippy):
         return [self.gconf_line]
 
 
-def test_stealthchop_read_live_beats_the_config_line(capsys):
-    from chopper_autotune.collect import enter_spreadcycle
+def test_detect_hardware_never_talks_to_the_driver():
+    # the live read sends G-code: it must not happen before the dry-run/printing guards
+    kl = LiveKlippy(make_settings(), '// GCONF:      00000080 pdn_disable=1')
+    assert detect_hardware(kl, 'x').stealth is None
+    assert kl.scripts == []
+
+
+def test_enter_spreadcycle_reads_the_driver_mode_live(capsys):
+    from chopper_autotune.collect import enter_spreadcycle, exit_spreadcycle
     # klipper_tmc_autotune style: no stealthchop_threshold in the config, yet the driver
     # runs stealthChop (a 2209 prints no en_spreadcycle=1 when it is 0)
-    kl = LiveKlippy(make_settings(), 'GCONF:      00000080 pdn_disable=1')
+    kl = LiveKlippy(make_settings(), '// GCONF:      00000080 pdn_disable=1')
     hw = detect_hardware(kl, 'x')
+    enter_spreadcycle(kl, hw)
     assert hw.stealth == ('en_spreadcycle', 1, 0)
     assert 'klipper_tmc_autotune?' in capsys.readouterr().out
-    # the other way round: the config says stealthChop, the driver already runs spreadCycle
-    kl = LiveKlippy(make_settings(extra_tmc={'stealthchop_threshold': 999}),
-                    'GCONF:      00000084 en_spreadcycle=1 pdn_disable=1')
-    assert detect_hardware(kl, 'x').stealth is None
-    # unreadable output (no such register line) falls back to the config
-    kl = LiveKlippy(make_settings(extra_tmc={'stealthchop_threshold': 999}), 'ok')
-    assert detect_hardware(kl, 'x').stealth == ('en_spreadcycle', 1, 0)
-    # the stepper is enabled BEFORE the mode write, so autotune's on-enable toff
-    # re-apply cannot land after ours
-    enter_spreadcycle(kl, detect_hardware(kl, 'x'))
+    # the stepper is enabled BEFORE any register write (autotune re-applies toff on enable)
     assert kl.scripts[0] == 'SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=1'
     assert 'en_spreadcycle VALUE=1' in kl.scripts[1]
+    exit_spreadcycle(kl, hw)
+    assert 'en_spreadcycle VALUE=0' in kl.scripts[2]
+    # the config says stealthChop but the driver already runs spreadCycle (a killed run
+    # left it there): still force (a no-op) and still restore stealthChop at the end
+    kl = LiveKlippy(make_settings(extra_tmc={'stealthchop_threshold': 999}),
+                    '// GCONF:      00000084 en_spreadcycle=1 pdn_disable=1')
+    hw = detect_hardware(kl, 'x')
+    enter_spreadcycle(kl, hw)
+    assert hw.stealth == ('en_spreadcycle', 1, 0)
+    # unreadable output (no GCONF line) falls back to the config, loudly
+    kl = LiveKlippy(make_settings(extra_tmc={'stealthchop_threshold': 999}), '// ok')
+    hw = detect_hardware(kl, 'x')
+    enter_spreadcycle(kl, hw)
+    assert hw.stealth == ('en_spreadcycle', 1, 0)
+    assert 'trusting the config' in capsys.readouterr().out
+    # a console error is a fallback too, not a crash
+    class DeafKlippy(FakeKlippy):
+        def gcode_output(self, script):
+            raise KlippyError('no console')
+    deaf = DeafKlippy(make_settings())
+    hw = detect_hardware(deaf, 'x')
+    enter_spreadcycle(deaf, hw)
+    assert hw.stealth is None
+
+
+def test_enter_spreadcycle_end_to_end_over_the_socket():
+    """The whole wiring against a fake Klipper speaking the real protocol: subscription,
+    ECHO fence, '// ' prefixed DUMP_TMC line, and the mode write that follows."""
+    import json
+    import socket
+    import threading
+
+    from chopper_autotune.collect import enter_spreadcycle
+    from chopper_autotune.klippy import Klippy
+
+    client_sock, server = socket.socketpair()
+    kl = Klippy(path='<test>', timeout=5.0).connect(sock=client_sock)
+    sent = []
+
+    def reply(message):
+        server.sendall(json.dumps(message).encode() + b'\x03')
+
+    def serve():
+        buffer = b''
+        while True:
+            chunk = server.recv(4096)
+            if not chunk:
+                return
+            buffer += chunk
+            while b'\x03' in buffer:
+                raw, buffer = buffer.split(b'\x03', 1)
+                request = json.loads(raw)
+                if request['method'] == 'gcode/script':
+                    script = request['params']['script']
+                    sent.append(script)
+                    for line in script.split('\n'):
+                        if line.startswith('ECHO '):
+                            reply({'key': 'gcode_output', 'params': {'response': '// ' + line}})
+                        elif line.startswith('DUMP_TMC'):
+                            reply({'key': 'gcode_output',
+                                   'params': {'response': '// GCONF:      00000080 pdn_disable=1'}})
+                reply({'id': request['id'], 'result': {}})
+
+    threading.Thread(target=serve, daemon=True).start()
+    hw = detect_hardware(FakeKlippy(make_settings()), 'x')
+    enter_spreadcycle(kl, hw)
+    assert hw.stealth == ('en_spreadcycle', 1, 0)
+    assert sent[0] == 'SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=1'
+    assert 'DUMP_TMC STEPPER=stepper_x REGISTER=GCONF' in sent[1]
+    assert 'SET_TMC_FIELD STEPPER=stepper_x FIELD=en_spreadcycle VALUE=1' in sent[2]
+    kl.close()

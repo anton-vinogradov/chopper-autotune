@@ -121,16 +121,35 @@ def full_steps_per_mm(rail: dict) -> float:
 def live_stealth(kl: Klippy, stepper: str, driver: tmc.Driver) -> 'bool | None':
     """Whether the driver runs stealthChop RIGHT NOW, read from the live GCONF: the
     config's stealthchop_threshold is not the truth — klipper_tmc_autotune never writes
-    that option and sets the mode registers at runtime. None = could not read."""
+    that option and sets the mode registers at runtime. Sends G-code, so callers must
+    already be past the dry-run and printing guards. None = could not read."""
     if not driver.spreadcycle_switch:
         return None
     field, _, stealth_value = driver.spreadcycle_switch
     try:
         lines = kl.gcode_output('DUMP_TMC STEPPER=%s REGISTER=GCONF' % stepper)
-    except (KlippyError, AttributeError):
+    except KlippyError as why:
+        print('could not read the %s driver mode (%s)' % (stepper, why))
         return None
     value = tmc.parse_dump_field(lines, 'GCONF', field)
+    if value is None:
+        print('could not read the %s driver mode: DUMP_TMC printed no GCONF line' % stepper)
     return None if value is None else value == stealth_value
+
+
+def resolve_stealth(kl: Klippy, hw: Hardware):
+    """Settle hw.stealth from the live driver: forced when the driver runs stealthChop
+    OR the config asks for it — a spreadCycle left behind by a killed run still gets
+    its stealthChop back at the end. Falls back to the config when unreadable."""
+    if not hw.driver.spreadcycle_switch:
+        return
+    live = live_stealth(kl, hw.stepper, hw.driver)
+    if live is None:
+        print('trusting the config for the %s driver mode' % hw.stepper)
+    elif live and not hw.stealth:
+        print('%s runs stealthChop although the config has no stealthchop_threshold '
+              '(klipper_tmc_autotune?)' % hw.stepper)
+        hw.stealth = hw.driver.spreadcycle_switch
 
 
 def wake_stepper(kl: Klippy, stepper: str):
@@ -170,14 +189,8 @@ def detect_hardware(kl: Klippy, axis: str, accel: bool = True) -> Hardware:
     span = min(spans.values()) if 'core' in kinematics or 'hbot' in kinematics else spans[axis]
 
     stealth = None
-    if driver.spreadcycle_switch:
-        live = live_stealth(kl, stepper, driver)
-        configured = float(section.get('stealthchop_threshold') or 0) > 0
-        if live if live is not None else configured:
-            stealth = driver.spreadcycle_switch
-            if live and not configured:
-                print('%s runs stealthChop although the config has no stealthchop_threshold '
-                      '(klipper_tmc_autotune?) — spreadCycle will be forced for the test' % stepper)
+    if driver.spreadcycle_switch and float(section.get('stealthchop_threshold') or 0) > 0:
+        stealth = driver.spreadcycle_switch
 
     return Hardware(
         kl=kl,
@@ -310,8 +323,10 @@ def now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
 
-def park(kl: Klippy, hw: Hardware):
-    kl.gcode('G28 X Y\nG0 X%.1f Y%.1f F6000\nM400\nM18' % hw.center)
+def park(kl: Klippy, hw: Hardware, release: bool = True):
+    # a mid-run re-home keeps the motors energized: every disable->enable hands toff
+    # back to klipper_tmc_autotune's on-enable re-apply, replacing the candidate's
+    kl.gcode('G28 X Y\nG0 X%.1f Y%.1f F6000\nM400' % hw.center + ('\nM18' if release else ''))
 
 
 def refuse_if_printing(kl: Klippy):
@@ -391,11 +406,14 @@ def eta_text(seconds: float) -> str:
 
 
 def enter_spreadcycle(kl: Klippy, hw: Hardware):
-    """Chopper registers only act in spreadCycle; stealthChop would measure noise."""
+    """Chopper registers only act in spreadCycle; stealthChop would measure noise.
+    Runs after the dry-run/printing guards: it wakes the stepper, reads the live mode
+    and forces spreadCycle when needed."""
     wake_stepper(kl, hw.stepper)
+    resolve_stealth(kl, hw)
     if hw.stealth:
         field, force, _ = hw.stealth
-        print('stealthChop is configured: forcing spreadCycle for the test')
+        print('stealthChop is active: forcing spreadCycle for the test')
         kl.gcode(tmc.set_fields_script(hw.stepper, {field: force}))
 
 
@@ -517,7 +535,7 @@ def make_parker(kl: Klippy, hw: Hardware):
     def before_move(direction: int, travel: float):
         if state['moves'] >= PARK_INTERVAL_MOVES or abs(state['net'] + direction * travel) > headroom:
             print('Re-homing to reset accumulated drift')
-            park(kl, hw)
+            park(kl, hw, release=False)
             state['moves'] = 0
             state['net'] = 0.0
         state['moves'] += 1
@@ -861,8 +879,9 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
     before_move = make_parker(kl, hw)
     screen = Screen(kl, hw.display)
     try:
+        measure_baseline(hw, ds, args, done)       # the noise floor: motors still off
         enter_spreadcycle(kl, hw)
-        measure_baseline(hw, ds, args, done)
+        ds.update_manifest(forced_spreadcycle=bool(hw.stealth))
         if args.search == 'descent':
             ok, failed = run_descent(kl, hw, ds, args, tpfd, speeds, travel, accel, done,
                                      before_move, screen)

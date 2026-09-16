@@ -233,8 +233,8 @@ def demo(kl: Klippy, args) -> int:
     configs = [('default', default), ('tuned', tuned)]
     results = {name: [] for name, _ in configs}
     try:
+        measure_baseline(hw, ds, args, set())      # the noise floor: motors still off
         enter_spreadcycle(kl, hw)
-        measure_baseline(hw, ds, args, set())
         if live:
             results = _showcase(kl, hw, args, ds, configs, speed, travel, accel,
                                 before_move, screen)
