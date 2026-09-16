@@ -132,3 +132,37 @@ def test_newest_dataset_picks_latest(tmp_path):
     new = Dataset.create(tmp_path / 'b', {})
     new.append({'id': 'y', 'status': 'ok'})
     assert newest_dataset(bases=(tmp_path,)) == new.root
+
+
+class LiveKlippy(FakeKlippy):
+    """A printer whose DUMP_TMC answers with the given GCONF line."""
+
+    def __init__(self, settings, gconf_line):
+        super().__init__(settings)
+        self.gconf_line = gconf_line
+
+    def gcode_output(self, script):
+        assert script.startswith('DUMP_TMC STEPPER=stepper_x')
+        return [self.gconf_line]
+
+
+def test_stealthchop_read_live_beats_the_config_line(capsys):
+    from chopper_autotune.collect import enter_spreadcycle
+    # klipper_tmc_autotune style: no stealthchop_threshold in the config, yet the driver
+    # runs stealthChop (a 2209 prints no en_spreadcycle=1 when it is 0)
+    kl = LiveKlippy(make_settings(), 'GCONF:      00000080 pdn_disable=1')
+    hw = detect_hardware(kl, 'x')
+    assert hw.stealth == ('en_spreadcycle', 1, 0)
+    assert 'klipper_tmc_autotune?' in capsys.readouterr().out
+    # the other way round: the config says stealthChop, the driver already runs spreadCycle
+    kl = LiveKlippy(make_settings(extra_tmc={'stealthchop_threshold': 999}),
+                    'GCONF:      00000084 en_spreadcycle=1 pdn_disable=1')
+    assert detect_hardware(kl, 'x').stealth is None
+    # unreadable output (no such register line) falls back to the config
+    kl = LiveKlippy(make_settings(extra_tmc={'stealthchop_threshold': 999}), 'ok')
+    assert detect_hardware(kl, 'x').stealth == ('en_spreadcycle', 1, 0)
+    # the stepper is enabled BEFORE the mode write, so autotune's on-enable toff
+    # re-apply cannot land after ours
+    enter_spreadcycle(kl, detect_hardware(kl, 'x'))
+    assert kl.scripts[0] == 'SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=1'
+    assert 'en_spreadcycle VALUE=1' in kl.scripts[1]

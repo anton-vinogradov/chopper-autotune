@@ -16,7 +16,8 @@ import os
 import statistics
 
 from . import tmc
-from .collect import Range, Screen, capture_stream, detect_hardware, refuse_if_printing, run_restore
+from .collect import (Range, Screen, capture_stream, detect_hardware, live_stealth, refuse_if_printing,
+                      run_restore, wake_stepper)
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
 from .metrics import transients, vibration_score
@@ -38,9 +39,10 @@ def load_winner_state() -> 'dict | None':
     return load_json(STATE) or None
 
 
-def extruder_context(settings) -> 'tuple[tmc.Driver, str, dict, tuple | None, float]':
+def extruder_context(settings, kl=None) -> 'tuple[tmc.Driver, str, dict, tuple | None, float]':
     """The extruder's TMC driver, its section name, current registers, the stealthChop
-    switch (if configured) and min_extrude_temp."""
+    switch (read live when a connection is given, else from the config) and
+    min_extrude_temp."""
     for name in tmc.DRIVERS:
         section = settings.get('tmc%s extruder' % name)
         if section is not None:
@@ -49,8 +51,11 @@ def extruder_context(settings) -> 'tuple[tmc.Driver, str, dict, tuple | None, fl
                     for f in ('tbl', 'toff', 'hstrt', 'hend') + (('tpfd',) if driver.has_tpfd else ())
                     if section.get('driver_%s' % f) is not None}
             stealth = None
-            if driver.spreadcycle_switch and float(section.get('stealthchop_threshold') or 0) > 0:
-                stealth = driver.spreadcycle_switch
+            if driver.spreadcycle_switch:
+                live = live_stealth(kl, 'extruder', driver) if kl is not None else None
+                configured = float(section.get('stealthchop_threshold') or 0) > 0
+                if live if live is not None else configured:
+                    stealth = driver.spreadcycle_switch
             min_temp = float(settings.get('extruder', {}).get('min_extrude_temp', 170))
             return driver, name, regs, stealth, min_temp
     raise SystemExit('no supported TMC driver section found for the extruder')
@@ -129,6 +134,7 @@ def extruder_show(kl: Klippy, args, driver: tmc.Driver, baseline_regs: dict,
         screen.update('Chopper E show: heating to %.0fC' % temp, force=True)
         kl.gcode('M104 S%.0f' % temp)
         kl.gcode('TEMPERATURE_WAIT SENSOR=extruder MINIMUM=%.0f' % (temp - 3))
+        wake_stepper(kl, 'extruder')
         if stealth:
             # chopper registers only act in spreadCycle: without the force, both phases
             # would measure stealthChop vs stealthChop and report a fake 1.0x
@@ -179,7 +185,7 @@ def extruder_tune(kl: Klippy, args) -> int:
         return 0
 
     settings = kl.settings()
-    driver, driver_name, baseline_regs, stealth, min_temp = extruder_context(settings)
+    driver, driver_name, baseline_regs, stealth, min_temp = extruder_context(settings, kl)
     temp = float(args.temp)
     if temp < min_temp:
         raise SystemExit('TEMP=%.0f is below min_extrude_temp (%.0f) — the filament could '
@@ -224,9 +230,10 @@ def extruder_tune(kl: Klippy, args) -> int:
         kl.gcode('M104 S%.0f' % temp)
         kl.gcode('TEMPERATURE_WAIT SENSOR=extruder MINIMUM=%.0f' % (temp - 3))
 
+        wake_stepper(kl, 'extruder')
         if stealth:
             field, force, _ = stealth
-            print('stealthChop is configured on the extruder: forcing spreadCycle')
+            print('stealthChop is active on the extruder: forcing spreadCycle')
             kl.gcode(tmc.set_fields_script('extruder', {field: force}))
 
         speed = args.speed

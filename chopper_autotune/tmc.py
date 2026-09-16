@@ -146,6 +146,23 @@ def cfg_snippet(driver: Driver, stepper: str, c: Chopper) -> str:
     return '\n'.join(lines)
 
 
+def parse_dump_field(lines: 'list[str]', register: str, field: str) -> 'int | None':
+    """A field's value from DUMP_TMC output ('GCONF:  0000000e en_pwm_mode=1 ...'):
+    Klipper prints only the non-zero fields, so a present register line without the
+    field means 0; None when the register line is missing altogether."""
+    for line in lines:
+        if line.strip().startswith(register + ':'):
+            for token in line.split()[2:]:
+                name, _, value = token.partition('=')
+                if name == field:
+                    try:
+                        return int(value)
+                    except ValueError:
+                        return None
+            return 0
+    return None
+
+
 def set_fields_script(stepper: str, fields: dict) -> str:
     return '\n'.join('SET_TMC_FIELD STEPPER=%s FIELD=%s VALUE=%d' % (stepper, name, value)
                      for name, value in fields.items())

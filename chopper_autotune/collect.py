@@ -118,6 +118,28 @@ def full_steps_per_mm(rail: dict) -> float:
             / float(rail['rotation_distance']))
 
 
+def live_stealth(kl: Klippy, stepper: str, driver: tmc.Driver) -> 'bool | None':
+    """Whether the driver runs stealthChop RIGHT NOW, read from the live GCONF: the
+    config's stealthchop_threshold is not the truth — klipper_tmc_autotune never writes
+    that option and sets the mode registers at runtime. None = could not read."""
+    if not driver.spreadcycle_switch:
+        return None
+    field, _, stealth_value = driver.spreadcycle_switch
+    try:
+        lines = kl.gcode_output('DUMP_TMC STEPPER=%s REGISTER=GCONF' % stepper)
+    except (KlippyError, AttributeError):
+        return None
+    value = tmc.parse_dump_field(lines, 'GCONF', field)
+    return None if value is None else value == stealth_value
+
+
+def wake_stepper(kl: Klippy, stepper: str):
+    """Enable the stepper BEFORE any register write: klipper_tmc_autotune re-applies
+    its own toff on every enable event, so a write landing before the first move
+    (which enables the motor) would be silently undone."""
+    kl.gcode('SET_STEPPER_ENABLE STEPPER=%s ENABLE=1' % stepper)
+
+
 def detect_hardware(kl: Klippy, axis: str, accel: bool = True) -> Hardware:
     settings = kl.settings()
     stepper = 'stepper_' + axis
@@ -148,8 +170,14 @@ def detect_hardware(kl: Klippy, axis: str, accel: bool = True) -> Hardware:
     span = min(spans.values()) if 'core' in kinematics or 'hbot' in kinematics else spans[axis]
 
     stealth = None
-    if driver.spreadcycle_switch and float(section.get('stealthchop_threshold') or 0) > 0:
-        stealth = driver.spreadcycle_switch
+    if driver.spreadcycle_switch:
+        live = live_stealth(kl, stepper, driver)
+        configured = float(section.get('stealthchop_threshold') or 0) > 0
+        if live if live is not None else configured:
+            stealth = driver.spreadcycle_switch
+            if live and not configured:
+                print('%s runs stealthChop although the config has no stealthchop_threshold '
+                      '(klipper_tmc_autotune?) — spreadCycle will be forced for the test' % stepper)
 
     return Hardware(
         kl=kl,
@@ -364,6 +392,7 @@ def eta_text(seconds: float) -> str:
 
 def enter_spreadcycle(kl: Klippy, hw: Hardware):
     """Chopper registers only act in spreadCycle; stealthChop would measure noise."""
+    wake_stepper(kl, hw.stepper)
     if hw.stealth:
         field, force, _ = hw.stealth
         print('stealthChop is configured: forcing spreadCycle for the test')

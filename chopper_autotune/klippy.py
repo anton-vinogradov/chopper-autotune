@@ -11,6 +11,7 @@ from collections import deque
 SOCKET_CANDIDATES = ('~/printer_data/comms/klippy.sock', '/tmp/klippy_uds')
 SEPARATOR = b'\x03'
 ACCEL_KEY = 'accel'
+OUTPUT_KEY = 'gcode_output'
 
 
 class KlippyError(RuntimeError):
@@ -44,6 +45,8 @@ class Klippy:
         self._wakeup = threading.Condition(self._lock)
         self._responses = {}
         self._samples = deque()
+        self._output = []
+        self._output_subscribed = False
         self._next_id = 0
         self._closed = False
 
@@ -100,6 +103,9 @@ class Klippy:
                     while self._samples and self._samples[0][0] < horizon:
                         self._samples.popleft()
                 self._wakeup.notify_all()
+        elif message.get('key') == OUTPUT_KEY:
+            with self._wakeup:
+                self._output.append(str(message['params'].get('response', '')))
         elif 'id' in message:
             with self._wakeup:
                 self._responses[message['id']] = message
@@ -128,6 +134,20 @@ class Klippy:
 
     def gcode(self, script: str):
         return self.request('gcode/script', {'script': script})
+
+    def gcode_output(self, script: str) -> 'list[str]':
+        """Run a script and return the console lines it printed (DUMP_TMC, QUERY_*...).
+        Output messages travel the same socket ahead of the script's own response, so
+        everything is in the buffer by the time the request returns."""
+        if not self._output_subscribed:
+            self.request('gcode/subscribe_output', {'response_template': {'key': OUTPUT_KEY}})
+            self._output_subscribed = True
+        with self._wakeup:
+            self._output.clear()
+        self.gcode(script)
+        with self._wakeup:
+            lines, self._output = self._output, []
+        return lines
 
     def settings(self) -> dict:
         result = self.request('objects/query', {'objects': {'configfile': ['settings']}})
