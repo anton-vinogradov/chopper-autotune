@@ -159,7 +159,7 @@ def test_parker_parks_before_drift_reaches_rail():
     hw = make_hw(kl)
     import chopper_autotune.collect as cm
     original = cm.park
-    cm.park = lambda kl_, hw_: parks.append(True)
+    cm.park = lambda kl_, hw_, release=True: parks.append(True)
     try:
         before_move = cm.make_parker(kl, hw)
         # span 260 -> headroom 120; alternating moves never park

@@ -65,7 +65,7 @@ Also datasheet-driven:
 
 - search space constraints (effective `HSTRT`+`HEND` ≤ 16 per datasheet, `TOFF` = 0 forbidden, `TOFF` = 1 blank-time restrictions) — pruned before any motion;
 - per-driver capability matrix: `TPFD` enters the grid only on TMC2240/5160, clock frequencies and blank-time tables match the driver datasheets;
-- when `stealthchop_threshold` is configured, spreadCycle is forced for the duration of the test and restored afterwards — chopper registers only act in spreadCycle, stealthChop would measure noise;
+- when the driver runs stealthChop, spreadCycle is forced for the duration of the test and restored afterwards — chopper registers only act in spreadCycle, stealthChop would measure noise. The mode is read from the live driver (`DUMP_TMC`), not from the config: `klipper_tmc_autotune` never writes `stealthchop_threshold` and sets the mode registers at runtime. That plugin also re-applies its own `toff` every time a stepper is enabled, so the tool enables the stepper before writing any register;
 - run current is measured too: `CHOPPER_CURRENT` stresses one motor at a time and bisects to the skip threshold with an endstop referee — see the [command reference](#command-reference).
 
 ## The science

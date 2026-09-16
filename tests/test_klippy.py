@@ -109,3 +109,33 @@ def test_find_socket(tmp_path):
     assert find_socket(str(path)) == str(path)
     with pytest.raises(KlippyError):
         find_socket(str(tmp_path / 'missing.sock'))
+
+
+def test_gcode_output_returns_only_the_fenced_lines():
+    kl, server = make_pair()
+
+    def serve():
+        buffer = b''
+        seen = 0
+        while seen < 2:
+            buffer += server.recv(4096)
+            while b'\x03' in buffer:
+                raw, buffer = buffer.split(b'\x03', 1)
+                request = json.loads(raw)
+                seen += 1
+                if request['method'] == 'gcode/script':
+                    # a foreign console line first, then the script's own output: Klipper
+                    # prefixes every line with '// ' and the ECHO markers come back as such
+                    send(server, {'key': 'gcode_output', 'params': {'response': '// someone else'}})
+                    for line in request['params']['script'].split('\n'):
+                        if line.startswith('ECHO '):
+                            send(server, {'key': 'gcode_output', 'params': {'response': '// ' + line}})
+                        else:
+                            send(server, {'key': 'gcode_output',
+                                          'params': {'response': '// GCONF:      0000000e en_pwm_mode=1'}})
+                send(server, {'id': request['id'], 'result': {}})
+
+    threading.Thread(target=serve, daemon=True).start()
+    lines = kl.gcode_output('DUMP_TMC STEPPER=stepper_x REGISTER=GCONF')
+    assert lines == ['// GCONF:      0000000e en_pwm_mode=1']
+    kl.close()

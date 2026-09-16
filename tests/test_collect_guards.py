@@ -236,3 +236,19 @@ def test_endstop_tools_need_no_accelerometer():
     assert detect_hardware(FakeKl(settings), 'x', accel=False).accel_chip == ''
     with pytest.raises(SystemExit, match='accelerometer'):
         detect_hardware(FakeKl(settings), 'x')
+
+
+def test_mid_run_rehome_keeps_the_motors_energized():
+    from types import SimpleNamespace
+
+    from chopper_autotune.collect import PARK_INTERVAL_MOVES, make_parker, park
+    scripts = []
+    kl = SimpleNamespace(gcode=scripts.append)
+    hw = SimpleNamespace(center=(130.0, 130.0), axis_span=260.0)
+    park(kl, hw)                                   # the start: motors released for the noise floor
+    assert scripts[-1].endswith('M18')
+    before_move = make_parker(kl, hw)
+    for _ in range(PARK_INTERVAL_MOVES + 1):
+        before_move(1, 1.0)
+    # a disable->enable mid-run would hand toff back to klipper_tmc_autotune's re-apply
+    assert 'G28 X Y' in scripts[-1] and 'M18' not in scripts[-1]

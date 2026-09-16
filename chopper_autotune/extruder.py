@@ -16,7 +16,8 @@ import os
 import statistics
 
 from . import tmc
-from .collect import Range, Screen, capture_stream, detect_hardware, refuse_if_printing, run_restore
+from .collect import (Range, Screen, capture_stream, detect_hardware, live_stealth, refuse_if_printing,
+                      run_restore, wake_stepper)
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
 from .metrics import transients, vibration_score
@@ -54,6 +55,21 @@ def extruder_context(settings) -> 'tuple[tmc.Driver, str, dict, tuple | None, fl
             min_temp = float(settings.get('extruder', {}).get('min_extrude_temp', 170))
             return driver, name, regs, stealth, min_temp
     raise SystemExit('no supported TMC driver section found for the extruder')
+
+
+def resolve_extruder_stealth(kl: Klippy, driver: tmc.Driver, configured: 'tuple | None'):
+    """Live driver mode for the extruder (see collect.resolve_stealth): runs after the
+    guards and the heat-up, right before the mode is forced."""
+    if not driver.spreadcycle_switch:
+        return configured
+    live = live_stealth(kl, 'extruder', driver)
+    if live is None:
+        print('trusting the config for the extruder driver mode')
+    elif live and not configured:
+        print('the extruder runs stealthChop although the config has no stealthchop_threshold '
+              '(klipper_tmc_autotune?)')
+        return driver.spreadcycle_switch
+    return configured
 
 
 def oscillation(speed: float, amp: float, cycles: int) -> str:
@@ -129,6 +145,8 @@ def extruder_show(kl: Klippy, args, driver: tmc.Driver, baseline_regs: dict,
         screen.update('Chopper E show: heating to %.0fC' % temp, force=True)
         kl.gcode('M104 S%.0f' % temp)
         kl.gcode('TEMPERATURE_WAIT SENSOR=extruder MINIMUM=%.0f' % (temp - 3))
+        wake_stepper(kl, 'extruder')
+        stealth = resolve_extruder_stealth(kl, driver, stealth)
         if stealth:
             # chopper registers only act in spreadCycle: without the force, both phases
             # would measure stealthChop vs stealthChop and report a fake 1.0x
@@ -224,9 +242,11 @@ def extruder_tune(kl: Klippy, args) -> int:
         kl.gcode('M104 S%.0f' % temp)
         kl.gcode('TEMPERATURE_WAIT SENSOR=extruder MINIMUM=%.0f' % (temp - 3))
 
+        wake_stepper(kl, 'extruder')
+        stealth = resolve_extruder_stealth(kl, driver, stealth)
         if stealth:
             field, force, _ = stealth
-            print('stealthChop is configured on the extruder: forcing spreadCycle')
+            print('stealthChop is active on the extruder: forcing spreadCycle')
             kl.gcode(tmc.set_fields_script('extruder', {field: force}))
 
         speed = args.speed

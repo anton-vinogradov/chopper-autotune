@@ -124,3 +124,22 @@ def test_extruder_context_reads_tpfd_on_tpfd_drivers():
     # explicit stock lines read as stock, so the demo guard can refuse honestly
     from chopper_autotune import tmc
     assert tmc.baseline_chopper(regs, default=driver.default) == driver.default
+
+
+def test_extruder_stealth_resolved_live_before_the_force():
+    from chopper_autotune import tmc
+    from chopper_autotune.extruder import resolve_extruder_stealth
+
+    class LiveKl:
+        def gcode_output(self, script):
+            assert script == 'DUMP_TMC STEPPER=extruder REGISTER=GCONF'
+            return ['// GCONF:      0000000e en_pwm_mode=1']
+    driver = tmc.DRIVERS['2240']
+    # no stealthchop_threshold line, yet en_pwm_mode=1 = stealthChop (autotune's doing)
+    assert resolve_extruder_stealth(LiveKl(), driver, None) == ('en_pwm_mode', 0, 1)
+
+    class DeafKl:
+        def gcode_output(self, script):
+            return ['// ok']
+    assert resolve_extruder_stealth(DeafKl(), driver, None) is None
+    assert resolve_extruder_stealth(DeafKl(), driver, driver.spreadcycle_switch) == driver.spreadcycle_switch
