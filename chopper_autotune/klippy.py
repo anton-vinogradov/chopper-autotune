@@ -19,6 +19,14 @@ class KlippyError(RuntimeError):
     pass
 
 
+def fence_markers(token: str) -> 'tuple[str, str]':
+    """The ECHO lines around a script whose console output is captured. ECHO is an
+    extended command: Klipper parses its arguments as KEY=VALUE only, a bare word is a
+    'Malformed command' that aborts the whole script. The token must not contain
+    spaces, quotes or '#', ';', '*' (comment and checksum characters)."""
+    return 'ECHO %s=BEGIN' % token, 'ECHO %s=END' % token
+
+
 def find_socket(explicit: 'str | None' = None) -> str:
     candidates = (explicit,) if explicit else SOCKET_CANDIDATES
     for candidate in candidates:
@@ -146,23 +154,28 @@ class Klippy:
             self._output_subscribed = True
         with self._lock:
             self._next_id += 1
-            token = 'CHOPPER-%d' % self._next_id
-        begin, end = 'ECHO %s-BEGIN' % token, 'ECHO %s-END' % token
+            token = 'CHOPPER-%d-%d' % (os.getpid(), self._next_id)
+        begin, end = fence_markers(token)
         with self._wakeup:
             self._output.clear()
         self.gcode('%s\n%s\n%s' % (begin, script, end))
         with self._wakeup:
             lines = list(self._output)
             self._output.clear()
-        inside, fenced = False, []
+        begun = ended = False
+        fenced = []
         for line in lines:
             text = line.strip().lstrip('/').strip()      # console lines carry a '// ' prefix
             if text == begin:
-                inside, fenced = True, []
+                begun, fenced = True, []
             elif text == end:
+                ended = begun
                 break
-            elif inside:
+            elif begun:
                 fenced.append(line)
+        if not ended:
+            raise KlippyError('console fence %s not seen (%d console lines captured)'
+                              % ('END' if begun else 'BEGIN', len(lines)))
         return fenced
 
     def settings(self) -> dict:

@@ -161,8 +161,8 @@ def test_enter_spreadcycle_reads_the_driver_mode_live(capsys):
     hw = detect_hardware(kl, 'x')
     enter_spreadcycle(kl, hw)
     assert hw.stealth == ('en_spreadcycle', 1, 0)
-    assert 'klipper_tmc_autotune?' in capsys.readouterr().out
-    # the stepper is enabled BEFORE any register write (autotune re-applies toff on enable)
+    assert 'reports stealthChop although the config' in capsys.readouterr().out
+    # the stepper is enabled BEFORE any register write (enabling resets toff)
     assert kl.scripts[0] == 'SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=1'
     assert 'en_spreadcycle VALUE=1' in kl.scripts[1]
     exit_spreadcycle(kl, hw)
@@ -192,11 +192,13 @@ def test_enter_spreadcycle_reads_the_driver_mode_live(capsys):
 
 def test_enter_spreadcycle_end_to_end_over_the_socket():
     """The whole wiring against a fake Klipper speaking the real protocol: subscription,
-    ECHO fence, '// ' prefixed DUMP_TMC line, and the mode write that follows."""
+    ECHO fence (refused unless KEY=VALUE, like Klipper), '// ' prefixed DUMP_TMC line,
+    and the mode write that follows."""
     import json
     import socket
     import threading
 
+    import fake_klipper
     from chopper_autotune.collect import enter_spreadcycle
     from chopper_autotune.klippy import Klippy
 
@@ -204,8 +206,8 @@ def test_enter_spreadcycle_end_to_end_over_the_socket():
     kl = Klippy(path='<test>', timeout=5.0).connect(sock=client_sock)
     sent = []
 
-    def reply(message):
-        server.sendall(json.dumps(message).encode() + b'\x03')
+    def respond(line):
+        return ['// GCONF:      00000080 pdn_disable=1'] if line.startswith('DUMP_TMC') else []
 
     def serve():
         buffer = b''
@@ -218,15 +220,10 @@ def test_enter_spreadcycle_end_to_end_over_the_socket():
                 raw, buffer = buffer.split(b'\x03', 1)
                 request = json.loads(raw)
                 if request['method'] == 'gcode/script':
-                    script = request['params']['script']
-                    sent.append(script)
-                    for line in script.split('\n'):
-                        if line.startswith('ECHO '):
-                            reply({'key': 'gcode_output', 'params': {'response': '// ' + line}})
-                        elif line.startswith('DUMP_TMC'):
-                            reply({'key': 'gcode_output',
-                                   'params': {'response': '// GCONF:      00000080 pdn_disable=1'}})
-                reply({'id': request['id'], 'result': {}})
+                    sent.append(request['params']['script'])
+                    fake_klipper.run_script(server, request, respond)
+                else:
+                    fake_klipper.send(server, {'id': request['id'], 'result': {}})
 
     threading.Thread(target=serve, daemon=True).start()
     hw = detect_hardware(FakeKlippy(make_settings()), 'x')

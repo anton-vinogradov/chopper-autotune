@@ -250,5 +250,5 @@ def test_mid_run_rehome_keeps_the_motors_energized():
     before_move = make_parker(kl, hw)
     for _ in range(PARK_INTERVAL_MOVES + 1):
         before_move(1, 1.0)
-    # a disable->enable mid-run would hand toff back to klipper_tmc_autotune's re-apply
+    # a disable->enable mid-run would reset toff (Klipper's config copy or klipper_tmc_autotune)
     assert 'G28 X Y' in scripts[-1] and 'M18' not in scripts[-1]
