@@ -238,7 +238,7 @@ def demo(kl: Klippy, args) -> int:
     ds = Dataset.create(root, {'version': __version__, 'created': now(), 'mode': 'demo',
                                'axis': args.axis, 'stepper': hw.stepper, 'driver': hw.driver.name,
                                'speed': speed, 'default': default.label(), 'tuned': tuned.label()})
-    print('Preparing: home XY, park at center, switch every motor but Z off')
+    print('Preparing: home XY, park at center, switch the gantry and head motors off')
     guard = ThermalGuard(kl, kl.settings())
     refuse_blind_z_hop(kl, kl.settings())
     guard.preflight()

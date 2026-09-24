@@ -139,8 +139,9 @@ def test_a_failed_mid_run_homing_stops_instead_of_climbing():
     assert kl.blind_lifts == 0
     # Klipper's motor_off counts the motors as off, the restore may have re-energized them:
     # each is enabled, then disabled, so Klipper really writes toff=0
-    assert kl.scripts[-1].startswith('SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=1\n'
-                                     'SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=0')
+    assert kl.scripts[-1].startswith('SET_STEPPER_ENABLE STEPPER="stepper_x" ENABLE=1\n'
+                                     'SET_STEPPER_ENABLE STEPPER="stepper_x" ENABLE=0')
+    assert 'STEPPER="extruder" ENABLE=1' not in kl.scripts[-1]   # no registers written there
 
 
 def test_the_extruder_tools_never_switch_z_off():
@@ -179,3 +180,28 @@ def test_the_xy_homing_is_cleared_only_with_every_axis_homed(tmp_path):
     kl = SafeZHomeKl(homed='xy', klipper_path=str(tmp_path))
     release_gantry(kl)
     assert 'SET_KINEMATIC_POSITION' not in kl.scripts[-1]
+
+
+def test_a_release_without_a_clearable_homing_forgets_it_all_and_keeps_z_holding():
+    # no CLEAR_HOMED (or Z unhomed): M84 forgets the stale X/Y homing, Z goes back on
+    kl = SafeZHomeKl(homed='xy', override={})
+    release_gantry(kl)
+    assert kl.scripts[-1].endswith('M84\nSET_STEPPER_ENABLE STEPPER="stepper_z" ENABLE=1')
+
+
+def test_only_gantry_and_head_motors_are_switched_off():
+    # a cutter or an MMU lane is none of the tool's business; names with spaces get quotes
+    from chopper_autotune.collect import motors_off_but_z
+    kl = SafeZHomeKl(homed='xyz')
+    kl.stepper_states = lambda: {'manual_stepper cutter': True, 'extruder_stepper belted': True,
+                                 'stepper_x': True, 'stepper_y': True, 'stepper_z': True,
+                                 'extruder': True}
+    script = motors_off_but_z(kl)
+    assert 'STEPPER="extruder_stepper belted" ENABLE=0' in script
+    assert 'manual_stepper' not in script and 'stepper_z' not in script
+
+
+def test_corexz_is_refused_its_x_motors_carry_z():
+    from chopper_autotune.collect import refuse_multi_motor
+    with pytest.raises(SystemExit, match='corexz: the X motors move Z too'):
+        refuse_multi_motor({'printer': {'kinematics': 'corexz'}, 'stepper_x': {}, 'stepper_y': {}})

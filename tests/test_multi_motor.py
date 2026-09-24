@@ -117,7 +117,7 @@ def test_belt_jog_releases_the_gantry(monkeypatch):
     assert kl.scripts[-1].startswith(XY_OFF) and 'M18' not in kl.scripts[-1]
 
 
-XY_OFF = '\n'.join('SET_STEPPER_ENABLE STEPPER=%s ENABLE=0' % name
+XY_OFF = '\n'.join('SET_STEPPER_ENABLE STEPPER="%s" ENABLE=0' % name
                    for name in ('stepper_x', 'stepper_x1', 'stepper_y', 'stepper_y1', 'extruder'))
 
 
@@ -138,5 +138,6 @@ def test_release_gantry_forgets_only_the_xy_homing_where_klipper_can(tmp_path, m
     kl = RecordingKl(AWD)
     kl.info = lambda: {'klipper_path': str(tmp_path)}
     release_gantry(kl)
-    expected = XY_OFF + ('\nSET_KINEMATIC_POSITION SET_HOMED= CLEAR_HOMED=XY' if clears else '')
+    expected = XY_OFF + ('\nSET_KINEMATIC_POSITION SET_HOMED= CLEAR_HOMED=XY' if clears
+                         else '\nM84\nSET_STEPPER_ENABLE STEPPER="stepper_z" ENABLE=1')
     assert kl.scripts == [expected]

@@ -231,7 +231,7 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
     if done:
         print('Resuming %s: %d measurements already present' % (root, len(done)))
 
-    print('Preparing: home XY, park at center, switch every motor but Z off')
+    print('Preparing: home XY, park at center, switch the gantry and head motors off')
     guard = ThermalGuard(kl, kl.settings())
     refuse_blind_z_hop(kl, kl.settings())
     guard.preflight()

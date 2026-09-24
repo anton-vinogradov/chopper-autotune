@@ -170,6 +170,11 @@ def refuse_multi_motor(settings: dict, axes: str = 'xy'):
     belt, then, after a re-home, holds against it, and registers, current and saves
     reach one driver of the pair (#129). Refuse before anything moves, dry run included;
     only the axes the run drives count (a dual-Y gantry can still tune X)."""
+    kinematics = (settings.get('printer') or {}).get('kinematics', '')
+    if kinematics.endswith('corexz'):
+        # the X motors carry Z as well: a one-motor move drives the gantry up or down
+        raise SystemExit('%s: the X motors move Z too; one-motor moves are not supported '
+                         'there, nothing was moved' % kinematics)
     twins = [name for axis in axes for name in rail_twins(settings, axis)]
     if twins:
         raise SystemExit('%s: several motors drive one axis (AWD or a two-motor gantry); '
@@ -178,15 +183,20 @@ def refuse_multi_motor(settings: dict, axes: str = 'xy'):
 
 
 def motors_off_but_z(kl: Klippy, cycle: bool = False) -> str:
-    """Switch off every motor but Z's: X/Y (twins included), the extruder next to the
-    accelerometer, a dual carriage. Z keeps holding and its homing: M18 would unhome Z
-    (see home_xy). cycle: enable first, then disable — after Klipper's own motor_off a
-    register restore can re-energize a driver Klipper counts as off, and a plain
-    ENABLE=0 is skipped for a motor already off."""
-    names = [name for name in kl.stepper_states() if not name.startswith('stepper_z')]
-    states = (1, 0) if cycle else (0,)
-    return '\n'.join('SET_STEPPER_ENABLE STEPPER=%s ENABLE=%d' % (name, state)
-                     for name in names for state in states)
+    """Switch off the gantry and head motors: X/Y (twins included), the extruders next to
+    the accelerometer, a dual carriage. Z keeps holding and its homing: M18 would unhome
+    Z (see home_xy). Other steppers (a cutter, an MMU lane) are left alone. Names go in
+    quotes: an extruder_stepper's name has a space. cycle: X/Y are enabled first, then
+    disabled — after Klipper's own motor_off a register restore can re-energize an X/Y
+    driver Klipper counts as off, and a plain ENABLE=0 is skipped for it."""
+    settings = kl.settings()
+    gantry = {'stepper_x', 'stepper_y'} | {twin for axis in 'xy' for twin in rail_twins(settings, axis)}
+    lines = []
+    for name in kl.stepper_states():
+        if name in gantry or name.startswith('extruder') or name == 'dual_carriage':
+            for state in (1, 0) if cycle and name in gantry else (0,):
+                lines.append('SET_STEPPER_ENABLE STEPPER="%s" ENABLE=%d' % (name, state))
+    return '\n'.join(lines)
 
 
 _CLEAR_HOMING = {}
@@ -210,15 +220,21 @@ def can_clear_homing(kl: Klippy) -> bool:
 
 
 def release_gantry(kl: Klippy, cycle: bool = False):
-    """Hand the gantry to the user's hands: every motor but Z's off, and the X/Y homing
-    forgotten where Klipper can do that (hands move the head next; SET_STEPPER_ENABLE
-    alone keeps the axes homed at a stale position). Z keeps holding and its homing.
-    Only with every axis homed: code older than the file on disk (updated, not yet
-    restarted) marks all axes homed with the same command, harmless only then."""
+    """Hand the gantry to the user's hands: the gantry and head motors off, and the X/Y
+    homing forgotten (hands move the head next; SET_STEPPER_ENABLE alone keeps the axes
+    homed at a stale position). With every axis homed and CLEAR_HOMED in Klipper, Z
+    keeps its homing (older code marks all axes homed with that command, harmless only
+    then). Otherwise M84 forgets it all, and the Z motors that held go straight back on
+    so a bed or gantry does not sink."""
     homed = kl.homed_axes()
+    states = kl.stepper_states()
     lines = [motors_off_but_z(kl, cycle)]
     if homed == 'xyz' and can_clear_homing(kl):
         lines.append('SET_KINEMATIC_POSITION SET_HOMED= CLEAR_HOMED=XY')
+    elif 'x' in homed or 'y' in homed:
+        lines.append('M84')
+        lines += ['SET_STEPPER_ENABLE STEPPER="%s" ENABLE=1' % name
+                  for name, enabled in states.items() if name.startswith('stepper_z') and enabled]
     kl.gcode('\n'.join(lines))
 
 
@@ -1070,7 +1086,7 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
     if done:
         print('Resuming %s: %d measurements already present' % (root, len(done)))
 
-    print('Preparing: home XY, park at center, switch every motor but Z off')
+    print('Preparing: home XY, park at center, switch the gantry and head motors off')
     guard = ThermalGuard(kl, kl.settings())
     refuse_blind_z_hop(kl, kl.settings())       # before any motion or motor enable
     guard.preflight()                           # before the first move: not on a hot driver
