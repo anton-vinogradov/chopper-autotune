@@ -3,15 +3,19 @@ other tests only repeat our own assumptions: a bare-word ECHO fence passed them 
 was a 'Malformed command' on every printer. The GPL sources are fetched, never
 committed (tests/fetch_klipper_sources.sh); CI sets CHOPPER_CONTRACT=1 so a missing
 download fails instead of skipping."""
+import ast
 import configparser
+import fnmatch
 import importlib.util
 import json
 import math
 import os
 import re
 import select
+import shutil
 import socket
 import sys
+import tempfile
 import threading
 import time
 import types
@@ -20,8 +24,9 @@ import pytest
 
 import fake_klipper
 from klipper_config import CFG, named, read_like_klipper, selfcheck, settings_of
-from chopper_autotune import tmc
-from chopper_autotune.collect import ACCEL_SECTIONS, live_stealth
+from chopper_autotune import collect, tmc
+from chopper_autotune.belts import CAPTURE, sweep_chip, sweep_command
+from chopper_autotune.collect import ACCEL_SECTIONS, live_stealth, resolve_accel_chip
 from chopper_autotune.klippy import Klippy, KlippyError, fence_markers
 
 # old Klipper releases carry regex strings Python warns about while compiling them
@@ -282,7 +287,10 @@ def api_client(printer, webhooks):
     return Klippy('<contract>', timeout=5.0).connect(sock=client), connection
 
 
-@pytest.mark.parametrize('source', fetched('webhooks.py'))
+# v0.10's API server is Python 2 code, Kalico's a package module: the parser contract
+# above covers both
+@pytest.mark.parametrize('source', [source for source in fetched('webhooks.py') if source is None
+                                    or not (source.endswith('v0.10.0') or source.startswith('kalico'))])
 def test_gcode_output_through_the_real_api_server(source):
     """Our client against Klipper's own webhooks ClientConnection and GCodeHelper:
     subscription shape, console lines ahead of the script response, the '// ' prefix."""
@@ -325,7 +333,8 @@ def test_every_streamed_sample_arrives_once(source):
     closes. Replays CHOPPER_TUNE AXIS=xy without SPEED on a printer with accel_chip_x
     and accel_chip_y: scan and descent of each motor subscribe on one connection."""
     require(source)
-    api = fetched('webhooks.py')[0]
+    # the API server of the Klipper whose stream helper is fetched (master)
+    api = next((name for name in fetched('bulk_sensor.py') if name and name.startswith('klipper')), None)
     require(api)
     gcode_module = load_gcode(api)
     webhooks = load_webhooks(api, gcode_module)
@@ -501,3 +510,232 @@ def test_every_accelerometer_streams_where_we_subscribe(source):
         checked.append(section)
     assert {'adxl345', 'lis2dw', 'lis3dh', 'mpu9250', 'icm20948'} <= set(checked)
     assert 'bmi160' in checked or source.startswith('kalico')      # Klipper master has it
+
+
+def load_extra(source: str, filename: str):
+    """A klippy/extras module of the release, inside a stub package: resonance_tester's
+    shaper_calibrate serves only OUTPUT=resonances, which the sweep never asks for."""
+    tag = source.replace('.', '_').replace('-', '_')
+    package = types.ModuleType('contract_%s_extras' % tag)
+    package.__path__ = [os.path.join(SRC, source)]
+    package.shaper_calibrate = types.ModuleType(package.__name__ + '.shaper_calibrate')
+    for module in (package, package.shaper_calibrate):
+        sys.modules[module.__name__] = module
+    name = package.__name__ + '.' + filename
+    spec = importlib.util.spec_from_file_location(name, os.path.join(SRC, source, filename + '.py'))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+def real_lookup_object(source: str):
+    """Printer.lookup_object of the release itself (Kalico keeps Printer in printer.py):
+    an unknown name raises the config error, which is no G-code error."""
+    filename = 'printer.py' if source.startswith('kalico') else 'klippy.py'
+    with open(os.path.join(SRC, source, filename)) as module:
+        tree = ast.parse(module.read())
+    printer = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'Printer')
+    method = next(node for node in printer.body
+                  if isinstance(node, ast.FunctionDef) and node.name == 'lookup_object')
+    namespace = {'configfile': types.SimpleNamespace(sentinel=object())}
+    exec(compile(ast.Module(body=[method], type_ignores=[]), filename, 'exec'), namespace)
+    return namespace['lookup_object']
+
+
+class Accelerometer:
+    """What resonance_tester asks of a chip: a client per test that writes the raw file.
+    Every chip module names itself by the last word of its section."""
+
+    def __init__(self, section: str, written: list):
+        self.section, self.name, self.written = section, section.split()[-1], written
+
+    def start_internal_client(self):
+        chip = self
+
+        class Client:
+            def finish_measurements(self):
+                pass
+
+            def has_valid_samples(self):
+                return True
+
+            def write_to_file(self, filename):
+                chip.written.append((chip.section, filename))
+        return Client()
+
+
+class Section:
+    """[resonance_tester] as the config reader serves it: an option not written takes the
+    module's default, a required one is a config error."""
+    error = configparser.Error
+    required = object()
+
+    def __init__(self, printer, options: dict):
+        self.printer, self.options = printer, options
+
+    def get_printer(self):
+        return self.printer
+
+    def get(self, option, default=required):
+        if option in self.options:
+            return self.options[option]
+        if default is self.required:
+            raise self.error("Option '%s' in section 'resonance_tester' must be specified" % option)
+        return default
+
+    def getfloat(self, option, default=required, **limits):
+        value = self.get(option, default)
+        return value if value is None else float(value)
+
+    def getlists(self, option, seps, parser, count):
+        return [tuple(parser(v) for v in point.split(',')) for point in self.get(option).split('\n')]
+
+
+class Toolhead:
+    def manual_move(self, coord, speed):
+        pass
+
+    def wait_moves(self):
+        pass
+
+    def dwell(self, delay):
+        pass
+
+
+def sweep_on(source: str, tester: dict, sections: 'list[str]', line: str, monkeypatch):
+    """`line` through the release's own G-code dispatcher, TEST_RESONANCES and
+    Printer.lookup_object, with an accelerometer object for each config section, the
+    motion left out. Returns the printer, the raw files written as (chip, path), and the
+    error the script raised."""
+    module = load_extra(source, 'resonance_tester')
+    printer, dispatch, _ = ready_dispatch(load_gcode(source), GCONF_STEALTH)
+    printer.config_error = configparser.Error               # klippy: configfile.error
+    printer.lookup_object = types.MethodType(real_lookup_object(source), printer)
+    written = []
+    for section in sections:
+        printer.objects[section] = Accelerometer(section, written)
+    printer.objects['toolhead'] = Toolhead()
+    resonance = module.ResonanceTester(Section(printer, dict(tester, probe_points='100,100,20')))
+    # the moves: the pulse test's up to v0.12, the executor's from v0.13 and in Kalico
+    motion = getattr(resonance, 'executor', None) or resonance.test
+    monkeypatch.setattr(motion, 'run_test', lambda *args, **kwargs: None)
+    monkeypatch.setattr(tempfile, 'tempdir', '/tmp')        # Kalico writes to gettempdir()
+    printer.send_event('klippy:connect')
+    try:
+        dispatch.run_script(line)
+    except Exception as why:
+        return printer, written, why
+    return printer, written, None
+
+
+def clean_capture(source, tester, sections, chip, named, monkeypatch) -> bool:
+    """The sweep command, CHIPS= naming `named` (None: no CHIPS=), runs without an error
+    or a shutdown, and exactly one file is written: `chip`'s, where the sweep looks."""
+    line = sweep_command('1,1', 'A', named, (30, 200), 2)
+    printer, written, error = sweep_on(source, tester, sections, line, monkeypatch)
+    return (error is None and not printer.shutdowns and [chip for chip, _ in written] == [chip]
+            and fnmatch.fnmatch(written[0][1], CAPTURE % 'A'))
+
+
+# [resonance_tester] options, and the accelerometer sections the config has
+SWEEP_TESTERS = [
+    ({'accel_chip': 'adxl345'}, ['adxl345']),
+    ({'accel_chip': 'adxl345 hotend'}, ['adxl345 hotend']),
+    ({'accel_chip': 'lis2dw'}, ['lis2dw']),
+    ({'accel_chip': 'lis2dw Head'}, ['lis2dw Head']),
+    ({'accel_chip': 'beacon'}, ['beacon']),
+    ({'accel_chip_x': 'adxl345 hotend', 'accel_chip_y': 'lis2dw bed'}, ['adxl345 hotend', 'lis2dw bed']),
+    ({'accel_chip_x': 'lis2dw hotend', 'accel_chip_y': 'adxl345 bed'}, ['lis2dw hotend', 'adxl345 bed']),
+    ({'accel_chip_x': 'lis2dw hotend', 'accel_chip_y': 'lis2dw hotend'}, ['lis2dw hotend']),
+    # Kalico only: every accel_chips entry measures, accel_chip_x names the tool's chip,
+    # and Kalico never looks that name up at start
+    ({'accel_chips': 'adxl345 bed, lis2dw hotend', 'accel_chip_x': 'lis2dw hotend',
+      'accel_chip_y': 'lis2dw hotend'}, ['adxl345 bed', 'lis2dw hotend']),
+    ({'accel_chips': 'adxl345 bed, lis2dw hotend', 'accel_chip_x': 'adxl345 Head',
+      'accel_chip_y': 'adxl345 Head'}, ['adxl345 bed', 'lis2dw hotend', 'adxl345 Head']),
+    ({'accel_chips': 'adxl345 bed, lis2dw hotend', 'accel_chip_x': 'adxl345 head',
+      'accel_chip_y': 'adxl345 head'}, ['adxl345 bed', 'lis2dw hotend', 'adxl345 Head']),
+    ({'accel_chips': 'adxl345 bed, lis2dw hotend', 'accel_chip_x': 'lis2dw',
+      'accel_chip_y': 'lis2dw'}, ['adxl345 bed', 'lis2dw hotend']),
+]
+
+
+def running_klipper(source: str, sections: 'list[str]', root, monkeypatch, started: float):
+    """Our client's view of a Klipper process of this release that started at `started`:
+    info as its webhooks.py answers it (process_id since v0.12), settings keys
+    lower-cased as its config reader keeps them, section names as written."""
+    with open(os.path.join(SRC, source, 'webhooks.py')) as module:
+        reports_process = re.search(r'[\'"]process_id[\'"]', module.read()) is not None
+    monkeypatch.setattr(collect, '_KLIPPER_EXTRAS', {})
+    monkeypatch.setattr(collect, 'process_start', lambda pid: None if pid is None else started)
+    info = dict({'klipper_path': str(root)}, **({'process_id': 1} if reports_process else {}))
+    return types.SimpleNamespace(info=lambda: info, config_sections=lambda: list(sections))
+
+
+def installed(root, source: str) -> str:
+    """klippy/extras/resonance_tester.py of `source` on disk under `root`."""
+    (root / 'klippy' / 'extras').mkdir(parents=True, exist_ok=True)
+    return shutil.copy(os.path.join(SRC, source, 'resonance_tester.py'), root / 'klippy' / 'extras')
+
+
+def sweep_settings(tester: dict, sections: 'list[str]') -> dict:
+    return dict({section.lower(): {} for section in sections},
+                resonance_tester=dict(tester, probe_points=[[100.0, 100.0, 20.0]]))
+
+
+@pytest.mark.parametrize('source, tester, sections', [
+    (source, tester, sections) for source in fetched('resonance_tester.py')
+    for tester, sections in SWEEP_TESTERS
+    if source is None or source.startswith('kalico') or 'accel_chips' not in tester])
+def test_the_belt_sweep_measures_its_chip_and_never_shuts_klipper_down(source, tester, sections,
+                                                                       tmp_path, monkeypatch):
+    require(source)
+    settings = sweep_settings(tester, sections)
+    chip = resolve_accel_chip(settings, 'x')
+    installed(tmp_path, source)
+    kl = running_klipper(source, sections, tmp_path, monkeypatch, started=time.time() + 60)
+    try:
+        named_chip = sweep_chip(kl, settings, chip)
+    except SystemExit:
+        # refused only where no command measures the chip alone and safely
+        assert not clean_capture(source, tester, sections, chip, chip, monkeypatch)
+        assert not clean_capture(source, tester, sections, chip, None, monkeypatch)
+        return
+    assert clean_capture(source, tester, sections, chip, named_chip, monkeypatch)
+
+
+@pytest.mark.parametrize('running', [source for source in fetched('resonance_tester.py')
+                                     if source is None or source.startswith('klipper-v0.1')])
+@pytest.mark.parametrize('tester, sections', SWEEP_TESTERS[:8])
+def test_code_pulled_after_klipper_started_never_shuts_it_down(running, tester, sections, tmp_path,
+                                                               monkeypatch):
+    # RESTART and FIRMWARE_RESTART keep the imported modules: after a git pull to master
+    # without a service restart, the running release still parses CHIPS= its own way
+    require(running)
+    newest = [source for source in fetched('resonance_tester.py') if source.startswith('klipper-ce')]
+    require(newest[0] if newest else None)
+    settings = sweep_settings(tester, sections)
+    chip = resolve_accel_chip(settings, 'x')
+    installed(tmp_path, newest[0])
+    kl = running_klipper(running, sections, tmp_path, monkeypatch, started=time.time() - 60)
+    try:
+        named_chip = sweep_chip(kl, settings, chip)
+    except SystemExit:
+        return                                          # refused before any G-code
+    line = sweep_command('1,1', 'A', named_chip, (30, 200), 2)
+    printer, _, error = sweep_on(running, tester, sections, line, monkeypatch)
+    assert error is None and not printer.shutdowns, (line, error)
+
+
+@pytest.mark.parametrize('source', fetched('resonance_tester.py'))
+def test_the_old_sweep_shut_v0_11_and_v0_12_down(source, monkeypatch):
+    """The harness reproduces the reported failure: CHIPS= with a chip that has no
+    'adxl345' in its name, as the sweep sent it everywhere before."""
+    require(source)
+    line = ('TEST_RESONANCES AXIS=1,1 OUTPUT=raw_data NAME=beltA CHIPS="lis2dw" '
+            'FREQ_START=30 FREQ_END=200 HZ_PER_SEC=2')
+    printer, _, error = sweep_on(source, {'accel_chip': 'lis2dw'}, ['lis2dw'], line, monkeypatch)
+    old = source in ('klipper-v0.11.0', 'klipper-v0.12.0')
+    assert printer.shutdowns == (['Internal error on command:"TEST_RESONANCES"'] if old else [])
+    assert isinstance(error, configparser.Error) is old

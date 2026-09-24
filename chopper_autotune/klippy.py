@@ -215,6 +215,12 @@ class Klippy:
         result = self.request('objects/query', {'objects': {'configfile': ['settings']}})
         return result['status']['configfile']['settings']
 
+    def config_sections(self) -> 'list[str]':
+        """Section names as written: settings has them lower-cased, while Klipper names
+        each object by its section as written."""
+        result = self.request('objects/query', {'objects': {'configfile': ['config']}})
+        return list(result['status']['configfile']['config'])
+
     def object_list(self) -> 'list[str]':
         return self.request('objects/list')['objects']
 
