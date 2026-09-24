@@ -139,3 +139,26 @@ def test_a_run_stopped_before_the_read_leaves_autotunes_motor_alone():
     plain.settled = False
     restore_chopper(kl, plain)
     assert scripts
+
+
+@pytest.mark.parametrize('driver, autotune, header', [
+    ('2209', None, 'Recommended for printer.cfg:'),
+    ('2209', 'auto', 'Best measured (not for saving: klipper_tmc_autotune managed the motor'),
+    # a TMC2208 carries no CoolStep tag, yet autotune still writes its own chopper at start
+    ('2208', 'auto', 'Best measured (klipper_tmc_autotune ([autotune_tmc stepper_x]) writes'),
+])
+def test_the_recommendation_header_follows_autotune(tmp_path, monkeypatch, capsys, driver, autotune,
+                                                     header):
+    from chopper_autotune import dataset as dataset_mod
+    from chopper_autotune.collect import report_winner
+    from chopper_autotune.dataset import Dataset
+    monkeypatch.setattr(dataset_mod, 'RESULTS_HOME', tmp_path)
+    ds = Dataset.create(tmp_path / 'ds', {'mode': 'test'})
+    for direction in (1, -1):
+        ds.append({'id': 'a_%d' % direction, 'kind': 'move', 'status': 'ok',
+                   **tmc.Chopper(0, 2, 4, 7).fields(), 'tpfd': None,
+                   'score': {'median_magnitude': 1000.0, 'clicks': 0}})
+    hw = SimpleNamespace(driver=tmc.DRIVERS[driver], stepper='stepper_x', autotune=autotune)
+    report_winner(hw, ds, SimpleNamespace(trim=0.1, audible_weight=0.25),
+                  SimpleNamespace(final=lambda text: None), top=5)
+    assert header in capsys.readouterr().out

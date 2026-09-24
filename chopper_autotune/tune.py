@@ -128,10 +128,14 @@ def run_tune(args) -> int:
                 for manifest, combo in winners)
             free = [motor_label(manifest['stepper'].rsplit('_', 1)[-1])
                     for manifest, _ in winners if not managed(manifest)]
+            # CHOPPER_SAVE takes every motor's latest result and the stored extruder
+            # winner: named only when that is exactly this run
+            from .extruder import load_winner_state
+            exact = len(free) == len(winners) == 2 and load_winner_state() is None
             tail = (' — saving' if args.save
                     else ' — autotune resets these at start' if not free
-                    else ' — CHOPPER_SAVE to persist' if len(free) == len(winners)
-                    else ' — CHOPPER_SAVE to persist %s' % ''.join(free))
+                    else ' — CHOPPER_SAVE to persist' if exact
+                    else ' — to save: see tune.log')
             screen.final('Tune done: %s%s' % (labels, tail))
     finally:
         kl.close()

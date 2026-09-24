@@ -271,9 +271,10 @@ def autotune_advice(settings: dict, driver_name: str, stepper: str) -> str:
         # no CoolStep, no StallGuard: the result already measured stays good
         return ('klipper_tmc_autotune ([autotune_tmc %s]) writes its own tbl, toff, hstrt and hend '
                 'over driver_* at every Klipper start. Keep it, or switch it off for this motor: '
-                'remove [autotune_tmc %s], restart Klipper, then save the result already measured '
-                '(a TMC%s has no CoolStep: autotune did not change its current). README: With '
-                'klipper_tmc_autotune' % (stepper, stepper, driver_name))
+                'remove [autotune_tmc %s], restart Klipper, then tune it again with SAVE=1, or save '
+                'a result already measured (CHOPPER_SAVE; CHOPPER_EXTRUDER SAVE_LAST=1 for the '
+                'extruder): a TMC%s has no CoolStep, so autotune did not change its current. '
+                'README: With klipper_tmc_autotune' % (stepper, stepper, driver_name))
     carry = autotune_carry_over(settings, driver_name, stepper)
     return ('klipper_tmc_autotune ([autotune_tmc %s]) writes its own tbl, toff, tpfd, hstrt and '
             'hend over driver_* at every Klipper start. Keep it, or switch it off for this '
@@ -1008,6 +1009,9 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
             finale += ' — %d%% less vibration' % pct
     if autotune_tag(hw.driver.name, hw.autotune):
         print('\nBest measured (not for saving: %s):\n' % AUTOTUNE_MEASURED)
+    elif hw.autotune is not None:
+        # a TMC2208: no CoolStep tag, yet autotune writes its own chopper at every start
+        print('\nBest measured (%s):\n' % autotune_advice({}, hw.driver.name, hw.stepper))
     else:
         print('\nRecommended for printer.cfg:\n')
     print(tmc.cfg_snippet(hw.driver, hw.stepper, winner['chopper']))

@@ -241,7 +241,7 @@ def test_autotune_on_one_motor_marks_only_that_one(tmp_path, monkeypatch, capsys
     assert 'To save stepper_y from this run alone' in out and 'To save stepper_x' not in out
     assert out.count('driver_TOFF: 8') == 1          # a snippet for B only, advice for A
     assert '(autotune)' in finals[-1] and finals[-1].count('(autotune)') == 1
-    assert finals[-1].endswith('CHOPPER_SAVE to persist B')
+    assert finals[-1].endswith('to save: see tune.log')
 
 
 def test_a_tmc2208_under_autotune_gets_the_advice_not_a_paste(tmp_path, monkeypatch, capsys):
@@ -259,5 +259,5 @@ def test_a_tmc2208_under_autotune_gets_the_advice_not_a_paste(tmp_path, monkeypa
     monkeypatch.setattr(tune, 'collect', lambda kl, args: (0, str(ds.root)))
     assert tune.run_tune(tune_args(axis='x')) == 0
     out = capsys.readouterr().out
-    assert 'save the result already measured' in out
+    assert 'tune it again with SAVE=1, or save a result already measured' in out
     assert 'To save stepper_x' not in out and 'driver_TOFF' not in out
