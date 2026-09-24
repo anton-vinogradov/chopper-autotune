@@ -20,7 +20,8 @@ SAFE_Z_HOME = {'safe_z_home': {'z_hop': Z_HOP}}
 
 @pytest.fixture(autouse=True)
 def fresh_feature_cache(monkeypatch):
-    monkeypatch.setattr(collect_mod, '_CLEAR_HOMING', {})
+    monkeypatch.setattr(collect_mod, '_KLIPPER_EXTRAS', {})
+    monkeypatch.setattr(collect_mod, 'process_start', lambda pid: float('inf'))  # after any file
 
 
 class SafeZHomeKl:

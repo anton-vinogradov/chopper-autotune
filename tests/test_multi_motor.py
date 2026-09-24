@@ -131,7 +131,8 @@ def test_release_gantry_forgets_only_the_xy_homing_where_klipper_can(tmp_path, m
     # hands move the head next; Z keeps holding and its homing ([safe_z_home] z_hop);
     # the check reads the RUNNING Klipper's code (info: klipper_path)
     import chopper_autotune.collect as collect_mod
-    monkeypatch.setattr(collect_mod, '_CLEAR_HOMING', {})
+    monkeypatch.setattr(collect_mod, '_KLIPPER_EXTRAS', {})
+    monkeypatch.setattr(collect_mod, 'process_start', lambda pid: float('inf'))  # after any file
     if force_move is not None:
         (tmp_path / 'klippy' / 'extras').mkdir(parents=True)
         (tmp_path / 'klippy' / 'extras' / 'force_move.py').write_text(force_move)

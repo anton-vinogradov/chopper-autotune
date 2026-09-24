@@ -325,16 +325,34 @@ def test_resolver_frequency_window_rejects_cross_mode_pairs():
     assert resolve_pair(fams_a, [fams_b[0]]) is None  # only the 91 Hz mode: refuse
 
 
-def test_the_sweep_measures_the_chip_the_tool_picked(monkeypatch, tmp_path):
-    # with several chips TEST_RESONANCES writes one file per chip, and the newest one
-    # could be another chip's: the sweep names its chip
+# how each release's resonance_tester.py parses CHIPS= (the real lines)
+BY_NAME = 'chips_str = gcmd.get("CHIPS", None)\nchip = self.printer.lookup_object(chip_name.strip())'
+ADXL_ONLY = ('chips_str = gcmd.get("CHIPS", None)\n'
+             'chip_lookup_name = "adxl345 " + chip_name.strip();')           # v0.11, v0.12
+NO_CHIPS = 'raw_values.append((chip_axis, aclient))'                          # v0.10
+
+
+def sweep_run(monkeypatch, tmp_path, source, tester, dry_run=False, sections=(), process_id=1):
+    """belts SWEEP=1 against a Klipper whose resonance_tester.py reads `source` (None:
+    the file cannot be read), started after that file was written (no process_id: v0.10
+    and v0.11 do not report it); returns the G-code it sent."""
     from types import SimpleNamespace
 
-    import chopper_autotune.belts as belts_mod
-    hw = SimpleNamespace(kinematics='limited_corexy', accel_chip='adxl345 hotend', display=False)
+    import chopper_autotune.collect as collect_mod
+    from chopper_autotune.collect import resolve_accel_chip
+    monkeypatch.setattr(collect_mod, '_KLIPPER_EXTRAS', {})
+    monkeypatch.setattr(collect_mod, 'process_start', lambda pid: None if pid is None else float('inf'))
+    if source is not None:
+        (tmp_path / 'klippy' / 'extras').mkdir(parents=True)
+        (tmp_path / 'klippy' / 'extras' / 'resonance_tester.py').write_text(source)
+    settings = dict({section.lower(): {} for section in sections},
+                    resonance_tester=dict(tester, probe_points=[[100, 100, 20]]))
+    hw = SimpleNamespace(kinematics='limited_corexy', accel_chip=resolve_accel_chip(settings, 'x'),
+                         display=False)
     scripts = []
-    kl = SimpleNamespace(settings=lambda: {'resonance_tester': {'probe_points': [[100, 100, 20]]}},
-                         homed_axes=lambda: 'xyz', gcode=scripts.append)
+    info = dict({'klipper_path': str(tmp_path)}, **({'process_id': process_id} if process_id else {}))
+    kl = SimpleNamespace(settings=lambda: settings, homed_axes=lambda: 'xyz', gcode=scripts.append,
+                         info=lambda: info, config_sections=lambda: list(sections))
     monkeypatch.setattr(belts_mod, 'detect_hardware', lambda kl, motor, accel: hw)
     monkeypatch.setattr(belts_mod, 'refuse_if_printing', lambda kl: None)
     monkeypatch.setattr(belts_mod, 'home_xy', lambda kl, script: None)
@@ -344,7 +362,89 @@ def test_the_sweep_measures_the_chip_the_tool_picked(monkeypatch, tmp_path):
     monkeypatch.setattr(belts_mod, 'top_peaks', lambda freqs, psd, band: [100.0])
     monkeypatch.setattr(belts_mod, 'SWEEP_STATE', str(tmp_path / 'belts_sweep.json'))
     args = SimpleNamespace(show=None, pluck=False, sweep=True, min_freq=30, max_freq=200,
-                           hz_per_sec=1.0, dry_run=False, yes=True, tolerance=3.0)
+                           hz_per_sec=1.0, dry_run=dry_run, yes=True, tolerance=3.0)
     assert belts_mod.belts(kl, args) == 0
+    return scripts
+
+
+@pytest.mark.parametrize('source, chip, named', [
+    (BY_NAME, 'lis2dw', True),                  # Klipper v0.13+, Kalico: any chip
+    (ADXL_ONLY, 'adxl345 hotend', True),
+    (ADXL_ONLY, 'lis2dw', False),               # 'adxl345 lis2dw': Klipper would shut down
+    (ADXL_ONLY, 'beacon', False),
+    (NO_CHIPS, 'adxl345', False),
+    (None, 'lis2dw', False),                    # the code cannot be read: nothing to trust
+])
+def test_the_sweep_names_its_chip_only_where_klipper_takes_that_name(monkeypatch, tmp_path,
+                                                                     source, chip, named):
+    # with several chips TEST_RESONANCES writes one file per chip, and the newest one
+    # could be another chip's: the sweep names its chip where that is safe
+    scripts = sweep_run(monkeypatch, tmp_path, source, {'accel_chip': chip})
     sweeps = [script for script in scripts if script.startswith('TEST_RESONANCES')]
-    assert len(sweeps) == 2 and all('CHIPS="adxl345 hotend"' in sweep for sweep in sweeps)
+    assert len(sweeps) == 2
+    assert all(('CHIPS="%s"' % chip in sweep) is named and ('CHIPS' in sweep) is named
+               for sweep in sweeps)
+
+
+TWO_CHIPS = {'accel_chip_x': 'lis2dw hotend', 'accel_chip_y': 'adxl345 bed'}
+
+
+@pytest.mark.parametrize('source', [ADXL_ONLY, NO_CHIPS])
+@pytest.mark.parametrize('dry_run', [False, True])
+def test_a_second_chip_is_refused_where_the_sweep_cannot_name_its_own(monkeypatch, tmp_path,
+                                                                      source, dry_run):
+    # without CHIPS= these releases write both chips to one file
+    with pytest.raises(SystemExit, match='lis2dw hotend alone on this Klipper.*adxl345 bed, lis2dw hotend'):
+        sweep_run(monkeypatch, tmp_path, source, TWO_CHIPS, dry_run)
+
+
+@pytest.mark.parametrize('source, process_id', [
+    (None, 1),              # the code cannot be read
+    (BY_NAME, None),        # v0.10, v0.11 do not say when Klipper started
+])
+def test_a_second_chip_is_refused_where_the_running_code_is_unknown(monkeypatch, tmp_path,
+                                                                    source, process_id):
+    with pytest.raises(SystemExit, match='cannot check.*CHIPS="lis2dw hotend".*Restart the klipper'):
+        sweep_run(monkeypatch, tmp_path, source, TWO_CHIPS, process_id=process_id)
+
+
+@pytest.mark.parametrize('tester, process_id', [
+    ({'accel_chip_x': 'adxl345 hotend', 'accel_chip_y': 'adxl345 hotend'}, 1),   # one chip
+    ({'accel_chip_x': 'adxl345 hotend', 'accel_chip_y': 'lis2dw bed'}, 1),       # CHIPS= names it
+    # v0.11 does not say when it started, but looks an adxl345 name up as given too
+    ({'accel_chip_x': 'adxl345 hotend', 'accel_chip_y': 'lis2dw bed'}, None),
+])
+def test_a_second_chip_is_fine_where_the_sweep_names_its_own(monkeypatch, tmp_path, tester,
+                                                             process_id):
+    scripts = sweep_run(monkeypatch, tmp_path, ADXL_ONLY, tester, process_id=process_id)
+    assert any(script.startswith('TEST_RESONANCES') for script in scripts)
+
+
+KALICO_CHIPS = {'accel_chips': 'adxl345 bed, lis2dw hotend'}
+SECTIONS = ['adxl345 bed', 'lis2dw hotend', 'adxl345 Head']
+
+
+@pytest.mark.parametrize('chip', ['lis2dw', 'adxl345 head'])
+def test_a_chip_klipper_never_looked_up_is_not_named(monkeypatch, tmp_path, chip):
+    # Kalico reads accel_chip_x beside accel_chips without looking it up at start, and a
+    # CHIPS= lookup of a missing name there is a config error: Klipper shuts down. The
+    # lookup is exact, while settings keeps its section names lower-cased
+    tester = dict(KALICO_CHIPS, accel_chip_x=chip, accel_chip_y=chip)
+    with pytest.raises(SystemExit, match='accel_chip_x names %s, which is not a section' % chip):
+        sweep_run(monkeypatch, tmp_path, BY_NAME, tester, sections=SECTIONS)
+
+
+def test_a_section_named_with_capitals_is_named_as_written(monkeypatch, tmp_path):
+    tester = dict(KALICO_CHIPS, accel_chip_x='adxl345 Head', accel_chip_y='adxl345 Head')
+    scripts = sweep_run(monkeypatch, tmp_path, BY_NAME, tester, sections=SECTIONS)
+    assert sum('CHIPS="adxl345 Head"' in script for script in scripts) == 2
+
+
+def test_diagonal_chips_follow_the_resonance_tester():
+    from chopper_autotune.belts import diagonal_chips
+    assert diagonal_chips({'resonance_tester': {'accel_chip': ' adxl345 '}}) == ['adxl345']
+    assert diagonal_chips({'resonance_tester': {'accel_chip_x': 'adxl345 head',
+                                                'accel_chip_y': 'adxl345 head'}}) == ['adxl345 head']
+    # Kalico reads accel_chips first; an accel_chip beside it is a leftover
+    assert diagonal_chips({'resonance_tester': {'accel_chips': 'lis2dw, adxl345',
+                                                'accel_chip': 'mpu9250'}}) == ['adxl345', 'lis2dw']
