@@ -16,7 +16,8 @@ import os
 import statistics
 
 from . import tmc
-from .collect import (Range, Screen, capture_stream, detect_hardware, live_stealth, refuse_if_printing,
+from .collect import (AUTOTUNE_STEALTH_GOALS, Range, Screen, autotune_goal, capture_stream,
+                      detect_hardware, live_stealth, refuse_autotune_save, refuse_if_printing,
                       run_restore, unexpected_stealth, wake_stepper)
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
@@ -63,6 +64,10 @@ def resolve_extruder_stealth(kl: Klippy, driver: tmc.Driver, configured: 'tuple 
     if not driver.spreadcycle_switch:
         return configured
     live = live_stealth(kl, 'extruder', driver)
+    goal = autotune_goal(kl.settings(), 'extruder') if live is None else None
+    if goal in AUTOTUNE_STEALTH_GOALS:
+        print('extruder: klipper_tmc_autotune runs it in stealthChop (%s goal)' % goal)
+        return driver.spreadcycle_switch
     if live is None:
         print('trusting the config for the extruder driver mode')
     elif live and not configured:
@@ -189,6 +194,7 @@ def extruder_tune(kl: Klippy, args) -> int:
         from .analyze import _persist, refuse_unloadable, updated_config
         from .moonraker import Moonraker
         refuse_unloadable(state['driver'], 'extruder', state['fields'])
+        refuse_autotune_save(kl.settings(), state['driver'], 'extruder')
         print('Persisting the stored extruder winner: %s' % state['fields'])
         _persist(Moonraker(args.url),
                  [('tmc%s extruder' % state['driver'],
@@ -198,6 +204,8 @@ def extruder_tune(kl: Klippy, args) -> int:
 
     settings = kl.settings()
     driver, driver_name, baseline_regs, stealth, min_temp = extruder_context(settings)
+    if args.save:
+        refuse_autotune_save(settings, driver_name, 'extruder')    # before the heat-up
     temp = float(args.temp)
     if temp < min_temp:
         raise SystemExit('TEMP=%.0f is below min_extrude_temp (%.0f) — the filament could '

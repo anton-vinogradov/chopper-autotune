@@ -176,3 +176,20 @@ def test_improvement_note_formats_the_quieter_factor():
     assert improvement_note({'improvement': 1.003}) == ''     # a statistical tie is not -0%
     assert improvement_note({'improvement': 0.9}) == ''      # defaults measured quieter
     assert improvement_note({}) == ''                        # reference never measured
+
+
+def test_save_on_an_autotune_motor_is_refused_before_tuning(monkeypatch):
+    # klipper_tmc_autotune rewrites the chopper at every start: SAVE=1 could not work,
+    # so say it now instead of after twenty minutes of tuning
+    monkeypatch.setattr(tune.Klippy, 'settings', lambda self: {
+        'tmc2240 stepper_y': {}, 'autotune_tmc stepper_y': {'motor': 'ldo-42sth48-2004ac'}})
+    monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
+    monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
+    monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
+    monkeypatch.setattr(tune, 'scan', lambda kl, args: pytest.fail('nothing may run'))
+    with pytest.raises(SystemExit, match=r'not saving \[tmc2240 stepper_y\]'):
+        tune.run_tune(tune_args(save=True))
+    # without SAVE=1 the measurement itself is still worth running
+    monkeypatch.setattr(tune, 'scan', lambda kl, args: (_ for _ in ()).throw(RuntimeError('ran')))
+    with pytest.raises(RuntimeError, match='ran'):
+        tune.run_tune(tune_args())

@@ -323,11 +323,15 @@ def run_apply(mk, stepper: str, chopper: tmc.Chopper):
 def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]', extruder_state: 'dict | None' = None):
     """Persist chopper winners into the Klipper config, one restart for the batch;
     the extruder's stored winner (see extruder.save_winner_state) rides along."""
+    from .collect import refuse_autotune_save
+    settings = mk.settings()
     for manifest, combo in items:
         refuse_unloadable(manifest['driver'], manifest['stepper'], combo.fields())
         refuse_twin_write(mk, manifest['stepper'])
+        refuse_autotune_save(settings, manifest['driver'], manifest['stepper'])
     if extruder_state:
         refuse_unloadable(extruder_state['driver'], 'extruder', extruder_state['fields'])
+        refuse_autotune_save(settings, extruder_state['driver'], 'extruder')
     edits = [('tmc%s %s' % (manifest['driver'], manifest['stepper']),
               lambda text, section, combo=combo: updated_config(text, section,
                                                                 combo.fields()))
@@ -428,11 +432,11 @@ def run_save_latest(args) -> int:
     """Persist the most recent tuning result for each motor into the config, batched into
     one restart. Backs the panel's Save button: save what the last tuning achieved, whether
     the motors were tuned separately (Tune A, Tune B) or together (Tune both)."""
-    from .collect import motor_label, rail_twins
+    from .collect import autotune_goal, autotune_refusal, motor_label, rail_twins
     from .extruder import load_winner_state
     from .tune import winner_of
     mk = Moonraker(args.url)
-    seen, items, settings = set(), [], None
+    seen, items, skipped, settings = set(), [], [], None
     for path in reversed(dataset_dirs()):
         info = Dataset(str(path)).manifest()
         axis = info.get('axis')
@@ -445,6 +449,11 @@ def run_save_latest(args) -> int:
                 seen.add(axis)
                 print('motor %s: NOT saving %s (%s share its axis, see issue #129)'
                       % (motor_label(axis), Path(path).name, ', '.join(twins)))
+                continue
+            if autotune_goal(settings, 'stepper_' + axis) is not None:
+                seen.add(axis)
+                skipped.append(autotune_refusal(info.get('driver', 'XXXX'), 'stepper_' + axis))
+                print('motor %s: NOT saving %s: %s' % (motor_label(axis), Path(path).name, skipped[-1]))
                 continue
             try:
                 manifest, combo = winner_of(str(path), args.audible_weight)
@@ -463,10 +472,17 @@ def run_save_latest(args) -> int:
         print('extruder: NOT saving the stored winner %s (%s) — re-run CHOPPER_EXTRUDER'
               % (extruder_state['fields'], why))
         extruder_state = None
+    if extruder_state and settings is None:
+        settings = mk.settings()
+    if extruder_state and autotune_goal(settings, 'extruder') is not None:
+        skipped.append(autotune_refusal(extruder_state['driver'], 'extruder'))
+        print('extruder: NOT saving the stored winner: %s' % skipped[-1])
+        extruder_state = None
     if extruder_state:
         print('extruder: saving %s (last CHOPPER_EXTRUDER winner)' % extruder_state['fields'])
     if not items and not extruder_state:
-        raise SystemExit('no tuning datasets to save — run CHOPPER_TUNE first')
+        # the skipped reason is the one worth the display: it says what to change
+        raise SystemExit(skipped[0] if skipped else 'no tuning datasets to save — run CHOPPER_TUNE first')
     run_save(mk, items, extruder_state)
     return 0
 

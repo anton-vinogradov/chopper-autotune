@@ -140,14 +140,24 @@ def live_stealth(kl: Klippy, stepper: str, driver: tmc.Driver) -> 'bool | None':
     return None if value is None else value == stealth_value
 
 
+# klipper_tmc_autotune goals that clear en_spreadcycle; its auto goal depends on the
+# motor's torque outside X/Y, which only its motor database knows
+AUTOTUNE_STEALTH_GOALS = ('silent', 'autoswitch')
+
+
 def resolve_stealth(kl: Klippy, hw: Hardware):
     """Settle hw.stealth from the live driver: forced when the driver runs stealthChop
     OR the config asks for it — a spreadCycle left behind by a killed run still gets
-    its stealthChop back at the end. Falls back to the config when unreadable."""
+    its stealthChop back at the end. Falls back to a klipper_tmc_autotune goal, then to
+    the config, when unreadable."""
     if not hw.driver.spreadcycle_switch:
         return
     live = live_stealth(kl, hw.stepper, hw.driver)
-    if live is None:
+    goal = autotune_goal(kl.settings(), hw.stepper) if live is None else None
+    if goal in AUTOTUNE_STEALTH_GOALS:
+        print('%s: klipper_tmc_autotune runs it in stealthChop (%s goal)' % (hw.stepper, goal))
+        hw.stealth = hw.driver.spreadcycle_switch
+    elif live is None:
         print('trusting the config for the %s driver mode' % hw.stepper)
     elif live and not hw.stealth:
         print(unexpected_stealth(hw.stepper))
@@ -161,6 +171,31 @@ def unexpected_stealth(name: str) -> str:
             '(stealthchop_threshold: 0 keeps it at standstill on Klipper 0.12+; '
             'klipper_tmc_autotune turns it on at runtime: silent and autoswitch goals, and its '
             'default auto goal on Z and the extruder with a motor above 0.3 Nm)' % name)
+
+
+def autotune_goal(settings: dict, stepper: str) -> 'str | None':
+    """The tuning goal of a klipper_tmc_autotune section on this stepper, None without
+    one. Autotune writes its own tbl, toff, hstrt and hend at every Klipper start
+    (autotune_tmc.py tune_driver), over the driver_* values of the [tmc...] section."""
+    section = settings.get('autotune_tmc ' + stepper)
+    if section is None:
+        return None
+    return str(section.get('tuning_goal') or 'auto').lower()
+
+
+def autotune_refusal(driver_name: str, stepper: str) -> str:
+    """The action first: the display shows '<command> FAILED: ' and 120 characters."""
+    return ('not saving [tmc%s %s]: [autotune_tmc %s] resets its chopper at start: remove it to '
+            'save (klipper_tmc_autotune writes its own tbl, toff, hstrt and hend over driver_* '
+            'at every Klipper start; on a TMC2240 also add driver_SLOPE_CONTROL: 3, which it '
+            'sets)' % (driver_name, stepper, stepper))
+
+
+def refuse_autotune_save(settings: dict, driver_name: str, stepper: str):
+    """Saved driver_* values on a motor klipper_tmc_autotune manages never reach the
+    driver: say so instead of saving them (and restarting Klipper for nothing)."""
+    if autotune_goal(settings, stepper) is not None:
+        raise SystemExit(autotune_refusal(driver_name, stepper))
 
 
 def rail_twins(settings: dict, axis: str) -> 'list[str]':
@@ -377,17 +412,18 @@ def wake_stepper(kl: Klippy, stepper: str):
     kl.gcode('SET_STEPPER_ENABLE STEPPER=%s ENABLE=1' % stepper)
 
 
+def driver_of(settings: dict, stepper: str) -> 'str | None':
+    """The supported TMC driver ('2209') of a stepper's [tmcXXXX <stepper>] section."""
+    return next((name for name in tmc.DRIVERS if 'tmc%s %s' % (name, stepper) in settings), None)
+
+
 def detect_hardware(kl: Klippy, axis: str, accel: bool = True) -> Hardware:
     settings = kl.settings()
     stepper = 'stepper_' + axis
-    driver = section = None
-    for name in tmc.DRIVERS:
-        candidate = 'tmc%s %s' % (name, stepper)
-        if candidate in settings:
-            driver, section = tmc.DRIVERS[name], settings[candidate]
-            break
-    if driver is None:
+    name = driver_of(settings, stepper)
+    if name is None:
         raise SystemExit('no supported TMC driver section found for %s' % stepper)
+    driver, section = tmc.DRIVERS[name], settings['tmc%s %s' % (name, stepper)]
 
     baseline = {}
     for field in ('tbl', 'toff', 'hstrt', 'hend') + (('tpfd',) if driver.has_tpfd else ()):

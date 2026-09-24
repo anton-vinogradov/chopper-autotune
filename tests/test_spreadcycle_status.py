@@ -233,3 +233,18 @@ def test_enter_spreadcycle_end_to_end_over_the_socket():
     assert 'DUMP_TMC STEPPER=stepper_x REGISTER=GCONF' in sent[1]
     assert 'SET_TMC_FIELD STEPPER=stepper_x FIELD=en_spreadcycle VALUE=1' in sent[2]
     kl.close()
+
+
+def test_an_unreadable_mode_falls_back_to_the_autotune_goal():
+    # live GCONF unreadable: klipper_tmc_autotune's silent goal runs X in stealthChop
+    from types import SimpleNamespace
+
+    from chopper_autotune import tmc
+    from chopper_autotune.collect import resolve_stealth
+    driver = tmc.DRIVERS['2209']
+    for goal, forced in (('silent', True), ('autoswitch', True), ('performance', False), (None, False)):
+        settings = {'autotune_tmc stepper_x': {'tuning_goal': goal}} if goal else {}
+        kl = SimpleNamespace(gcode_output=lambda script: ['// ok'], settings=lambda: settings)
+        hw = SimpleNamespace(driver=driver, stepper='stepper_x', stealth=None)
+        resolve_stealth(kl, hw)
+        assert (hw.stealth == driver.spreadcycle_switch) == forced, goal

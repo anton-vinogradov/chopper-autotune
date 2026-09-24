@@ -201,7 +201,7 @@ def test_run_save_latest_includes_the_extruder_winner(monkeypatch):
     state = {'driver': '2209', 'fields': {'tbl': 3, 'toff': 7, 'hstrt': 6, 'hend': 0}}
     monkeypatch.setattr(analyze, 'dataset_dirs', lambda: [])
     monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: state)
-    monkeypatch.setattr(analyze, 'Moonraker', lambda url: object())
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: type('M', (), {'settings': lambda self: {}})())
     saved = {}
     monkeypatch.setattr(analyze, 'run_save',
                         lambda mk, items, extruder_state=None: saved.update(
@@ -439,3 +439,38 @@ def test_restore_defaults_resets_both_drivers_of_a_pair():
     text = ('[tmc5160 stepper_x]\ndriver_TBL: 1\n\n[tmc5160 stepper_x1]\ndriver_TBL: 1\n\n'
             '[tmc5160 stepper_y]\nrun_current: 1.0\n')
     assert tuned_tmc_sections({'printer.cfg': text}) == ['tmc5160 stepper_x', 'tmc5160 stepper_x1']
+
+
+AUTOTUNE = {'autotune_tmc stepper_x': {'motor': 'ldo-42sth48-2004mah', 'tuning_goal': 'performance'}}
+
+
+def test_run_save_refuses_a_motor_klipper_tmc_autotune_manages():
+    # autotune writes its own tbl/toff/hstrt/hend at every Klipper start: saved values
+    # would never reach the driver, and the restart would be for nothing
+    mk = FakeMoonraker({'printer.cfg': CFG}, settings=AUTOTUNE)
+    with pytest.raises(SystemExit, match=r"\[autotune_tmc stepper_x\] resets its chopper"):
+        run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))])
+    assert mk.uploads == [] and mk.scripts == []
+
+
+def test_run_save_latest_skips_a_managed_motor_and_names_why(monkeypatch):
+    import argparse
+
+    from chopper_autotune import analyze
+    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: ['/datasets/x'])
+    monkeypatch.setattr(analyze, 'Dataset', lambda path: type('D', (), {'manifest': lambda self: {
+        'axis': 'x', 'search': 'descent', 'driver': '2209'}})())
+    monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: None)
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: type('M', (), {'settings': lambda self: AUTOTUNE})())
+    with pytest.raises(SystemExit, match=r'not saving \[tmc2209 stepper_x\]: \[autotune_tmc stepper_x\]'):
+        analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
+
+
+@pytest.mark.parametrize('command, driver, stepper', [('tune', '2240', 'stepper_x'),
+                                                       ('extruder', '5160', 'extruder'),
+                                                       ('save', '2209', 'stepper_y')])
+def test_the_autotune_refusal_keeps_its_action_on_the_display(command, driver, stepper):
+    # announce_failure shows '<command> FAILED: <message>' cut at 120 characters
+    from chopper_autotune.collect import autotune_refusal
+    shown = ('%s FAILED: %s' % (command, autotune_refusal(driver, stepper)))[:120]
+    assert 'remove it to save' in shown

@@ -139,7 +139,38 @@ def test_extruder_stealth_resolved_live_before_the_force():
     assert resolve_extruder_stealth(LiveKl(), driver, None) == ('en_pwm_mode', 0, 1)
 
     class DeafKl:
+        def __init__(self, settings=None):
+            self.config = settings or {}
+
         def gcode_output(self, script):
             return ['// ok']
+
+        def settings(self):
+            return self.config
     assert resolve_extruder_stealth(DeafKl(), driver, None) is None
     assert resolve_extruder_stealth(DeafKl(), driver, driver.spreadcycle_switch) == driver.spreadcycle_switch
+    # unreadable: klipper_tmc_autotune's silent and autoswitch goals clear en_spreadcycle
+    for goal, stealth in (('silent', driver.spreadcycle_switch), ('autoswitch', driver.spreadcycle_switch),
+                          ('performance', None), ('auto', None)):
+        deaf = DeafKl({'autotune_tmc extruder': {'tuning_goal': goal}})
+        assert resolve_extruder_stealth(deaf, driver, None) == stealth, goal
+
+
+def test_save_on_an_autotune_extruder_is_refused_before_the_heat_up(monkeypatch):
+    from types import SimpleNamespace
+
+    import pytest
+
+    import chopper_autotune.extruder as extruder_mod
+    scripts = []
+    kl = SimpleNamespace(settings=lambda: {'tmc2209 extruder': {}, 'autotune_tmc extruder': {'motor': 'x'},
+                                           'extruder': {}},
+                         gcode=scripts.append)
+    with pytest.raises(SystemExit, match=r'not saving \[tmc2209 extruder\]'):
+        extruder_mod.extruder_tune(kl, SimpleNamespace(save_last=False, save=True, temp=200.0))
+    assert scripts == []                                 # no M104: nothing heated
+    # SAVE_LAST=1 persists nothing either
+    state = {'driver': '2209', 'fields': {'tbl': 1, 'toff': 3, 'hstrt': 5, 'hend': 2}}
+    monkeypatch.setattr(extruder_mod, 'load_winner_state', lambda: state)
+    with pytest.raises(SystemExit, match=r'not saving \[tmc2209 extruder\]'):
+        extruder_mod.extruder_tune(kl, SimpleNamespace(save_last=True, save=False, url='http://x'))

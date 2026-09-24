@@ -15,7 +15,7 @@
 - [The approach](#the-approach) · [how it works](#how-it-works-today) · [datasheet-driven scoring](#datasheet-driven-scoring-not-just-measurement)
 - [The science](#the-science)
 - [Two runs by design](#two-runs-by-design)
-- [Usage](#usage) · [macro name conflicts](#macro-name-conflicts) · [one command](#the-simple-way--one-command) · [touchscreen](#from-the-touchscreen--klipperscreen) · [step by step](#the-manual-way--step-by-step) · [command reference](#command-reference)
+- [Usage](#usage) · [macro name conflicts](#macro-name-conflicts) · [klipper_tmc_autotune](#with-klipper_tmc_autotune) · [one command](#the-simple-way--one-command) · [touchscreen](#from-the-touchscreen--klipperscreen) · [step by step](#the-manual-way--step-by-step) · [command reference](#command-reference)
 - [Stack](#stack) · [Prerequisites](#prerequisites) · [Roadmap](#roadmap)
 - [Prior art](#prior-art--credits) · [Datasheets](#datasheets) · [License](#license)
 
@@ -119,6 +119,15 @@ Klipper keeps one macro per name. When two config files define the same section,
 - The KlipperScreen panel marks such a button with ⚠. Tapping it explains the conflict and sends nothing.
 
 To fix a conflict, keep one of the two tools. In `printer.cfg`, comment out the `[include ...]` line of the other tool, or ours, then run `RESTART`.
+
+### With klipper_tmc_autotune
+
+[klipper_tmc_autotune](https://github.com/andrewmcgr/klipper_tmc_autotune) writes its own chopper registers (`tbl`, `toff`, `hstrt`, `hend`) at every Klipper start, over the `driver_*` values of the `[tmc…]` section. So on a motor with an `[autotune_tmc …]` section, registers saved by this tool would never reach the driver.
+
+- `CHOPPER_TUNE SAVE=1` and `CHOPPER_EXTRUDER SAVE=1` refuse such a motor before they start, and `CHOPPER_SAVE` skips it. Without `SAVE=1` the tuning still runs.
+- To use tuned registers on that motor, remove its `[autotune_tmc …]` section. On a TMC2240, add `driver_SLOPE_CONTROL: 3` to its `[tmc2240 …]` section: autotune sets it, and it keeps the driver cooler.
+- At the end of a run the tool puts back the registers from the config. Autotune's own come back at the next Klipper restart.
+- The tool reads the driver mode, spreadCycle or stealthChop, from the live driver. If that read fails, it takes autotune's `silent` and `autoswitch` goals as stealthChop.
 
 ### The plan — getting the most out of your printer
 
