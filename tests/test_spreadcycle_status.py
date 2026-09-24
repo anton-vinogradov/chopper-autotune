@@ -233,3 +233,27 @@ def test_enter_spreadcycle_end_to_end_over_the_socket():
     assert 'DUMP_TMC STEPPER=stepper_x REGISTER=GCONF' in sent[1]
     assert 'SET_TMC_FIELD STEPPER=stepper_x FIELD=en_spreadcycle VALUE=1' in sent[2]
     kl.close()
+
+
+def test_an_unreadable_mode_falls_back_to_the_autotune_goal():
+    # live GCONF unreadable: klipper_tmc_autotune's silent goal runs X in stealthChop
+    from types import SimpleNamespace
+
+    from chopper_autotune import tmc
+    from chopper_autotune.collect import resolve_stealth
+    driver = tmc.DRIVERS['2209']
+    switch = driver.spreadcycle_switch
+    # (goal, stepper, the config's own guess) -> the mode the run assumes
+    for goal, stepper, configured, expected in (
+            ('silent', 'stepper_x', None, switch), ('autoswitch', 'stepper_x', None, switch),
+            # performance, and auto on X/Y, keep spreadCycle: a stale stealthchop_threshold
+            # must not turn stealthChop on at the end of the run
+            ('performance', 'stepper_x', switch, None), ('auto', 'stepper_y', switch, None),
+            # auto on another motor: only autotune's motor database knows
+            ('auto', 'stepper_z', switch, switch), (None, 'stepper_x', switch, switch),
+            (None, 'stepper_x', None, None)):
+        settings = {'autotune_tmc ' + stepper: {'tuning_goal': goal}} if goal else {}
+        kl = SimpleNamespace(gcode_output=lambda script: ['// ok'], settings=lambda: settings)
+        hw = SimpleNamespace(driver=driver, stepper=stepper, stealth=configured, autotune=goal)
+        resolve_stealth(kl, hw)
+        assert hw.stealth == expected, (goal, stepper)

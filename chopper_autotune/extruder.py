@@ -16,7 +16,9 @@ import os
 import statistics
 
 from . import tmc
-from .collect import (Range, Screen, capture_stream, detect_hardware, live_stealth, refuse_if_printing,
+from .collect import (Range, Screen, autotune_advice, autotune_goal, autotune_stealth, autotune_tag,
+                      capture_stream, detect_hardware, live_chopper, live_stealth,
+                      measured_under_autotune, refuse_autotune_save, refuse_if_printing,
                       run_restore, unexpected_stealth, wake_stepper)
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
@@ -29,10 +31,14 @@ VALIDATE_TOP = 3            # re-measure the best candidates before recommending
 STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/extruder.json')
 
 
-def save_winner_state(driver_name: str, winner: tmc.Chopper):
+def save_winner_state(driver_name: str, winner: tmc.Chopper, autotune: 'str | None' = None):
     """The extruder has no dataset like the axes do; remember the winner so SAVE_LAST=1
-    can persist it later without re-running the whole heated tune."""
-    save_json(STATE, {'driver': driver_name, 'fields': winner.fields()})
+    can persist it later without re-running the whole heated tune. autotune: the
+    klipper_tmc_autotune goal it was measured under (its CoolStep changes the current)."""
+    state = {'driver': driver_name, 'fields': winner.fields()}
+    if autotune:
+        state['autotune'] = autotune
+    save_json(STATE, state)
 
 
 def load_winner_state() -> 'dict | None':
@@ -63,12 +69,35 @@ def resolve_extruder_stealth(kl: Klippy, driver: tmc.Driver, configured: 'tuple 
     if not driver.spreadcycle_switch:
         return configured
     live = live_stealth(kl, 'extruder', driver)
+    settings = kl.settings()
+    if autotune_goal(settings, 'extruder') is not None and live is not None:
+        # autotune sets the mode at every start: the live read is what to put back
+        return driver.spreadcycle_switch if live else None
+    by_autotune = autotune_stealth(settings, 'extruder') if live is None else None
+    if by_autotune is not None:
+        print('extruder: klipper_tmc_autotune runs it in %s'
+              % ('stealthChop' if by_autotune else 'spreadCycle'))
+        return driver.spreadcycle_switch if by_autotune else None
     if live is None:
         print('trusting the config for the extruder driver mode')
     elif live and not configured:
         print(unexpected_stealth('the extruder'))
         return driver.spreadcycle_switch
     return configured
+
+
+def autotune_extruder_baseline(kl: Klippy, driver: tmc.Driver, configured: dict) -> dict:
+    """The registers the run puts back (see collect.resolve_autotune_baseline): on an
+    extruder klipper_tmc_autotune manages, its own, read live after the enable."""
+    if autotune_goal(kl.settings(), 'extruder') is None:
+        return configured
+    live = live_chopper(kl, 'extruder', driver)
+    if live is None:
+        print('extruder: klipper_tmc_autotune manages it, and its registers could not be read: '
+              'the run ends on the config registers; restart Klipper afterwards')
+        return configured
+    print('extruder: klipper_tmc_autotune registers %s, put back at the end' % live)
+    return live
 
 
 def oscillation(speed: float, amp: float, cycles: int) -> str:
@@ -138,6 +167,9 @@ def extruder_show(kl: Klippy, args, driver: tmc.Driver, baseline_regs: dict,
     screen = Screen(kl, hw.display)
     speed = args.speed or 5.0
     magnitudes = {'defaults': [], 'tuned': []}
+    # see collect.untouched_autotune: nothing is put back on autotune's extruder before
+    # its registers are read
+    untouched = autotune_goal(kl.settings(), 'extruder') is not None
     try:
         # the heater goes on INSIDE the try — a SIGTERM during the long heat-up must
         # still reach the M104 S0 in the finally
@@ -146,6 +178,8 @@ def extruder_show(kl: Klippy, args, driver: tmc.Driver, baseline_regs: dict,
         kl.gcode('TEMPERATURE_WAIT SENSOR=extruder MINIMUM=%.0f' % (temp - 3))
         wake_stepper(kl, 'extruder')
         stealth = resolve_extruder_stealth(kl, driver, stealth)
+        baseline_regs = autotune_extruder_baseline(kl, driver, baseline_regs)
+        untouched = False
         if stealth:
             # chopper registers only act in spreadCycle: without the force, both phases
             # would measure stealthChop vs stealthChop and report a fake 1.0x
@@ -166,8 +200,12 @@ def extruder_show(kl: Klippy, args, driver: tmc.Driver, baseline_regs: dict,
         screen.final('Extruder: %.1fx less vibration (%.0f -> %.0f)' % (d / t, d, t))
     finally:
         run_restore(
-            lambda: kl.gcode(tmc.set_fields_script('extruder', baseline_regs)),
-            lambda: stealth and kl.gcode(tmc.set_fields_script('extruder', {stealth[0]: stealth[2]})),
+            # the motor on before any register write (wake_stepper): a stop during the heat-up
+            # would otherwise energize a driver without an enable pin that Klipper counts off
+            lambda: untouched or wake_stepper(kl, 'extruder'),
+            lambda: untouched or kl.gcode(tmc.set_fields_script('extruder', baseline_regs)),
+            lambda: untouched or stealth and kl.gcode(tmc.set_fields_script(
+                'extruder', {stealth[0]: stealth[2]})),
             lambda: kl.gcode('M104 S0'),
             lambda: kl.gcode('SET_STEPPER_ENABLE STEPPER=extruder ENABLE=0'))
     return 0
@@ -189,6 +227,9 @@ def extruder_tune(kl: Klippy, args) -> int:
         from .analyze import _persist, refuse_unloadable, updated_config
         from .moonraker import Moonraker
         refuse_unloadable(state['driver'], 'extruder', state['fields'])
+        refuse_autotune_save(kl.settings(), state['driver'], 'extruder')
+        if state.get('autotune'):
+            raise SystemExit(measured_under_autotune(state['driver'], 'extruder'))
         print('Persisting the stored extruder winner: %s' % state['fields'])
         _persist(Moonraker(args.url),
                  [('tmc%s extruder' % state['driver'],
@@ -198,6 +239,8 @@ def extruder_tune(kl: Klippy, args) -> int:
 
     settings = kl.settings()
     driver, driver_name, baseline_regs, stealth, min_temp = extruder_context(settings)
+    if args.save:
+        refuse_autotune_save(settings, driver_name, 'extruder')    # before the heat-up
     temp = float(args.temp)
     if temp < min_temp:
         raise SystemExit('TEMP=%.0f is below min_extrude_temp (%.0f) — the filament could '
@@ -234,6 +277,7 @@ def extruder_tune(kl: Klippy, args) -> int:
     kl.subscribe_accel(hw.accel_chip)
     screen = Screen(kl, hw.display)
 
+    untouched = autotune_goal(settings, 'extruder') is not None   # as in extruder_show
     try:
         # the heater goes on INSIDE the try: heating is the longest wait of the whole
         # run, and a SIGTERM/Ctrl-C there must still reach the M104 S0 in the finally
@@ -244,6 +288,8 @@ def extruder_tune(kl: Klippy, args) -> int:
 
         wake_stepper(kl, 'extruder')
         stealth = resolve_extruder_stealth(kl, driver, stealth)
+        baseline_regs = autotune_extruder_baseline(kl, driver, baseline_regs)
+        untouched = False
         if stealth:
             field, force, _ = stealth
             print('stealthChop is active on the extruder: forcing spreadCycle')
@@ -283,7 +329,7 @@ def extruder_tune(kl: Klippy, args) -> int:
             rescored[combo] = statistics.mean(scores)
             print('  validate %s: %.0f' % (combo.label(), rescored[combo]))
         winner = min(rescored, key=rescored.get)
-        save_winner_state(driver_name, winner)
+        save_winner_state(driver_name, winner, autotune_tag(driver_name, autotune_goal(settings, 'extruder')))
 
         print('\n=== Extruder winner ===')
         print('%s  score %.0f  (f_chop %.1f kHz, h_eff %d)'
@@ -303,6 +349,8 @@ def extruder_tune(kl: Klippy, args) -> int:
                      [('tmc%s extruder' % driver_name,
                        lambda text, section: updated_config(text, section, winner.fields()))],
                      'the extruder registers')
+        elif autotune_goal(settings, 'extruder') is not None:
+            print(autotune_advice(settings, driver_name, 'extruder'))
         else:
             print('SAVE_LAST=1 persists this winner into the config without re-tuning')
         return 0
@@ -310,8 +358,10 @@ def extruder_tune(kl: Klippy, args) -> int:
         run_restore(
             # a stock config carries no driver_* lines (empty baseline) — fall back to
             # Klipper defaults rather than silently leaving the last swept combo active
-            lambda: kl.gcode(tmc.set_fields_script(
+            lambda: untouched or wake_stepper(kl, 'extruder'),    # as in extruder_show
+            lambda: untouched or kl.gcode(tmc.set_fields_script(
                 'extruder', baseline_regs or tmc.stock_chopper(driver, False).fields())),
-            lambda: stealth and kl.gcode(tmc.set_fields_script('extruder', {stealth[0]: stealth[2]})),
+            lambda: untouched or stealth and kl.gcode(tmc.set_fields_script(
+                'extruder', {stealth[0]: stealth[2]})),
             lambda: kl.gcode('M104 S0'),
             lambda: kl.gcode('SET_STEPPER_ENABLE STEPPER=extruder ENABLE=0'))

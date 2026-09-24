@@ -249,7 +249,7 @@ def envelope(kl: Klippy, args) -> int:
                 screen.update('Chopper envelope %s %g%s' % (label, value, unit), force=True)
                 print('   %-8g %-6s : %s' % (value, unit, 'SLIP' if skipped else 'holds'))
 
-            enter_spreadcycle(kl, hw[m])
+            enter_spreadcycle(kl, hw[m], restores=False)
             try:
                 ref = Referee(kl, referee_axis(board.kinematics, m), settings,
                               board.center[1] if referee_axis(board.kinematics, m) == 'x'

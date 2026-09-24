@@ -15,8 +15,8 @@ from .collect import (MOVE_MARGIN, DriverTooHot, Screen, ThermalGuard, ZNotHomed
                       coupled_xy, default_dataset_root, detect_hardware, enter_spreadcycle,
                       exit_spreadcycle, fit_measure_time, home_xy, make_parker, measure_baseline,
                       motor_label, now, park, refuse_blind_z_hop, refuse_if_printing,
-                      refuse_multi_motor, rehome_unless_hot, run_measurement, run_restore,
-                      travel_for)
+                      refuse_multi_motor, rehome_unless_hot, restore_chopper, run_measurement,
+                      run_restore, travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, KlippyError, find_socket
 from .metrics import vibration_score
@@ -73,7 +73,8 @@ def showcase_together(kl, args) -> int:
              for axis in MOTORS}
     default = {axis: args.default if args.default is not None else hw[axis].driver.default
                for axis in MOTORS}
-    if all(tuned[axis] == default[axis] for axis in MOTORS):
+    # autotune's motor runs its own registers, not its config lines: judged once read live
+    if all(hw[axis].autotune is None and tuned[axis] == default[axis] for axis in MOTORS):
         raise SystemExit('current registers equal the defaults on both motors — tune and save first')
 
     board = hw['x']
@@ -108,6 +109,12 @@ def showcase_together(kl, args) -> int:
         home_xy(kl, 'G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, *board.center))
         for axis in MOTORS:
             enter_spreadcycle(kl, hw[axis])
+            # on autotune's motor the registers it runs, read live: 'tuned' plays and
+            # puts back what the motor runs, not config lines autotune overrides
+            tuned[axis] = tmc.baseline_chopper(hw[axis].baseline, hw[axis].baseline.get('tpfd'),
+                                               hw[axis].driver.default)
+        if all(tuned[axis] == default[axis] for axis in MOTORS):
+            raise SystemExit('the drivers run the defaults on both motors — nothing to show')
         for r in range(1, args.rounds + 1):
             round_avg = {}
             for name, regs in configs:
@@ -126,9 +133,7 @@ def showcase_together(kl, args) -> int:
                 print('   => %s' % summary)
     finally:
         run_restore(
-            *[lambda axis=axis: kl.gcode(tmc.set_fields_script(hw[axis].stepper,
-                                                               tuned[axis].fields()))
-              for axis in MOTORS],
+            *[lambda axis=axis: restore_chopper(kl, hw[axis]) for axis in MOTORS],
             *[lambda axis=axis: exit_spreadcycle(kl, hw[axis]) for axis in MOTORS],
             lambda: kl.gcode('M204 S%.0f' % board.max_accel),
             lambda: rehome_unless_hot(kl))
@@ -191,7 +196,7 @@ def demo(kl: Klippy, args) -> int:
     tpfd = hw.baseline.get('tpfd')
     tuned = tmc.baseline_chopper(hw.baseline, tpfd, hw.driver.default)
     default = args.default if args.default is not None else hw.driver.default
-    if tuned == default:
+    if hw.autotune is None and tuned == default:
         raise SystemExit('current registers equal the defaults — nothing to demo '
                          '(tune and save the motor first)')
 
@@ -250,6 +255,12 @@ def demo(kl: Klippy, args) -> int:
     try:
         measure_baseline(hw, ds, args, set())      # the noise floor: motors still off
         enter_spreadcycle(kl, hw)
+        # as in showcase_together: on autotune's motor, what it runs, read live
+        tuned = tmc.baseline_chopper(hw.baseline, hw.baseline.get('tpfd'), hw.driver.default)
+        if tuned == default:
+            raise SystemExit('klipper_tmc_autotune runs the driver defaults on motor %s — nothing '
+                             'to demo' % hw.motor)
+        configs = [('default', default), ('tuned', tuned)]
         if live:
             results = _showcase(kl, hw, args, ds, configs, speed, travel, accel,
                                 before_move, screen)
@@ -265,7 +276,7 @@ def demo(kl: Klippy, args) -> int:
                     screen.update('Chopper demo %s %d/%d' % (name, iteration + 1, args.iterations))
     finally:
         run_restore(
-            lambda: kl.gcode(tmc.set_fields_script(hw.stepper, tuned.fields())),
+            lambda: restore_chopper(kl, hw),
             lambda: exit_spreadcycle(kl, hw),
             lambda: rehome_unless_hot(kl),
             ds.flush_raw)

@@ -115,7 +115,7 @@ def test_report_winner_reports_improvement_vs_defaults(tmp_path, monkeypatch, ca
                        'score': {'median_magnitude': magnitude, 'clicks': 0}})
 
     finals = []
-    hw = SimpleNamespace(driver=tmc.DRIVERS['2209'], stepper='stepper_x')
+    hw = SimpleNamespace(driver=tmc.DRIVERS['2209'], stepper='stepper_x', autotune=None)
     args = SimpleNamespace(trim=0.1, audible_weight=0.25)
     screen = SimpleNamespace(final=finals.append)
     winner = report_winner(hw, ds, args, screen, top=5)
@@ -257,7 +257,7 @@ def test_report_winner_finds_the_stock_reference_when_tpfd_is_not_swept(tmp_path
             ds.append({'id': '%s_%d' % (combo.label(), direction), 'kind': 'move',
                        'status': 'ok', **combo.fields(), 'tpfd': None,
                        'score': {'median_magnitude': magnitude, 'clicks': 0}})
-    hw = SimpleNamespace(driver=tmc.DRIVERS['2240'], stepper='stepper_x', baseline={})
+    hw = SimpleNamespace(driver=tmc.DRIVERS['2240'], stepper='stepper_x', baseline={}, autotune=None)
     args = SimpleNamespace(trim=0.1, audible_weight=0.25, tpfd=None)
     report_winner(hw, ds, args, SimpleNamespace(final=lambda text: None), top=5)
     assert ds.manifest()['improvement'] == 2.0

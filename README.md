@@ -15,7 +15,7 @@
 - [The approach](#the-approach) · [how it works](#how-it-works-today) · [datasheet-driven scoring](#datasheet-driven-scoring-not-just-measurement)
 - [The science](#the-science)
 - [Two runs by design](#two-runs-by-design)
-- [Usage](#usage) · [macro name conflicts](#macro-name-conflicts) · [one command](#the-simple-way--one-command) · [touchscreen](#from-the-touchscreen--klipperscreen) · [step by step](#the-manual-way--step-by-step) · [command reference](#command-reference)
+- [Usage](#usage) · [macro name conflicts](#macro-name-conflicts) · [klipper_tmc_autotune](#with-klipper_tmc_autotune) · [one command](#the-simple-way--one-command) · [touchscreen](#from-the-touchscreen--klipperscreen) · [step by step](#the-manual-way--step-by-step) · [command reference](#command-reference)
 - [Stack](#stack) · [Prerequisites](#prerequisites) · [Roadmap](#roadmap)
 - [Prior art](#prior-art--credits) · [Datasheets](#datasheets) · [License](#license)
 
@@ -119,6 +119,20 @@ Klipper keeps one macro per name. When two config files define the same section,
 - The KlipperScreen panel marks such a button with ⚠. Tapping it explains the conflict and sends nothing.
 
 To fix a conflict, keep one of the two tools. In `printer.cfg`, comment out the `[include ...]` line of the other tool, or ours, then run `RESTART`.
+
+### With klipper_tmc_autotune
+
+[klipper_tmc_autotune](https://github.com/andrewmcgr/klipper_tmc_autotune) writes its own chopper registers (`tbl`, `toff`, `tpfd`, `hstrt`, `hend`) at every Klipper start, over the `driver_*` values of the `[tmc…]` section. It also writes its StallGuard threshold, CoolStep and, on a TMC2240, a fast `slope_control`. So on a motor with an `[autotune_tmc …]` section, registers saved by this tool would never reach the driver.
+
+- `CHOPPER_TUNE SAVE=1` and `CHOPPER_EXTRUDER SAVE=1` refuse such a motor before they start, and `CHOPPER_SAVE` skips it. Without `SAVE=1` the tuning still runs. The display says the log has the details, and the log names the exact lines for that motor.
+- You can keep autotune. To use tuned registers on that motor instead:
+  1. In its `[tmc…]` section, set what autotune sets there, replacing any such line already present. That is the StallGuard threshold: `driver_SGTHRS` on a TMC2209 (autotune's `sg4_thrs`), `driver_SGT` on a TMC2130, TMC2240, TMC2660 or TMC5160, and on a TMC2240 also `driver_SG4_THRS` (autotune's `sg4_thrs`, 0 included) and `driver_SLOPE_CONTROL: 3`, which keeps the driver cooler. A TMC2208 has no StallGuard.
+  2. Remove the `[autotune_tmc …]` section and restart Klipper.
+  3. If the motor homes sensorless, re-tune the StallGuard threshold it homes on before anything else ([Klipper's guide](https://www.klipper3d.org/TMC_Drivers.html#sensorless-homing); on a TMC2240 homing on SG4 that is `driver_SG4_THRS`). The value comes from the autotune section, or its default, and ran under autotune's CoolStep and PWM, which go with the section, so the carried value is only a starting point.
+  4. Tune again. A run under autotune measured with its CoolStep on, which lowers the current under load, and the chopper optimum depends on the current. Such results are not saved, not even after autotune is gone, and a dataset is not resumed across the change. A TMC2208 has no CoolStep, so its results are not held back.
+- At the end of a run the tool puts back the registers and the mode the driver ran before it. On autotune's motors it reads them live from the driver, and the live mode wins over a `stealthchop_threshold` in the config, since autotune sets the mode itself. If the register read fails, it puts back the config registers, and autotune's return at the next Klipper restart. A run stopped before that read has written nothing and puts nothing back there.
+- The tool reads the driver mode, spreadCycle or stealthChop, from the live driver. If that read fails, it follows autotune's goal: `silent` and `autoswitch` mean stealthChop, `performance` means spreadCycle, and so does `auto` on X and Y.
+- The KlipperScreen panel shows such a motor as `autotune`, not with the `driver_*` lines of its config.
 
 ### The plan — getting the most out of your printer
 

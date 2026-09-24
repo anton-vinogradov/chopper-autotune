@@ -143,7 +143,7 @@ def resonance_map(kl: Klippy, args) -> int:
     screen = Screen(kl, hw.display)
     before_move = make_parker(kl, hw, guard)
     try:
-        enter_spreadcycle(kl, hw)                    # measure in spreadCycle; registers untouched
+        enter_spreadcycle(kl, hw, restores=False)    # measure in spreadCycle; registers untouched
         failed = run_sweep(hw, ds, args, plan, accel, screen, before_move, done)
     finally:
         print('Homing')
