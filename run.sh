@@ -21,7 +21,9 @@ if [ ! -x "$bin" ]; then
     exit 1
 fi
 if [ -n "$sync" ]; then
-    exec "$bin" "$cmd" "$@"
+    # the tool must not report failures through Klipper while this macro holds the
+    # gcode queue: the output goes straight to the console instead
+    CHOPPER_SYNC=1 exec "$bin" "$cmd" "$@"
 fi
 log=~/printer_data/config/chopper-autotune/$cmd.log
 mkdir -p "$(dirname "$log")"
@@ -41,6 +43,9 @@ if [ "$status" -eq 0 ]; then
     echo "chopper-autotune $cmd finished; log: $log"
 else
     echo "ERROR: chopper-autotune $cmd exited with status $status; log: $log"
+    if grep -qE '^(ModuleNotFoundError|ImportError)' "$log"; then
+        echo "The Python environment is broken (e.g. after an OS upgrade). Run: bash $here/install.sh"
+    fi
 fi
 tail -n 5 "$log"
 exit "$status"

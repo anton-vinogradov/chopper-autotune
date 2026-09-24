@@ -32,7 +32,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {debian: bullseye, runner: ubuntu-latest}
           - {debian: bookworm, runner: ubuntu-latest}
           - {debian: trixie, runner: ubuntu-latest}
           - {debian: trixie, runner: ubuntu-24.04-arm}
@@ -40,3 +39,5 @@ jobs:
       - run: apt-get update && apt-get install -y --no-install-recommends git ca-certificates
       - uses: actions/checkout@v4
       - run: bash tests/install_smoke.sh
+        env:
+          CHOPPER_SMOKE_THROWAWAY: '1'

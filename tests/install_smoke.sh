@@ -4,7 +4,12 @@
 # leave the config untouched; a good one must give a working environment, wired
 # config and a clean git tree (Moonraker refuses to update a modified repo).
 set -euo pipefail
+[ "${CHOPPER_SMOKE_THROWAWAY:-}" = 1 ] || {
+    echo "ERROR: this test wipes /home/pi and edits sudoers: run it only in a throwaway container (CI sets CHOPPER_SMOKE_THROWAWAY=1)" >&2
+    exit 1
+}
 src=$(realpath "$(dirname "$0")/..")
+cd /                    # no check may import the package from the source tree
 
 apt-get update
 apt-get install -y --no-install-recommends sudo git python3 ca-certificates
@@ -34,7 +39,9 @@ if as_pi PIP_INDEX_URL=http://127.0.0.1:9/simple PIP_RETRIES=0 PIP_TIMEOUT=2 \
     echo "FAIL: install.sh succeeded without a package index"
     exit 1
 fi
-grep -q '^ERROR: ' /tmp/fail.log || { cat /tmp/fail.log; echo "FAIL: no ERROR line"; exit 1; }
+tail -n 5 /tmp/fail.log
+grep -q '^install.sh stopped: ' /tmp/fail.log \
+    || { cat /tmp/fail.log; echo "FAIL: install.sh did not stop through its own error path"; exit 1; }
 [ "$before" = "$(sha256sum "$config/printer.cfg" "$config/moonraker.conf")" ] \
     || { echo "FAIL: config changed by a failed install"; exit 1; }
 [ ! -e "$config/chopper_autotune.cfg" ] || { echo "FAIL: cfg linked by a failed install"; exit 1; }
@@ -49,12 +56,10 @@ grep -qx '\[update_manager chopper-autotune\]' "$config/moonraker.conf"
 [ -f "$home/klipper/klippy/extras/gcode_shell_command.py" ]
 dirty=$(as_pi git -C "$repo" status --porcelain)
 [ -z "$dirty" ] || { echo "FAIL: install left the repo modified: $dirty"; exit 1; }
-# no Klipper runs here, so status fails to connect; it must not say "not installed"
+# no dataset yet: the installed program must answer, not crash or say "not installed"
 status_out=$(as_pi bash "$repo/status.sh" 2>&1 || true)
-if grep -q 'not installed' <<< "$status_out"; then
-    echo "FAIL: the launcher does not see the installed program: $status_out"
-    exit 1
-fi
+grep -q 'no datasets found' <<< "$status_out" \
+    || { echo "FAIL: status did not run the installed program: $status_out"; exit 1; }
 
 echo "=== 3. a second run changes nothing"
 as_pi bash "$repo/install.sh"

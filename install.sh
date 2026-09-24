@@ -21,6 +21,7 @@ if [ "$(id -u)" = "0" ]; then
     exit 1
 fi
 
+[ -d "$config_dir" ] || fail "$config_dir not found: chopper-autotune supports one Klipper instance with its config in ~/printer_data/config"
 g_shell_path=~/klipper/klippy/extras
 [ -d "$g_shell_path" ] || fail "Klipper not found: $g_shell_path does not exist"
 
@@ -36,7 +37,8 @@ python3 -m venv --system-site-packages "$venv" \
     || fail "python3 -m venv failed (on Debian or Raspberry Pi OS: sudo apt-get install python3-venv)"
 "$venv/bin/pip" install -q --upgrade pip setuptools || fail "pip could not upgrade itself (no network?)"
 "$venv/bin/pip" install -e "$repo_path" || fail "pip could not install chopper-autotune (see the error above)"
-"$venv/bin/python" -c 'import numpy, plotly, chopper_autotune.cli' \
+# from / so the check sees the installed package, not the source tree in the cwd
+(cd / && "$venv/bin/python" -c 'import numpy, plotly, chopper_autotune.cli') \
     || fail "the Python environment in $venv does not work (see the error above)"
 [ -x "$venv/bin/chopper-autotune" ] || fail "$venv/bin/chopper-autotune was not created"
 echo "Python environment ready in $venv"
@@ -115,6 +117,6 @@ sudo service klipper restart || echo "WARNING: could not restart klipper, restar
 if [ -f "$printer_cfg" ] && grep -q "^\[include $cfg_name\]$" "$printer_cfg"; then
     echo "Done. Try: CHOPPER_COLLECT SPEED=55 DRY_RUN=1 from the web console"
 else
-    echo "WARNING: $printer_cfg not found. Add [include $cfg_name] to your main Klipper config"
-    echo "yourself (and [include $force_cfg_name] if $force_cfg exists), then restart Klipper."
+    echo "WARNING: $printer_cfg not found. If your main Klipper config is another file in $config_dir,"
+    echo "add [include $cfg_name] there (and [include $force_cfg_name] if $force_cfg exists), then restart Klipper."
 fi

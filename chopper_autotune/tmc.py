@@ -18,6 +18,23 @@ HYST_EDGE_WEIGHT = 0.05
 
 
 @dataclass(frozen=True)
+class Range:
+    lo: int
+    hi: int
+
+    @classmethod
+    def parse(cls, text: str) -> 'Range':
+        lo, _, hi = text.partition(':')
+        r = cls(int(lo), int(hi or lo))
+        if r.hi < r.lo:
+            raise ValueError('range %s: max < min' % text)
+        return r
+
+    def values(self) -> range:
+        return range(self.lo, self.hi + 1)
+
+
+@dataclass(frozen=True)
 class Chopper:
     tbl: int
     toff: int

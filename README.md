@@ -104,7 +104,9 @@ Install on the printer host (Klipper restarts at the end):
 cd ~ && git clone https://github.com/anton-vinogradov/chopper-autotune && bash ./chopper-autotune/install.sh
 ```
 
-The installer builds the Python environment first and changes the Klipper config only after that works. CI runs it on clean Debian bullseye, bookworm and trixie (amd64, and trixie on arm64). Every command writes its full output to `~/printer_data/config/chopper-autotune/<command>.log`. If a macro prints `ERROR: chopper-autotune is not installed`, run `bash ~/chopper-autotune/install.sh` again and read its last lines. Do not edit `install.sh` itself: Moonraker refuses to update a modified repo.
+The installer builds the Python environment first and changes the Klipper config only after that works. It expects one Klipper instance with its config in `~/printer_data/config`. CI runs it on clean Debian bookworm and trixie (amd64, and trixie on arm64).
+
+Long commands run in the background and write their full output to `~/printer_data/config/chopper-autotune/<command>.log` (for example `tune.log`, `find-speed.log`). `CHOPPER_STATUS` and `CHOPPER_ANALYZE` without `APPLY`/`SAVE` print straight to the console. If a macro prints `ERROR: chopper-autotune is not installed`, or a run fails with `ModuleNotFoundError` after an OS upgrade, run `bash ~/chopper-autotune/install.sh` again and read its last lines. Do not edit `install.sh` itself: Moonraker refuses to update a modified repo. If you already did, restore it with `git -C ~/chopper-autotune checkout -- install.sh`, then update and run `install.sh` again.
 
 ### The plan — getting the most out of your printer
 

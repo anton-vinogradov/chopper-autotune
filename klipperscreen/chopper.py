@@ -182,6 +182,9 @@ class Panel(ScreenPanel):
         # including a clear back to None/"" so the panel returns to the register table
         if action == "notify_status_update" and "message" in data.get("display_status", {}):
             self.show_status(data["display_status"]["message"])
+        elif action == "notify_gcode_response" and "ERROR: chopper-autotune" in data:
+            # run.sh failures (not installed, start-up crash) print to the console only
+            self.show_status("ERROR:" + data.split("ERROR:", 1)[1].split("\n")[0])
 
     def step_states(self):
         """Which plan steps already left their mark — read from the same sources
