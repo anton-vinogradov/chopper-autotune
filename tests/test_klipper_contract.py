@@ -105,6 +105,8 @@ def load_webhooks(source: str, gcode_module):
 
 
 class Reactor:
+    NEVER = 9999999999999999.
+
     def __init__(self):
         self.timers = []
 
@@ -112,10 +114,11 @@ class Reactor:
         self.timers.append(callback)
         return callback
 
-    def unregister_timer(self, timer):
-        self.timers.remove(timer)
+    def unregister_timer(self, handle):
+        if handle in self.timers:
+            self.timers.remove(handle)
 
-    def run_timers(self):
+    def fire_timers(self):
         for timer in list(self.timers):
             timer(time.monotonic())
 
@@ -248,24 +251,8 @@ def test_live_stealth_through_the_real_gcode_parser(source, gconf, stealth):
         kl.close()
 
 
-class Endpoints:
-    """printer.lookup_object('webhooks') as far as the API server needs it."""
-
-    def __init__(self, webhooks):
-        self.webhooks = webhooks
-        self.endpoints = {}
-
-    def register_endpoint(self, path, callback):
-        self.endpoints[path] = callback
-
-    def get_callback(self, path):
-        if path not in self.endpoints:
-            raise self.webhooks.WebRequestError("No registered callback for path '%s'" % path)
-        return self.endpoints[path]
-
-
-def api_client(printer, webhooks) -> 'tuple[Klippy, object]':
-    """Our client on the real webhooks ClientConnection, as klippy's API socket serves it."""
+def api_client(printer, webhooks):
+    """Our client on one real webhooks.py ClientConnection to the printer's endpoints."""
     class Server:
         def __init__(self):
             self.printer, self.webhooks, self.reactor = printer, printer.objects['webhooks'], printer.reactor
@@ -275,10 +262,21 @@ def api_client(printer, webhooks) -> 'tuple[Klippy, object]':
 
     client, server_sock = socket.socketpair()
     connection = webhooks.ClientConnection(Server(), server_sock)
+    # Klipper sends from its one reactor thread; here the pump answers requests while
+    # the test thread fires the stream timers
+    lock, send = threading.Lock(), connection.send
+
+    def locked_send(data):
+        with lock:
+            send(data)
+    connection.send = locked_send
 
     def pump():
         while not connection.is_closed():
-            readable, _, _ = select.select([server_sock], [], [], 0.2)
+            try:
+                readable, _, _ = select.select([server_sock], [], [], 0.2)
+            except (OSError, ValueError):
+                return                              # closed under us by the test's finally
             if readable:
                 connection.process_received(time.monotonic())
     threading.Thread(target=pump, daemon=True).start()
@@ -293,7 +291,20 @@ def test_gcode_output_through_the_real_api_server(source):
     gcode_module = load_gcode(source)
     webhooks = load_webhooks(source, gcode_module)
     printer, dispatch, ran = ready_dispatch(gcode_module, GCONF_STEALTH)
-    printer.objects['webhooks'] = Endpoints(webhooks)
+
+    class Webhooks:
+        def __init__(self):
+            self.endpoints = {}
+
+        def register_endpoint(self, path, callback):
+            self.endpoints[path] = callback
+
+        def get_callback(self, path):
+            if path not in self.endpoints:
+                raise webhooks.WebRequestError("No registered callback for path '%s'" % path)
+            return self.endpoints[path]
+
+    printer.objects['webhooks'] = Webhooks()
     webhooks.GCodeHelper(printer)
     kl, connection = api_client(printer, webhooks)
     try:
@@ -302,6 +313,53 @@ def test_gcode_output_through_the_real_api_server(source):
         # a Klipper error comes back as an error response at once, not as a timeout
         with pytest.raises(KlippyError, match='Malformed command'):
             kl.gcode('ECHO CHOPPER-7-BEGIN')
+        assert not printer.shutdowns
+    finally:
+        kl.close()
+        connection.close()
+
+
+@pytest.mark.parametrize('source', fetched('bulk_sensor.py'))
+def test_every_streamed_sample_arrives_once(source):
+    """Klipper's stream helper (every accelerometer since v0.12.0-53, Kalico too) adds a
+    client per dump request and sends each batch to all of them, until the connection
+    closes. Replays CHOPPER_TUNE AXIS=xy without SPEED on a printer with accel_chip_x
+    and accel_chip_y: scan and descent of each motor subscribe on one connection."""
+    require(source)
+    api = fetched('webhooks.py')[0]
+    require(api)
+    gcode_module = load_gcode(api)
+    webhooks = load_webhooks(api, gcode_module)
+    bulk_sensor = load_klippy(source, 'bulk_sensor')
+    printer = Printer()
+    printer.command_error = gcode_module.CommandError
+    printer.objects['webhooks'] = webhooks.WebHooks(printer)
+    pending = {}
+    for sensor in ('hotend', 'bed'):
+        helper = bulk_sensor.BatchBulkHelper(
+            printer, lambda eventtime, sensor=sensor: pending.pop(sensor, None))
+        helper.add_mux_endpoint('adxl345/dump_adxl345', 'sensor', sensor,
+                                {'header': ('time', 'x_acceleration', 'y_acceleration', 'z_acceleration')})
+    kl, connection = api_client(printer, webhooks)
+
+    def stream(start):
+        """One batch from each chip, told apart by the value; then a later one past it."""
+        batches = {sensor: [[start + i / 3200.0, value, value, value] for i in range(64)]
+                   for sensor, value in (('hotend', 1.0), ('bed', 2.0))}
+        for data in (batches, {sensor: [[start + 1.0, 0.0, 0.0, 0.0]] for sensor in batches}):
+            pending.update((sensor, {'data': samples, 'errors': 0, 'overflows': 0})
+                           for sensor, samples in data.items())
+            printer.reactor.fire_timers()
+        kl.wait_for_sample(start + 1.0)             # every copy of the first batch is in
+        return batches
+
+    try:
+        for start, chip in enumerate(['adxl345 hotend', 'adxl345 hotend',    # motor A: scan, descent
+                                      'adxl345 bed', 'adxl345 bed']):        # motor B: scan, descent
+            kl.subscribe_accel(chip)
+            batches = stream(10.0 * start)
+            assert kl.samples_between(10.0 * start, 10.0 * start + 0.5) == batches[chip.split()[-1]], \
+                (source, start, chip)
         assert not printer.shutdowns
     finally:
         kl.close()
@@ -437,7 +495,7 @@ def test_every_accelerometer_streams_where_we_subscribe(source):
                 text = module.read()
         registered = re.findall(r'add_mux_endpoint\(\s*"(\w+/dump_\w+)",\s*"sensor"', text)
         calls = []
-        kl = Klippy.__new__(Klippy)
+        kl = Klippy('<contract>')
         kl.request = lambda method, params: calls.append(method)
         kl.subscribe_accel(section)
         assert calls == registered, (source, section)
@@ -542,7 +600,7 @@ def test_beacon_streams_through_the_real_api_server(source, monkeypatch, capsys)
     gcode_module = load_gcode(source)
     webhooks = load_webhooks(source, gcode_module)
     printer, _, _ = ready_dispatch(gcode_module, GCONF_STEALTH)
-    printer.objects['webhooks'] = Endpoints(webhooks)
+    printer.objects['webhooks'] = webhooks.WebHooks(printer)
     module = load_beacon(source, monkeypatch)
     tracker = module.BeaconTracker(None, printer)
     # at rest on the default 16g scale: 1 g is 128 counts of 7.81 mg
@@ -557,7 +615,7 @@ def test_beacon_streams_through_the_real_api_server(source, monkeypatch, capsys)
         clock = 1000 * BEACON_TICKS
         for _, probe, counts in probes:
             probe.report(clock, [counts] * 8)
-        printer.reactor.run_timers()
+        printer.reactor.fire_timers()
         times = [(clock + i * BEACON_TICKS) / BEACON_CLOCK for i in range(8)]
         for (kl, _), (_, _, counts) in zip(clients, probes):
             kl.wait_for_sample(times[-1] - 1e-6, timeout=2.0)
@@ -594,7 +652,7 @@ def test_beacon_measures_under_the_chip_name_we_send(source, chip, name, options
     require(source)
     gcode_module = load_gcode(source)
     printer, dispatch, _ = ready_dispatch(gcode_module, GCONF_STEALTH)
-    printer.objects['webhooks'] = Endpoints(None)
+    printer.objects['webhooks'] = types.SimpleNamespace(register_endpoint=lambda path, callback: None)
     printer.objects['toolhead'] = types.SimpleNamespace(get_last_move_time=lambda: 0.0)
     module = load_beacon(source, monkeypatch)
     Beacon(module, printer, module.BeaconTracker(None, printer), name, **options)
