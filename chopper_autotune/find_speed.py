@@ -121,7 +121,6 @@ def run_sweep(hw, ds: Dataset, args, plan: 'list[tuple[int, float]]', accel: flo
     """Measure vibration at every planned speed, both directions, into ds; return the failed
     count. Whatever chopper registers the caller left in effect are what gets measured."""
     failed = 0
-    measure_baseline(hw, ds, args, done)
     for index, (speed, cruise) in enumerate(plan, 1):
         travel = travel_for(speed, accel, cruise)
         magnitudes = []
@@ -261,7 +260,6 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
                   % (args.max_speed, new_max))
             args.min_speed, args.max_speed = args.max_speed + args.step, new_max
             extension = build_speed_plan(args, accel, limit)
-            done = ds.done_ids()               # else every round re-measures the baseline
             failed += run_sweep(hw, ds, args, extension, accel, screen, before_move, done)
             curve = build_curve(ds)
             peaks = find_peaks(smooth([magnitude for _, magnitude in curve]))
