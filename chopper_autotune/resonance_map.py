@@ -21,8 +21,8 @@ from pathlib import Path
 
 from . import __version__
 from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen, ThermalGuard,
-                      default_dataset_root, detect_hardware, ensure_z_homed, enter_spreadcycle,
-                      exit_spreadcycle, make_parker, now, park, refuse_if_printing,
+                      default_dataset_root, detect_hardware, enter_spreadcycle, exit_spreadcycle,
+                      make_parker, now, park, refuse_blind_z_hop, refuse_if_printing,
                       refuse_multi_motor, rehome_unless_hot, run_restore)
 from .dataset import Dataset, save_json
 from .find_speed import (build_curve, build_speed_plan, find_peaks, find_valleys, run_sweep,
@@ -134,10 +134,10 @@ def resonance_map(kl: Klippy, args) -> int:
     if done:
         print('Resuming %s: %d measurements already present' % (root, len(done)))
 
-    print('Preparing: home XY, park at center, disable motors')
+    print('Preparing: home XY, park at center, switch the X/Y motors off')
     guard = ThermalGuard(kl, kl.settings())
+    refuse_blind_z_hop(kl, kl.settings())
     guard.preflight()
-    ensure_z_homed(kl, kl.settings())
     park(kl, hw)
     started = time.time()
     screen = Screen(kl, hw.display)

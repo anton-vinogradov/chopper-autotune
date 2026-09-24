@@ -24,6 +24,9 @@ class RecordingKl:
     def object_list(self):
         return []
 
+    def info(self):
+        return {}
+
     def connect(self, sock=None):
         return self
 
@@ -118,13 +121,15 @@ XY_OFF = '\n'.join('SET_STEPPER_ENABLE STEPPER=%s ENABLE=0' % name
 ])
 def test_release_gantry_forgets_only_the_xy_homing_where_klipper_can(tmp_path, monkeypatch,
                                                                      force_move, clears):
-    # hands move the head next; Z keeps holding and its homing ([safe_z_home] z_hop)
+    # hands move the head next; Z keeps holding and its homing ([safe_z_home] z_hop);
+    # the check reads the RUNNING Klipper's code (info: klipper_path)
     import chopper_autotune.collect as collect_mod
+    monkeypatch.setattr(collect_mod, '_CLEAR_HOMING', {})
     if force_move is not None:
-        (tmp_path / 'extras').mkdir()
-        (tmp_path / 'extras' / 'force_move.py').write_text(force_move)
-    monkeypatch.setattr(collect_mod, 'KLIPPY_DIR', str(tmp_path))
+        (tmp_path / 'klippy' / 'extras').mkdir(parents=True)
+        (tmp_path / 'klippy' / 'extras' / 'force_move.py').write_text(force_move)
     kl = RecordingKl(AWD)
+    kl.info = lambda: {'klipper_path': str(tmp_path)}
     release_gantry(kl)
     expected = XY_OFF + ('\nSET_KINEMATIC_POSITION SET_HOMED= CLEAR_HOMED=XY' if clears else '')
     assert kl.scripts == [expected]

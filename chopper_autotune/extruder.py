@@ -169,7 +169,7 @@ def extruder_show(kl: Klippy, args, driver: tmc.Driver, baseline_regs: dict,
             lambda: kl.gcode(tmc.set_fields_script('extruder', baseline_regs)),
             lambda: stealth and kl.gcode(tmc.set_fields_script('extruder', {stealth[0]: stealth[2]})),
             lambda: kl.gcode('M104 S0'),
-            lambda: kl.gcode('M84'))
+            lambda: kl.gcode('SET_STEPPER_ENABLE STEPPER=extruder ENABLE=0'))
     return 0
 
 
@@ -314,4 +314,4 @@ def extruder_tune(kl: Klippy, args) -> int:
                 'extruder', baseline_regs or tmc.stock_chopper(driver, False).fields())),
             lambda: stealth and kl.gcode(tmc.set_fields_script('extruder', {stealth[0]: stealth[2]})),
             lambda: kl.gcode('M104 S0'),
-            lambda: kl.gcode('M84'))
+            lambda: kl.gcode('SET_STEPPER_ENABLE STEPPER=extruder ENABLE=0'))

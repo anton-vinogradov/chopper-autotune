@@ -12,8 +12,9 @@ from __future__ import annotations
 import math
 import os
 
-from .collect import (Screen, ThermalGuard, coupled_xy, detect_hardware, ensure_z_homed,
-                      refuse_if_printing, refuse_multi_motor, rehome_unless_hot, run_restore)
+from .collect import (Screen, ThermalGuard, can_clear_homing, coupled_xy, detect_hardware, home_xy,
+                      refuse_blind_z_hop, refuse_if_printing, refuse_multi_motor, rehome_unless_hot,
+                      run_restore)
 from .dataset import save_json
 from .klippy import Klippy, find_socket
 
@@ -77,6 +78,7 @@ class Referee:
         self.home_dir = 1.0 if self.endstop > mid else -1.0
         self.park_other = park_other
         self.bias = 0.0
+        self.set_homed = can_clear_homing(kl)
 
     def _triggered(self) -> bool:
         return self.kl.request('query_endstops/status').get('stepper_' + self.axis) == 'TRIGGERED'
@@ -98,16 +100,18 @@ class Referee:
         lie = self.endstop - self.home_dir * CREEP_RANGE
         self.kl.gcode('G90\nG1 %s%.2f %s%.2f F6000\nM400'
                       % (a.upper(), start, other.upper(), self.park_other))
-        self.kl.gcode('SET_KINEMATIC_POSITION %s=%.3f' % (a.upper(), lie))
+        # SET_HOMED=<axis> where Klipper has it: the default marks Z homed as well
+        self.kl.gcode('SET_KINEMATIC_POSITION %s=%.3f%s'
+                      % (a.upper(), lie, ' SET_HOMED=%s' % a.upper() if self.set_homed else ''))
         # fast coarse approach, then back off one coarse step and creep in fine steps
         coarse = self._creep(lie, COARSE_STEP, 3000, 0.0)
         if coarse is None:
-            self.kl.gcode('G28 %s' % a.upper())
+            home_xy(self.kl, 'G28 %s' % a.upper())
             return None
         back = max(0.0, coarse - COARSE_STEP)
         self.kl.gcode('G1 %s%.3f F1800\nM400' % (a.upper(), lie + self.home_dir * back))
         travelled = self._creep(lie, CREEP_STEP, 1200, back)
-        self.kl.gcode('G28 %s' % a.upper())
+        home_xy(self.kl, 'G28 %s' % a.upper())
         return None if travelled is None else CREEP_START - travelled
 
     def calibrate(self):
@@ -130,7 +134,7 @@ def run_rung(kl: Klippy, board, motor: str, current: float, configured: float,
     warns of over-temperature may shut down within seconds (#133)."""
     cx, cy = board.center
     check()
-    kl.gcode('G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, cx, cy))
+    home_xy(kl, 'G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, cx, cy))
     kl.gcode('SET_TMC_CURRENT STEPPER=stepper_%s CURRENT=%.2f' % (motor, current))
     factor = math.hypot(*vec)                   # belt speed per unit of head feed
     for belt in BELT_SPEEDS:
@@ -196,10 +200,10 @@ def current_tune(kl: Klippy, args) -> int:
     screen = Screen(kl, board.display)
     guard = ThermalGuard(kl, settings)
     recommended, thresholds = {}, {}
+    refuse_blind_z_hop(kl, settings)
+    guard.preflight()
     try:
-        guard.preflight()
-        ensure_z_homed(kl, settings)
-        kl.gcode('G28 X Y\nG90')
+        home_xy(kl, 'G28 X Y\nG90')
         for m in motors:
             label = motor_label(m)
             ref = Referee(kl, referee_axis(board.kinematics, m), settings,

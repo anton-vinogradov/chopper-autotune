@@ -10,8 +10,8 @@ from __future__ import annotations
 import math
 import os
 
-from .collect import (KLIPPY_DIR, Screen, ThermalGuard, detect_hardware, ensure_z_homed,
-                      enter_spreadcycle, exit_spreadcycle, full_steps_per_mm, rail_twins,
+from .collect import (KLIPPY_DIR, Screen, ThermalGuard, detect_hardware, enter_spreadcycle,
+                      exit_spreadcycle, full_steps_per_mm, home_xy, rail_twins, refuse_blind_z_hop,
                       refuse_if_printing, rehome_unless_hot, run_restore)
 from .current import Referee, referee_axis, stress_vector
 from .dataset import save_json
@@ -224,10 +224,10 @@ def envelope(kl: Klippy, args) -> int:
         screen.update('WARNING: ' + note, force=True)
     achieved = {}
     speed_holds, accel_holds = {}, {}
+    refuse_blind_z_hop(kl, settings)
+    guard.preflight()
     try:
-        guard.preflight()
-        ensure_z_homed(kl, settings)
-        kl.gcode('G28 X Y\nG90')
+        home_xy(kl, 'G28 X Y\nG90')
         for m in motors:
             label = motor_label(m)
             span = min(25.0, hw[m].axis_span / 8)
