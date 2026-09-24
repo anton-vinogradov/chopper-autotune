@@ -33,8 +33,8 @@ import re
 import numpy as np
 
 from .collect import (Screen, ThermalGuard, await_flushed, capture_span, coupled_xy, detect_hardware,
-                      home_xy, klipper_extra, motor_label, refuse_if_printing, rehome_unless_hot,
-                      release_gantry, run_restore)
+                      home_xy, klipper_extra, motor_label, refuse_blind_z_hop, refuse_if_printing,
+                      rehome_unless_hot, release_gantry, run_restore)
 from .current import stress_vector
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
@@ -282,9 +282,14 @@ def belts(kl: Klippy, args) -> int:
             return 0
         screen = Screen(kl, hw.display)
         refuse_if_printing(kl)
-        ThermalGuard(kl, settings).preflight()      # not on a hot driver (#133)
-        home_xy(kl, 'G28 X Y\nM400')
-        identify_belt(kl, hw, motor, screen)
+        refuse_blind_z_hop(kl, settings)            # before the preflight enables anything
+        try:
+            ThermalGuard(kl, settings).preflight()  # not on a hot driver (#133)
+            home_xy(kl, 'G28 X Y\nM400')
+            identify_belt(kl, hw, motor, screen)
+        except BaseException:
+            run_restore(lambda: release_gantry(kl))    # a failure or Stop: motors off too
+            raise
         screen.final('Motors off — belt %s is the one that moved' % motor_label(motor))
         return 0                                     # leaves the motors off on purpose
 
@@ -318,8 +323,8 @@ def belts(kl: Klippy, args) -> int:
     screen = Screen(kl, hw.display)
     peaks = {}
     guard = ThermalGuard(kl, settings)
-    guard.preflight()                               # not on a hot driver (#133)
     try:
+        guard.preflight()                           # not on a hot driver (#133)
         print('Homing X/Y (TEST_RESONANCES moves to the probe point)')
         home_xy(kl, 'G28 X Y\nM400')
         for motor in ('x', 'y'):
@@ -600,7 +605,6 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
     # #133 four of five driver shutdowns came here. The guard checks at least once a
     # second, and every exit hands the motors over (release_gantry in the finally)
     guard = ThermalGuard(kl, kl.settings())
-    guard.preflight()                               # not on a hot driver
     screen = Screen(kl, hw.display)
 
     def cue(text):
@@ -647,6 +651,7 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
 
     fundamentals = {}
     try:
+        guard.preflight()                           # not on a hot driver
         home_xy(kl, 'G28 X Y\nG90\nG1 X%.1f Y%.1f F6000\nM400' % (cx, rear_y))
         print('Capturing the quiet reference (do not touch)...')
         hold(1500)                                  # let the parking move's ring die out

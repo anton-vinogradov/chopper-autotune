@@ -48,6 +48,9 @@ class StatusKl:
     def homed_axes(self):
         return 'xyz'
 
+    def info(self):
+        return {}
+
     def gcode(self, script):
         self.scripts.append(script)
 
@@ -62,6 +65,16 @@ class StatusKl:
 
     def is_printing(self):
         return False
+
+
+def gantry_released(script: str, cycle: bool = False) -> bool:
+    """X/Y off (after an on-off cycle when asked), Z left holding: no M18, no G28."""
+    off = ['SET_STEPPER_ENABLE STEPPER="%s" ENABLE=0' % name for name in ('stepper_x', 'stepper_y')]
+    cycled = ['SET_STEPPER_ENABLE STEPPER="%s" ENABLE=1\n%s' % (name, line)
+              for name, line in zip(('stepper_x', 'stepper_y'), off)]
+    return (all(line in script for line in (cycled if cycle else off))
+            and 'M18' not in script and 'G28' not in script
+            and 'STEPPER="stepper_z" ENABLE=0' not in script)
 
 
 def moved(kl):
@@ -110,7 +123,7 @@ def test_preflight_refuses_a_driver_still_hot_before_any_move():
         ThermalGuard(kl, SETTINGS).preflight()
     assert kl.scripts[0] == ('SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=1\n'
                              'SET_STEPPER_ENABLE STEPPER=stepper_y ENABLE=1')
-    assert kl.scripts[-1] == 'M18' and moved(kl) == []
+    assert gantry_released(kl.scripts[-1]) and moved(kl) == []
 
 
 def test_every_move_is_checked_before_it_starts_and_before_a_re_home():
@@ -121,15 +134,17 @@ def test_every_move_is_checked_before_it_starts_and_before_a_re_home():
     assert moved(kl) == []
 
 
-def test_a_thermal_stop_turns_the_motors_off_with_m18_instead_of_re_homing():
-    # M18: only motor_off forgets the homing, FORCE_MOVE left the head elsewhere
+def test_a_thermal_stop_releases_the_gantry_instead_of_re_homing():
+    # X/Y off and their homing forgotten (FORCE_MOVE left the head elsewhere); Z keeps
+    # holding and its homing, so the next run needs no full G28 on a z_hop printer; the
+    # on-off cycle catches a driver a register restore re-energized behind Klipper's back
     kl = StatusKl()
     with pytest.raises(DriverTooHot):
         try:
             raise DriverTooHot('hot')
         finally:
             run_restore(lambda: rehome_unless_hot(kl))
-    assert kl.scripts == ['M18']
+    assert len(kl.scripts) == 1 and gantry_released(kl.scripts[0], cycle=True)
     kl.scripts.clear()
     rehome_unless_hot(kl)                        # any other ending re-homes as before
     assert kl.scripts == ['G28 X Y']
@@ -173,7 +188,7 @@ def test_current_checks_inside_a_rung_and_ends_with_the_motors_off(monkeypatch):
     with pytest.raises(DriverTooHot):
         cur.current_tune(kl, build_parser().parse_args(['current', '--motor', 'a', '--yes']))
     assert len(strokes) == 3                     # stopped at the next stroke pair
-    assert kl.scripts[-1] == 'M18'
+    assert gantry_released(kl.scripts[-1], cycle=True)
 
 
 def test_find_speed_ends_with_the_motors_off_after_a_thermal_stop(tmp_path, monkeypatch):
@@ -191,7 +206,7 @@ def test_find_speed_ends_with_the_motors_off_after_a_thermal_stop(tmp_path, monk
                                       '--no-raw'])
     with pytest.raises(DriverTooHot):
         fs.scan(kl, args)
-    assert kl.scripts[-1] == 'M18'
+    assert gantry_released(kl.scripts[-1], cycle=True)
 
 
 def test_envelope_bursts_are_checked_between_passes():

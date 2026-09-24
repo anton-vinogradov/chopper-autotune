@@ -37,7 +37,7 @@ KLIPPY_DIR = os.path.expanduser('~/klipper/klippy')
 THERMAL_FLAGS = ('otpw', 'ot', 't120', 't143', 't150', 't157')
 # TMC2240 die sensor: otpw fires at 120 C by default, shutdown near 165 C; the ADC reads
 # the chip average while the output stages run hotter (datasheet), so stop earlier. In
-# #133 drivers shut down at an average of 111.7 to 121.7 C, one without any otpw first
+# #133 drivers shut down at an average of 111.7 to 121.0 C, five of six with no otpw first
 THERMAL_LIMIT_C = 100.0
 # the die sensor's datasheet range: a reading outside it is a broken read, not a
 # temperature (#133: an ADC_TEMP of 0 read as -265 C and would pass any limit)
@@ -439,7 +439,11 @@ def release_gantry(kl: Klippy, cycle: bool = False):
     kl.gcode('\n'.join(lines))
 
 
-class ZNotHomed(SystemExit):
+class RunStopped(SystemExit):
+    """A stop of the whole run, never a per-motor skip (see demo.run_demo)."""
+
+
+class ZNotHomed(RunStopped):
     """A G28 X/Y would lift an unhomed Z blindly (see home_xy)."""
 
 
@@ -478,9 +482,13 @@ def home_xy(kl: Klippy, script: str):
     kl.gcode(script)
 
 
-class DriverTooHot(SystemExit):
+class DriverTooHot(RunStopped):
     """A driver warned of over-temperature: the run stops before the driver shuts itself
     down (GSTAT drv_err shuts Klipper down with it, #133)."""
+
+
+class KlipperShutdown(RunStopped):
+    """Klipper went into shutdown: every command fails from here on (#133)."""
 
 
 def xy_driver_sections(settings: dict) -> 'list[str]':
@@ -546,7 +554,8 @@ class ThermalGuard:
 
     def preflight(self):
         """A driver still hot from an earlier stop must not get a fresh run. Off motors
-        publish no status, so enable them (no motion), let Klipper poll, then check."""
+        publish no status, so enable them (no motion), let Klipper poll, then check. Too
+        hot: the gantry goes off again, Z keeps holding and its homing (release_gantry)."""
         if not self.sections:
             return
         self.kl.gcode('\n'.join('SET_STEPPER_ENABLE STEPPER=%s ENABLE=1' % name.split(' ', 1)[1]
@@ -555,17 +564,19 @@ class ThermalGuard:
         try:
             self.check()
         except DriverTooHot:
-            self.kl.gcode('M18')
+            release_gantry(self.kl)
             raise
 
 
 def rehome_unless_hot(kl: Klippy):
     """The closing re-home of a run. After a thermal stop G28 would put the hot driver
-    straight back under current: the motors go off instead, with M18 — only motor_off
-    forgets the homing, and FORCE_MOVE has left the head away from where Klipper thinks.
-    With Z unhomed by then (a failed homing), the gantry is released instead of lifting Z."""
+    straight back under current: the gantry is released instead — X/Y off and their
+    homing forgotten (FORCE_MOVE has left the head away from where Klipper thinks), Z
+    keeps holding and its homing, so the next run needs no full G28. The on-off cycle:
+    a register restore may have re-energized a driver Klipper counts as off. With Z
+    unhomed by then (a failed homing), the gantry is released instead of lifting Z."""
     if isinstance(sys.exc_info()[1], DriverTooHot):
-        kl.gcode('M18')
+        release_gantry(kl, cycle=True)
         return
     try:
         home_xy(kl, 'G28 X Y')
@@ -934,8 +945,8 @@ def refuse_after_shutdown(error: Exception):
     text = str(error)
     if 'Printer is shutdown' in text or 'FIRMWARE_RESTART' in text:
         cause = ' '.join(text.split('\n', 1)[0].replace('gcode/script failed: ', '').split())
-        raise SystemExit('Klipper shut down (%s): the run stops here; fix the cause, then '
-                         'FIRMWARE_RESTART' % cause)
+        raise KlipperShutdown('Klipper shut down (%s): the run stops here; fix the cause, then '
+                              'FIRMWARE_RESTART' % cause)
 
 
 def measure_move(hw: Hardware, ds: Dataset, args, record: dict, speed: float, cruise: float,

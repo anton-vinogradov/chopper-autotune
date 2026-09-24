@@ -335,8 +335,12 @@ def announce_failure(args, message: str):
         kl = Klippy(find_socket(getattr(args, 'socket', None))).connect()
         try:
             safe = message.replace('"', "'").replace('\n', ' ')[:120]
-            kl.gcode('M117 %s' % safe)
-            kl.gcode('M118 %s' % safe)
+            # one by one, the console first: Klipper in shutdown still takes M118, not M117
+            for command in ('M118', 'M117'):
+                try:
+                    kl.gcode('%s %s' % (command, safe))
+                except Exception:
+                    pass
         finally:
             kl.close()
     except Exception:

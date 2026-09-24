@@ -11,7 +11,7 @@ import statistics
 from datetime import datetime
 
 from . import __version__, tmc
-from .collect import (MOVE_MARGIN, DriverTooHot, Screen, ThermalGuard, ZNotHomed, capture_stream,
+from .collect import (MOVE_MARGIN, RunStopped, Screen, ThermalGuard, capture_stream,
                       coupled_xy, default_dataset_root, detect_hardware, enter_spreadcycle,
                       exit_spreadcycle, fit_measure_time, home_xy, make_parker, measure_baseline,
                       motor_label, now, park, refuse_after_shutdown, refuse_blind_z_hop,
@@ -49,7 +49,7 @@ def run_demo(args) -> int:
             except SystemExit as skip:
                 # only a per-motor refusal (a string message) is skippable; an integer
                 # code is the SIGTERM handler — CHOPPER_STOP must stop the whole demo
-                if len(axes) == 1 or not isinstance(skip.code, str) or isinstance(skip, (DriverTooHot, ZNotHomed)):
+                if len(axes) == 1 or not isinstance(skip.code, str) or isinstance(skip, RunStopped):
                     raise
                 print('motor %s skipped: %s' % (motor_label(axis), skip))
                 worst = max(worst, 2)
@@ -100,7 +100,7 @@ def showcase_together(kl, args) -> int:
     playing = {'default': '>> DEFAULTS', 'tuned': '>> TUNED'}
     results = {name: [] for name, _ in configs}
     guard = ThermalGuard(kl, kl.settings())
-    # outside the try: after its M18 the finally would write toff into the switched-off
+    # outside the try: after its release the finally would write toff into the switched-off
     # drivers, which re-energizes a hot one on a stepper without an enable pin
     refuse_blind_z_hop(kl, kl.settings())
     guard.preflight()

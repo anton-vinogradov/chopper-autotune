@@ -120,3 +120,30 @@ def test_restore_macro_args_translate():
     assert args.defaults is True and args.backup is False
     args = parser.parse_args(_gcode_args(['restore', 'BACKUP=1'], boolean_flags(parser)))
     assert args.backup is True and args.defaults is False
+
+
+def test_a_failure_reaches_the_console_even_when_the_display_is_refused(monkeypatch):
+    # Klipper in shutdown refuses M117 but still takes M118: the console line goes first
+    import chopper_autotune.klippy as klippy_mod
+    from chopper_autotune.cli import announce_failure
+    sent = []
+
+    class Kl:
+        def __init__(self, path):
+            pass
+
+        def connect(self):
+            return self
+
+        def gcode(self, script):
+            sent.append(script)
+            if script.startswith('M117'):
+                raise klippy_mod.KlippyError('Printer is shutdown')
+
+        def close(self):
+            pass
+    monkeypatch.delenv('CHOPPER_SYNC', raising=False)
+    monkeypatch.setattr(klippy_mod, 'Klippy', Kl)
+    monkeypatch.setattr(klippy_mod, 'find_socket', lambda explicit=None: '<sock>')
+    announce_failure(type('A', (), {'socket': None})(), 'tune FAILED: Klipper shut down')
+    assert sent == ['M118 tune FAILED: Klipper shut down', 'M117 tune FAILED: Klipper shut down']

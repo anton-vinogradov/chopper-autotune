@@ -166,9 +166,9 @@ def test_show_writes_state_for_both_motors(tmp_path, monkeypatch):
                      'y': {'regs': '2/1/4/14', 'quieter': 2.0}}
 
 
-def test_show_refuses_a_hot_driver_and_writes_nothing_after_m18(tmp_path, monkeypatch):
-    # the preflight runs outside the try: after its M18 the finally would write toff into
-    # the switched-off drivers and re-energize a hot one (no enable pin, #133)
+def test_show_refuses_a_hot_driver_and_writes_nothing_after_the_release(tmp_path, monkeypatch):
+    # the preflight runs outside the try: after its release the finally would write toff
+    # into the switched-off drivers and re-energize a hot one (no enable pin, #133)
     import chopper_autotune.collect as collect_mod
     from chopper_autotune.collect import DriverTooHot
     monkeypatch.setattr(collect_mod, 'PREFLIGHT_SEC', 0)
@@ -184,10 +184,13 @@ def test_show_refuses_a_hot_driver_and_writes_nothing_after_m18(tmp_path, monkey
                                                   'tmc2209 stepper_x': {}, 'tmc2209 stepper_y': {}},
                         'subscribe_status': lambda self, objects: None,
                         'status': lambda self: {'tmc2209 stepper_x': {'drv_status': {'otpw': 1}}},
-                        'is_printing': lambda self: False})()
+                        'is_printing': lambda self: False,
+                        'homed_axes': lambda self: 'xyz', 'info': lambda self: {},
+                        'stepper_states': lambda self: {'stepper_x': True, 'stepper_y': True,
+                                                        'stepper_z': True}})()
     with pytest.raises(DriverTooHot):
         demo_module.showcase_together(kl, demo_args(dry_run=False, rounds=1))
-    assert scripts[-1] == 'M18'
+    assert 'SET_STEPPER_ENABLE STEPPER="stepper_x" ENABLE=0' in scripts[-1] and 'M18' not in scripts[-1]
     assert not any('SET_TMC_FIELD' in s or 'G28' in s for s in scripts)
 
 
@@ -362,3 +365,23 @@ def test_the_show_puts_back_autotunes_registers_read_live(monkeypatch):
               for script in writes[-1:] for line in script.split('\n')}
     assert last_x == {'tbl': 1, 'toff': 4, 'hstrt': 3, 'hend': 6}
     assert kl.sent.index('G28 X Y') > kl.sent.index(writes[-1])      # restored, then re-homed
+
+
+def test_a_shutdown_on_one_motor_stops_the_whole_report(monkeypatch):
+    # a Klipper in shutdown fails the next motor too: not a per-motor skip
+    from argparse import Namespace
+
+    from chopper_autotune.collect import KlipperShutdown
+    tried = []
+
+    def demo(kl, args):
+        tried.append(args.axis)
+        raise KlipperShutdown('Klipper shut down (drv_err): the run stops here')
+    monkeypatch.setattr(demo_module, 'demo', demo)
+    monkeypatch.setattr(demo_module, 'Klippy', lambda path: type('K', (), {
+        'connect': lambda self: self, 'close': lambda self: None,
+        'settings': lambda self: {'stepper_x': {}, 'stepper_y': {}}})())
+    monkeypatch.setattr(demo_module, 'find_socket', lambda explicit=None: '<sock>')
+    with pytest.raises(KlipperShutdown):
+        demo_module.run_demo(Namespace(axis='xy', report=True, socket=None))
+    assert tried == ['x']
