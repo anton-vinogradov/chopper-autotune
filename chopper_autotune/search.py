@@ -25,7 +25,7 @@ def coordinate_descent(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range
 
     def consider(candidate: tmc.Chopper):
         nonlocal best, best_score
-        if tmc.validate(candidate) is not None:
+        if tmc.validate(candidate, driver) is not None:
             return
         score = evaluate(candidate)
         if score < best_score:
@@ -48,7 +48,8 @@ def coordinate_descent(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range
     return best
 
 
-def _spanning_starts(tbl: Range, toff: Range, hstrt: Range, hend: Range) -> 'list[tmc.Chopper]':
+def _spanning_starts(tbl: Range, toff: Range, hstrt: Range, hend: Range,
+                     driver: 'tmc.Driver | None' = None) -> 'list[tmc.Chopper]':
     """Seeds spread across the (toff, hend) plane. Phase A of the descent sweeps
     (tbl, toff) at a *fixed* hend, so which toff looks best depends on the starting
     hend — a single low-hend start hides the low-toff/high-hend valley. Starting
@@ -57,7 +58,7 @@ def _spanning_starts(tbl: Range, toff: Range, hstrt: Range, hend: Range) -> 'lis
         return sorted({r.lo, (r.lo + r.hi) // 2, r.hi})
     tbl0, hstrt0 = tbl.lo, (hstrt.lo + hstrt.hi) // 2
     seeds = [tmc.Chopper(tbl0, o, hstrt0, e) for o in levels(toff) for e in levels(hend)]
-    return [c for c in seeds if tmc.validate(c) is None]
+    return [c for c in seeds if tmc.validate(c, driver) is None]
 
 
 def multi_start_descent(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range, hend: Range,
@@ -67,7 +68,7 @@ def multi_start_descent(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Rang
     so seeds that converge to the same region cost nothing extra."""
     # the seeds take the start's tpfd spelling: a None next to an explicit value would be
     # the same physical registers under two cache keys
-    seeds = [replace(c, tpfd=baseline.tpfd) for c in _spanning_starts(tbl, toff, hstrt, hend)]
+    seeds = [replace(c, tpfd=baseline.tpfd) for c in _spanning_starts(tbl, toff, hstrt, hend, driver)]
     starts = [baseline] + [c for c in seeds if c != baseline]
     best, best_score = None, float('inf')
     for start in starts:
@@ -92,12 +93,15 @@ def descent_budget(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range, he
     return hend_levels * rounds * per_round + tpfd_count
 
 
-def dataset_history(ds: Dataset) -> 'dict[tmc.Chopper, list[float]]':
+def dataset_history(ds: Dataset, driver: 'tmc.Driver | None' = None) -> 'dict[tmc.Chopper, list[float]]':
+    """Measured magnitudes per combo; with a driver, only combos its config can hold."""
     history = defaultdict(list)
     for record in ds.records():
         if record.get('kind') == 'move' and record.get('status') == 'ok':
             combo = tmc.Chopper(record['tbl'], record['toff'], record['hstrt'], record['hend'],
                                 record.get('tpfd'))
+            if driver is not None and tmc.validate(combo, driver) is not None:
+                continue
             history[combo].append(record['score']['median_magnitude'])
     return history
 
@@ -136,7 +140,7 @@ def seed_start(ds: Dataset, driver: tmc.Driver, audible_weight: float) -> tmc.Ch
     Used to start the descent for one motor from the winner of another: the seed
     only positions the search, every candidate is still measured on this motor.
     """
-    history = dataset_history(ds)
+    history = dataset_history(ds, driver)
     if not history:
         raise SystemExit('no successful measurements in the seed dataset %s' % ds.root)
     best = min(history, key=lambda combo: penalized_score(combo, history[combo], driver,
@@ -152,7 +156,7 @@ def run_simulate(args) -> int:
     manifest = ds.manifest()
     driver = tmc.DRIVERS[manifest['driver']]
     lookup = {combo: penalized_score(combo, mags, driver, args.audible_weight)
-              for combo, mags in dataset_history(ds).items()}
+              for combo, mags in dataset_history(ds, driver).items()}
     if not lookup:
         raise SystemExit('no register measurements in %s — simulate needs a grid dataset'
                          % args.dataset)

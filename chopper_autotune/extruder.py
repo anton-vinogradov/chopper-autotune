@@ -186,8 +186,9 @@ def extruder_tune(kl: Klippy, args) -> int:
         state = load_winner_state()
         if not state:
             raise SystemExit('no stored extruder winner — run CHOPPER_EXTRUDER first')
-        from .analyze import _persist, updated_config
+        from .analyze import _persist, refuse_unloadable, updated_config
         from .moonraker import Moonraker
+        refuse_unloadable(state['driver'], 'extruder', state['fields'])
         print('Persisting the stored extruder winner: %s' % state['fields'])
         _persist(Moonraker(args.url),
                  [('tmc%s extruder' % state['driver'],
@@ -295,8 +296,9 @@ def extruder_tune(kl: Klippy, args) -> int:
         screen.final('Chopper E: %s score %.0f' % (winner.label(), rescored[winner]))
 
         if args.save:
-            from .analyze import _persist, updated_config
+            from .analyze import _persist, refuse_unloadable, updated_config
             from .moonraker import Moonraker
+            refuse_unloadable(driver_name, 'extruder', winner.fields())
             _persist(Moonraker(args.url),
                      [('tmc%s extruder' % driver_name,
                        lambda text, section: updated_config(text, section, winner.fields()))],

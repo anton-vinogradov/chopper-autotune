@@ -69,7 +69,10 @@ def aggregate(ds: Dataset, recompute: bool, trim_fraction: float) -> 'list[dict]
 
 
 def rank(aggregates: 'list[dict]', driver: tmc.Driver, audible_weight: float) -> 'list[dict]':
+    """Best first. Combos this driver's config cannot hold (a TMC2660 hysteresis sum
+    measured before the limit existed) are left out: nothing may recommend them."""
     from .search import penalized_score
+    aggregates = [a for a in aggregates if tmc.validate(a['chopper'], driver) is None]
     for a in aggregates:
         a['chopper_freq_hz'] = tmc.chopper_freq_hz(a['chopper'], driver)
         a['audible'] = tmc.is_audible(a['chopper'], driver)
@@ -287,9 +290,27 @@ def _persist(mk, edits: 'list[tuple[str, object]]', what: str):
           % (what, ', '.join(edited), BACKUP_SUFFIX))
 
 
+def unloadable(driver_name: str, fields: dict) -> 'str | None':
+    """Why Klipper would refuse these registers in the config, None when it loads them."""
+    return tmc.validate(tmc.Chopper(**fields), tmc.DRIVERS.get(driver_name))
+
+
+def refuse_unloadable(driver_name: str, stepper: str, fields: dict):
+    """The last check before any register write to the config: a saved combo Klipper
+    refuses at load keeps it from starting, and the undo macros live inside Klipper."""
+    why = unloadable(driver_name, fields)
+    if why:
+        raise SystemExit('refusing to save %s to [tmc%s %s]: %s'
+                         % (tmc.Chopper(**fields).label(), driver_name, stepper, why))
+
+
 def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]', extruder_state: 'dict | None' = None):
     """Persist chopper winners into the Klipper config, one restart for the batch;
     the extruder's stored winner (see extruder.save_winner_state) rides along."""
+    for manifest, combo in items:
+        refuse_unloadable(manifest['driver'], manifest['stepper'], combo.fields())
+    if extruder_state:
+        refuse_unloadable(extruder_state['driver'], 'extruder', extruder_state['fields'])
     edits = [('tmc%s %s' % (manifest['driver'], manifest['stepper']),
               lambda text, section, combo=combo: updated_config(text, section,
                                                                 combo.fields()))
@@ -408,6 +429,12 @@ def run_save_latest(args) -> int:
             items.append((manifest, combo))
             print('motor %s: saving %s (from %s)' % (motor_label(axis), combo.label(), Path(path).name))
     extruder_state = load_winner_state()
+    why = extruder_state and unloadable(extruder_state['driver'], extruder_state['fields'])
+    if why:
+        # a stale winner must not block the motors' save: skip it, say how to replace it
+        print('extruder: NOT saving the stored winner %s (%s) — re-run CHOPPER_EXTRUDER'
+              % (extruder_state['fields'], why))
+        extruder_state = None
     if extruder_state:
         print('extruder: saving %s (last CHOPPER_EXTRUDER winner)' % extruder_state['fields'])
     if not items and not extruder_state:
@@ -449,7 +476,10 @@ def run_compare(args) -> int:
         aggregates = aggregate(ds, False, 0.25)
         if not aggregates:
             raise SystemExit('no successful measurements in %s' % path)
-        winner = rank(aggregates, driver, args.audible_weight)[0]
+        ranked = rank(aggregates, driver, args.audible_weight)
+        if not ranked:
+            raise SystemExit('no measured combination in %s fits the tmc%s limits' % (path, driver.name))
+        winner = ranked[0]
         sides.append({'path': path, 'winner': winner,
                       'magnitudes': {a['chopper']: a['magnitude'] for a in aggregates}})
 
@@ -541,6 +571,11 @@ def run_analyze(args) -> int:
     if not aggregates:
         raise SystemExit('no successful measurements in %s' % dataset)
     ranked = rank(aggregates, driver, args.audible_weight)
+    if len(ranked) < len(aggregates):
+        print('%d measured combos are left out: Klipper would not load them on tmc%s'
+              % (len(aggregates) - len(ranked), driver.name))
+    if not ranked:
+        raise SystemExit('no measured combination in %s fits the tmc%s limits' % (dataset, driver.name))
 
     print('%s: %d configurations, driver tmc%s on %s\n'
           % (dataset, len(ranked), driver.name, manifest['stepper']))
@@ -556,7 +591,10 @@ def run_analyze(args) -> int:
     if saved:
         validated = tmc.Chopper(saved['tbl'], saved['toff'], saved['hstrt'], saved['hend'],
                                 saved.get('tpfd'))
-        if validated != best['chopper']:
+        if tmc.validate(validated, driver) is not None:
+            print('\nThe winner recorded by the run, %s, is past the tmc%s limits: '
+                  'recommending the best loadable combo instead' % (validated.label(), driver.name))
+        elif validated != best['chopper']:
             # recommend what the run validated, not an unvalidated re-rank topper
             print('\nUsing the validated winner recorded by the run: %s '
                   '(top-ranked %s was never re-measured)'

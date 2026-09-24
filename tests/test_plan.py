@@ -21,6 +21,12 @@ def test_build_plan_filters_constraints():
     assert len(plan) == (4 + 2) * 118
 
 
+def test_build_plan_keeps_tmc2660_within_its_config_limit():
+    plan = build_plan(tmc.DRIVERS['2660'], Range(2, 2), Range(4, 4), Range(0, 7), Range(0, 15),
+                      None, [55])
+    assert plan and max(c.hstrt + c.hend for c, _ in plan) == 15
+
+
 def test_build_plan_tpfd_only_when_supported():
     args = (Range(0, 0), Range(3, 3), Range(0, 0), Range(0, 0), Range(0, 1), [55])
     assert {c.tpfd for c, _ in build_plan(tmc.DRIVERS['5160'], *args)} == {0, 1}

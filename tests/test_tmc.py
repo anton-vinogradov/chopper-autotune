@@ -95,3 +95,12 @@ def test_parse_dump_field_reads_klippers_console_format():
     joined = '// GCONF:      0000000e en_pwm_mode=1\n// CHOPCONF:   000100c3 toff=3'
     assert tmc.parse_dump_field([joined], 'CHOPCONF', 'toff') == 3
     assert tmc.parse_dump_field(lines, 'PWMCONF', 'pwm_freq') is None
+
+
+def test_tmc2660_hysteresis_sum_stays_where_klipper_loads_the_config():
+    # klippy/extras/tmc2660.py refuses 'driver_HEND + driver_HSTRT must be <= 15' at load
+    combo = tmc.Chopper(2, 4, 7, 9)                              # raw sum 16
+    assert tmc.validate(combo) is None
+    assert tmc.validate(combo, tmc.DRIVERS['2209']) is None
+    assert 'Klipper refuses' in tmc.validate(combo, tmc.DRIVERS['2660'])
+    assert tmc.validate(tmc.Chopper(2, 4, 7, 8), tmc.DRIVERS['2660']) is None

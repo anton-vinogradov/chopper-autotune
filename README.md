@@ -63,7 +63,7 @@ The accelerometer cannot hear the chopper (ADXL345 samples at 3.2 kHz), but the 
 
 Also datasheet-driven:
 
-- search space constraints (effective `HSTRT`+`HEND` ≤ 16 per datasheet, `TOFF` = 0 forbidden, `TOFF` = 1 blank-time restrictions) — pruned before any motion;
+- search space constraints (effective `HSTRT`+`HEND` ≤ 16 per datasheet, raw sum ≤ 15 on TMC2660 where Klipper refuses a larger one at config load, `TOFF` = 0 forbidden, `TOFF` = 1 blank-time restrictions) — pruned before any motion;
 - per-driver capability matrix: `TPFD` enters the grid only on TMC2240/5160, clock frequencies and blank-time tables match the driver datasheets;
 - when the driver runs stealthChop, spreadCycle is forced for the duration of the test and restored afterwards — chopper registers only act in spreadCycle, stealthChop would measure noise. The mode is read from the live driver (`DUMP_TMC`), not only from the config: `klipper_tmc_autotune` with a `silent` or `autoswitch` goal turns stealthChop on at runtime without `stealthchop_threshold` (its default `auto` goal keeps X/Y in spreadCycle and picks stealthChop for Z and the extruder when the motor holds more than 0.3 Nm). Enabling a stepper re-sends its driver registers, and on a stepper without a dedicated enable pin it also resets `toff`, so the tool enables the stepper before writing any register;
 - run current is measured too: `CHOPPER_CURRENT` stresses one motor at a time and bisects to the skip threshold with an endstop referee — see the [command reference](#command-reference).

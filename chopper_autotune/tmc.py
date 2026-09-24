@@ -69,13 +69,16 @@ class Driver:
     spreadcycle_switch: 'Optional[tuple[str, int, int]]' = None
     blank_times: 'tuple[int, ...]' = BLANK_TIME_CLOCKS
     default: Chopper = KLIPPER_DEFAULT
+    # Klipper refuses the config at load above this raw hstrt + hend (tmc2660.py only):
+    # a saved winner past it would keep Klipper from starting
+    hysteresis_raw_max: int = 18
 
 
 DRIVERS = {
     '2130': Driver('2130', 13.2e6, False, ('en_pwm_mode', 0, 1), default=KLIPPER_DEFAULT_2130),
     '2208': Driver('2208', 12.0e6, False, ('en_spreadcycle', 1, 0), BLANK_TIME_CLOCKS_220X),
     '2209': Driver('2209', 12.0e6, False, ('en_spreadcycle', 1, 0), BLANK_TIME_CLOCKS_220X),
-    '2660': Driver('2660', 15.0e6, False, default=KLIPPER_DEFAULT_2660),
+    '2660': Driver('2660', 15.0e6, False, default=KLIPPER_DEFAULT_2660, hysteresis_raw_max=15),
     '2240': Driver('2240', 12.5e6, True, ('en_pwm_mode', 0, 1), default=KLIPPER_DEFAULT_TPFD),
     '5160': Driver('5160', 12.0e6, True, ('en_pwm_mode', 0, 1), default=KLIPPER_DEFAULT_TPFD),
 }
@@ -105,7 +108,7 @@ def baseline_chopper(registers: dict, tpfd: 'Optional[int]' = None,
                    tpfd if tpfd is not None else registers.get('tpfd', default.tpfd))
 
 
-def validate(c: Chopper) -> Optional[str]:
+def validate(c: Chopper, driver: 'Optional[Driver]' = None) -> Optional[str]:
     if not 0 <= c.tbl <= 3:
         return 'tbl out of range 0..3'
     if not 1 <= c.toff <= 15:
@@ -117,6 +120,9 @@ def validate(c: Chopper) -> Optional[str]:
     # datasheet limit is on effective values: (hstrt+1) + (hend-3) <= 16
     if c.hstrt + c.hend > 18:
         return 'effective hstrt + hend must be <= 16 (raw sum <= 18)'
+    if driver is not None and c.hstrt + c.hend > driver.hysteresis_raw_max:
+        return 'hstrt + hend must be <= %d on TMC%s (Klipper refuses the config otherwise)' % (
+            driver.hysteresis_raw_max, driver.name)
     if c.toff == 1 and c.tbl < 2:
         return 'toff=1 requires tbl >= 2 (datasheet blank time restriction)'
     if c.tpfd is not None and not 0 <= c.tpfd <= 15:
