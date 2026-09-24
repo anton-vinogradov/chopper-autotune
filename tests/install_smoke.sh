@@ -46,11 +46,25 @@ grep -q '^install.sh stopped: ' /tmp/fail.log \
     || { echo "FAIL: config changed by a failed install"; exit 1; }
 [ ! -e "$config/chopper_autotune.cfg" ] || { echo "FAIL: cfg linked by a failed install"; exit 1; }
 
-echo "=== 2. normal install"
-as_pi bash "$repo/install.sh"
+echo "=== 2. normal install, next to another tuner and an older install of ours"
+# another tuner links its cfg into the config folder, as chopper-resonance-tuner does (#132)
+mkdir -p "$home/other-tuner"
+printf '[gcode_macro CHOPPER_TUNE]\ngcode:\n    _chop_workflow\n' > "$home/other-tuner/chopper_tune.cfg"
+ln -s "$home/other-tuner/chopper_tune.cfg" "$config/chopper_tune.cfg"
+# older installs generated [force_move] in a file of its own
+printf '[force_move]\nenable_force_move: True\n' > "$config/chopper_force_move.cfg"
+sed -i '1i\[include chopper_force_move.cfg]' "$config/printer.cfg"
+chown -R pi:pi "$home"
+install_out=$(as_pi bash "$repo/install.sh" 2>&1) || { echo "$install_out"; echo "FAIL: install.sh failed"; exit 1; }
+echo "$install_out" | tail -n 8
+grep -q "^WARNING: other config files define chopper-autotune macro or shell command names" <<< "$install_out" \
+    || { echo "FAIL: no warning about the other tuner's CHOPPER_TUNE"; exit 1; }
+grep -q "chopper_tune.cfg:1:\[gcode_macro CHOPPER_TUNE\]" <<< "$install_out" \
+    || { echo "FAIL: the warning does not name the other tuner's file"; exit 1; }
 as_pi "$repo/.venv/bin/python" -c 'import numpy, plotly, chopper_autotune.cli'
 grep -qx '\[include chopper_autotune.cfg\]' "$config/printer.cfg"
-grep -qx '\[include chopper_force_move.cfg\]' "$config/printer.cfg"
+! grep -q 'chopper_force_move' "$config/printer.cfg" || { echo "FAIL: old [force_move] include left"; exit 1; }
+[ ! -e "$config/chopper_force_move.cfg" ] || { echo "FAIL: old [force_move] file left"; exit 1; }
 grep -qx '\[update_manager chopper-autotune\]' "$config/moonraker.conf"
 [ -L "$config/chopper_autotune.cfg" ]
 [ -f "$home/klipper/klippy/extras/gcode_shell_command.py" ]
@@ -61,8 +75,13 @@ status_out=$(as_pi bash "$repo/status.sh" 2>&1 || true)
 grep -q 'no datasets found' <<< "$status_out" \
     || { echo "FAIL: status did not run the installed program: $status_out"; exit 1; }
 
-echo "=== 3. a second run changes nothing"
+echo "=== 3. a second run changes nothing, and keeps an old [force_move] file still included"
+# the old installer told a user without printer.cfg to include it in their main file
+printf '[force_move]\nenable_force_move: True\n' > "$config/chopper_force_move.cfg"
+printf '[include chopper_force_move.cfg]\n' > "$config/main.cfg"
+chown pi:pi "$config/chopper_force_move.cfg" "$config/main.cfg"
 as_pi bash "$repo/install.sh"
+[ -e "$config/chopper_force_move.cfg" ] || { echo "FAIL: removed a [force_move] file main.cfg includes"; exit 1; }
 [ "$(grep -cx '\[include chopper_autotune.cfg\]' "$config/printer.cfg")" = 1 ]
 [ "$(grep -cx '\[update_manager chopper-autotune\]' "$config/moonraker.conf")" = 1 ]
 echo "install smoke test passed: $(grep ^PRETTY_NAME= /etc/os-release) $(uname -m)"

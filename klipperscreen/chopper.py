@@ -102,6 +102,7 @@ class Panel(ScreenPanel):
         no_referee = self.sensorless()
         grid = Gtk.Grid(column_homogeneous=True, row_homogeneous=True, vexpand=False)
         self.buttons = {}
+        self.commands = {}
         for index, (icon, label, style, command, confirm) in enumerate(actions):
             if no_referee and label in referee_tools:
                 button = self._gtk.Button(icon, label + " \u2717", style)
@@ -110,6 +111,7 @@ class Panel(ScreenPanel):
                 button = self._gtk.Button(icon, label, style)
                 button.connect("clicked", self.run, command, confirm)
                 self.buttons[label] = button
+                self.commands[label] = command
             grid.attach(button, index % 4, index // 4, 1, 1)
         # local buttons (no printer action): Results shows everything measured so far
         restore = self._gtk.Button("refresh", _("Restore"), "color2")
@@ -120,6 +122,9 @@ class Panel(ScreenPanel):
         grid.attach(results, (len(actions) + 1) % 4, (len(actions) + 1) // 4, 1, 1)
         stop = self._gtk.Button("stop", _("Stop"), "color4")
         stop.connect("clicked", self.stop)
+        # listed for the replaced-macro mark only: their taps open a menu / stop
+        self.buttons[_("Restore")], self.commands[_("Restore")] = restore, "CHOPPER_RESTORE"
+        self.buttons[_("Stop")], self.commands[_("Stop")] = stop, "CHOPPER_STOP"
         # 4 columns keep the buttons to three rows, leaving the status area its height
         grid.attach(stop, (len(actions) + 2) % 4, (len(actions) + 2) // 4, 1, 1)
 
@@ -167,11 +172,39 @@ class Panel(ScreenPanel):
         self.mark_done_steps()
         self.show_status(self.printer.get_stat("display_status", "message"))
 
+    def replaced(self, command):
+        """A config file read after ours that defines this macro or shell command name
+        again replaces ours without a word (Klipper keeps the last definition), and the
+        button would run another tool (#132). Each of our macros calls CMD=<its own
+        name>, and each such command runs a script of ours."""
+        name = command.split()[0]
+        macro = self.printer.get_config_section("gcode_macro " + name) or {}
+        shell = self.printer.get_config_section("gcode_shell_command " + name.lower()) or {}
+        if "gcode" not in macro:
+            return False                            # Klipper answers an unknown name itself
+        return ("CMD=" + name.lower() not in macro["gcode"]
+                or "chopper-autotune/" not in shell.get("command", ""))
+
+    def refuse_replaced(self, command):
+        if not self.replaced(command):
+            return False
+        self.status.set_markup("<span size='large'>" + GLib.markup_escape_text(_(
+            "%s here runs another tool: a config file read after "
+            "chopper_autotune.cfg defines the same name, and Klipper keeps the last "
+            "one. Nothing was sent. Keep one of the two tools: see 'Macro name "
+            "conflicts' in the chopper-autotune README."
+        ) % command.split()[0]) + "</span>")
+        return True
+
     def run(self, widget, command, confirm):
+        if self.refuse_replaced(command):
+            return
         self._screen._confirm_send_action(widget, confirm, "printer.gcode.script",
                                           {"script": command})
 
     def stop(self, widget):
+        if self.refuse_replaced("CHOPPER_STOP"):
+            return
         self._screen._ws.klippy.gcode_script("CHOPPER_STOP")
         # the tool restores registers and re-homes before exiting (~10 s), so give
         # immediate feedback that the tap registered
@@ -213,10 +246,12 @@ class Panel(ScreenPanel):
         return False
 
     def mark_done_steps(self):
-        for label, done in self.step_states().items():
-            button = self.buttons.get(label)
-            if button:
-                self.relabel(button, ("\u2713 " + label) if done else label)
+        done = self.step_states()
+        for label, button in self.buttons.items():
+            if self.replaced(self.commands[label]):
+                self.relabel(button, "\u26a0 " + label)
+            else:
+                self.relabel(button, ("\u2713 " + label) if done.get(label) else label)
 
     def show_status(self, message):
         self.mark_done_steps()                      # a finished run may have advanced the plan

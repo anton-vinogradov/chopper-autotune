@@ -15,7 +15,7 @@
 - [The approach](#the-approach) · [how it works](#how-it-works-today) · [datasheet-driven scoring](#datasheet-driven-scoring-not-just-measurement)
 - [The science](#the-science)
 - [Two runs by design](#two-runs-by-design)
-- [Usage](#usage) · [one command](#the-simple-way--one-command) · [touchscreen](#from-the-touchscreen--klipperscreen) · [step by step](#the-manual-way--step-by-step) · [command reference](#command-reference)
+- [Usage](#usage) · [macro name conflicts](#macro-name-conflicts) · [one command](#the-simple-way--one-command) · [touchscreen](#from-the-touchscreen--klipperscreen) · [step by step](#the-manual-way--step-by-step) · [command reference](#command-reference)
 - [Stack](#stack) · [Prerequisites](#prerequisites) · [Roadmap](#roadmap)
 - [Prior art](#prior-art--credits) · [Datasheets](#datasheets) · [License](#license)
 
@@ -106,9 +106,19 @@ Install on the printer host (Klipper restarts at the end):
 cd ~ && git clone https://github.com/anton-vinogradov/chopper-autotune && bash ./chopper-autotune/install.sh
 ```
 
-The installer builds the Python environment first and changes the Klipper config only after that works. It expects one Klipper instance with its config in `~/printer_data/config`. CI runs it on clean Debian bookworm and trixie (amd64, and trixie on arm64).
+The installer builds the Python environment first and changes the Klipper config only after that works. It expects one Klipper instance with its config in `~/printer_data/config`. It includes `chopper_autotune.cfg` on the first line of `printer.cfg`. That file also enables `FORCE_MOVE` (`[force_move]`): Klipper reads a `[force_move]` section of your own later, so yours still decides. CI runs it on clean Debian bookworm and trixie (amd64, and trixie on arm64).
 
 Long commands run in the background and write their full output to `~/printer_data/config/chopper-autotune/<command>.log` (for example `tune.log`, `find-speed.log`). `CHOPPER_STATUS` and `CHOPPER_ANALYZE` without `APPLY`/`SAVE` print straight to the console. If a macro prints `ERROR: chopper-autotune is not installed`, or a run fails with `ModuleNotFoundError` after an OS upgrade, run `bash ~/chopper-autotune/install.sh` again and read its last lines. Do not edit `install.sh` itself: Moonraker refuses to update a modified repo. If you already did, restore it with `git -C ~/chopper-autotune checkout -- install.sh`, then update and run `install.sh` again.
+
+### Macro name conflicts
+
+Klipper keeps one macro per name. When two config files define the same section, Klipper merges them without a warning: for each option, the file it reads last wins. So a macro or a shell command of our name in a file read after `chopper_autotune.cfg` replaces ours. All our macro names start with `CHOPPER_`. Other tools use some of them too: [chopper-resonance-tuner](https://github.com/MRX8024/chopper-resonance-tuner) and [Chopper-tuning-guide](https://github.com/altzbox/Chopper-tuning-guide) define `CHOPPER_TUNE`, and the [gschpoozi](https://github.com/gm-tc-collaborators/gschpoozi) config generator defines `CHOPPER_ANALYZE` with a `chopper_analyze` shell command.
+
+- `install.sh` lists the other config files that define one of our macro or shell command names.
+- Ten seconds after every Klipper start, our self-check names each replaced macro on the display and in the console. That name then runs the other tool, not ours.
+- The KlipperScreen panel marks such a button with ⚠. Tapping it explains the conflict and sends nothing.
+
+To fix a conflict, keep one of the two tools. In `printer.cfg`, comment out the `[include ...]` line of the other tool, or ours, then run `RESTART`.
 
 ### The plan — getting the most out of your printer
 

@@ -17,7 +17,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: shellcheck *.sh tests/*.sh
-      - run: pip install -e . pytest
+      - run: pip install -e . pytest jinja2
       - run: bash tests/fetch_klipper_sources.sh
       - run: pytest -q tests
         env:
