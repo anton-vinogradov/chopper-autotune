@@ -448,3 +448,183 @@ def test_diagonal_chips_follow_the_resonance_tester():
     # Kalico reads accel_chips first; an accel_chip beside it is a leftover
     assert diagonal_chips({'resonance_tester': {'accel_chips': 'lis2dw, adxl345',
                                                 'accel_chip': 'mpu9250'}}) == ['adxl345', 'lis2dw']
+
+
+def pluck_session(monkeypatch, home=None, hot_at=None):
+    """pluck_mode on a fake printer: the real 1 s dwell split, a guard that counts (and
+    raises DriverTooHot at check number hot_at), nothing ever heard."""
+    import re
+    from types import SimpleNamespace
+
+    import chopper_autotune.belts as belts_mod
+    from chopper_autotune.collect import DriverTooHot
+    events = []
+
+    class Guard:
+        def __init__(self, kl, settings):
+            self.checks = 0
+
+        def preflight(self):
+            events.append('preflight')
+
+        def check(self):
+            self.checks += 1
+            events.append('check')
+            if self.checks == hot_at:
+                raise DriverTooHot('tmc2240 stepper_y overheating (111 C)')
+    monkeypatch.setattr(belts_mod, 'ThermalGuard', Guard)
+    monkeypatch.setattr(belts_mod, 'home_xy', home or (lambda kl, script: events.append('home')))
+    monkeypatch.setattr(belts_mod, 'release_gantry', lambda kl: events.append('release'))
+    monkeypatch.setattr(belts_mod, 'refuse_if_printing', lambda kl: None)
+    monkeypatch.setattr(belts_mod, 'Screen', lambda kl, display: SimpleNamespace(
+        update=lambda *a, **k: None, final=lambda *a: None))
+    monkeypatch.setattr(belts_mod, 'machine_axes', lambda hw, kl: events.append('shuttles'))
+    monkeypatch.setattr(belts_mod, 'pluck_tones', lambda *a, **k: [])      # nothing heard
+    kl = SimpleNamespace(gcode=events.append, settings=lambda: {'stepper_y': {'position_max': 300}},
+                         subscribe_accel=lambda chip: None, print_time=lambda: 10.0,
+                         wait_for_sample=lambda t: None,
+                         samples_between=lambda a, b: [[a + i * 0.001, 0, 0, 0] for i in range(6000)])
+    hw = SimpleNamespace(kl=kl, center=(150.0, 150.0), display=False, accel_chip='adxl345')
+    dwells = lambda: [i for i, e in enumerate(events) if isinstance(e, str) and re.match(r'G4 P\d+', e)]
+    return events, dwells, lambda: belts_mod.pluck_mode(kl, hw, SimpleNamespace(dry_run=False, plucks=2))
+
+
+def test_every_second_of_the_pluck_session_is_checked(monkeypatch):
+    # #133: four of five driver shutdowns came in this session, motors held at standstill
+    import pytest
+    events, dwells, run = pluck_session(monkeypatch)
+    with pytest.raises(SystemExit, match='no two agreeing plucks'):
+        run()
+    assert events[:2] == ['preflight', 'home'] and events[-1] == 'release'
+    assert len(dwells()) == 2 + 3 + 2 * (3 + 5)             # settle, quiet, 2 tries x (Ready + PLUCK)
+    for i in dwells():
+        assert events[i - 1] == 'check' and int(events[i].split()[1][1:]) <= 1000
+
+
+def test_a_hot_driver_before_the_calibration_stops_before_the_shuttles(monkeypatch):
+    import pytest
+
+    from chopper_autotune.collect import DriverTooHot
+    # checks: 2 settle, 3 quiet, then the one before the calibration shuttles
+    events, _, run = pluck_session(monkeypatch, hot_at=6)
+    with pytest.raises(DriverTooHot):
+        run()
+    assert 'shuttles' not in events and events[-1] == 'release'
+
+
+def test_a_stop_during_the_pluck_preflight_hands_the_motors_over(monkeypatch):
+    import pytest
+    events, _, run = pluck_session(monkeypatch)
+
+    def stopped(self):
+        events.append('preflight')
+        raise SystemExit(143)                        # CHOPPER_STOP while the drivers poll
+    monkeypatch.setattr(belts_mod.ThermalGuard, 'preflight', stopped)
+    with pytest.raises(SystemExit):
+        run()
+    assert events == ['preflight', 'release']
+
+
+def test_a_hot_driver_in_a_pluck_window_stops_and_hands_the_motors_over(monkeypatch):
+    import pytest
+
+    from chopper_autotune.collect import DriverTooHot
+    # checks: 2 settle, 3 quiet, 1 before the shuttles, 3 Ready, then the PLUCK window
+    events, dwells, run = pluck_session(monkeypatch, hot_at=11)
+    with pytest.raises(DriverTooHot):
+        run()
+    assert events[-1] == 'release' and len(dwells()) == 2 + 3 + 3 + 1
+
+
+def test_a_failed_homing_in_the_pluck_session_hands_the_motors_over(monkeypatch):
+    import pytest
+
+    from chopper_autotune.klippy import KlippyError
+
+    def home(kl, script):
+        raise KlippyError('stepper_y: drv_err')
+    events, _, run = pluck_session(monkeypatch, home=home)
+    with pytest.raises(KlippyError):
+        run()
+    assert events[-1] == 'release'
+
+
+def test_show_refuses_an_unhomed_z_before_enabling_anything(monkeypatch):
+    # the preflight enables X/Y: a z_hop refusal after it left them under current
+    from types import SimpleNamespace
+
+    import pytest
+
+    import chopper_autotune.belts as belts_mod
+    from chopper_autotune.collect import ZNotHomed
+    scripts = []
+    settings = {'safe_z_home': {'z_hop': 10.0}, 'tmc2240 stepper_x': {}, 'tmc2240 stepper_y': {}}
+    kl = SimpleNamespace(settings=lambda: settings, homed_axes=lambda: '', gcode=scripts.append)
+    monkeypatch.setattr(belts_mod, 'detect_hardware', lambda kl, motor, accel: SimpleNamespace(
+        kinematics='corexy', display=False))
+    monkeypatch.setattr(belts_mod, 'refuse_if_printing', lambda kl: None)
+    monkeypatch.setattr(belts_mod, 'Screen', lambda kl, display: SimpleNamespace(
+        update=lambda *a, **k: None, final=lambda *a: None))
+    with pytest.raises(ZNotHomed):
+        belts_mod.belts(kl, SimpleNamespace(show='a', pluck=False, sweep=False, dry_run=False))
+    assert scripts == []
+
+
+def test_show_on_a_hot_driver_hands_the_motors_over(monkeypatch):
+    from types import SimpleNamespace
+
+    import pytest
+
+    import chopper_autotune.belts as belts_mod
+    from chopper_autotune.collect import DriverTooHot
+    events = []
+
+    class Guard:
+        def __init__(self, kl, settings):
+            pass
+
+        def preflight(self):
+            raise DriverTooHot('tmc2240 stepper_x overheating (otpw)')
+    kl = SimpleNamespace(settings=lambda: {}, homed_axes=lambda: 'xyz', gcode=events.append)
+    monkeypatch.setattr(belts_mod, 'ThermalGuard', Guard)
+    monkeypatch.setattr(belts_mod, 'detect_hardware', lambda kl, motor, accel: SimpleNamespace(
+        kinematics='corexy', display=False))
+    monkeypatch.setattr(belts_mod, 'refuse_if_printing', lambda kl: None)
+    monkeypatch.setattr(belts_mod, 'release_gantry', lambda kl: events.append('release'))
+    monkeypatch.setattr(belts_mod, 'Screen', lambda kl, display: SimpleNamespace(
+        update=lambda *a, **k: None, final=lambda *a: None))
+    with pytest.raises(DriverTooHot):
+        belts_mod.belts(kl, SimpleNamespace(show='a', pluck=False, sweep=False, dry_run=False))
+    assert events == ['release']
+
+
+@pytest.mark.parametrize('hot_at, sweeps', [(2, 'A'), (3, 'AB')])
+def test_a_hot_driver_after_a_diagonal_stops_the_sweep_without_a_re_home(monkeypatch, tmp_path,
+                                                                        hot_at, sweeps):
+    # each diagonal holds the motors ~1.5 min: the guard checks before each and after the
+    # last, and the closing step releases the gantry instead of a G28 on the hot driver
+    from chopper_autotune.collect import DriverTooHot
+    events = []
+
+    class Guard:
+        def __init__(self, kl, settings):
+            pass
+
+        def preflight(self):
+            events.append('preflight')
+
+        def check(self):
+            events.append('check')
+            if events.count('check') == hot_at:
+                raise DriverTooHot('tmc2240 stepper_y overheating (104 C)')
+    closing = []
+    sweep_command = belts_mod.sweep_command
+    monkeypatch.setattr(belts_mod, 'ThermalGuard', Guard)
+    monkeypatch.setattr(belts_mod, 'sweep_command', lambda axis, label, *a: (
+        events.append('sweep ' + label), sweep_command(axis, label, *a))[1])
+    monkeypatch.setattr(belts_mod, 'rehome_unless_hot', lambda kl: closing.append(
+        isinstance(__import__('sys').exc_info()[1], DriverTooHot)))
+    with pytest.raises(DriverTooHot):
+        sweep_run(monkeypatch, tmp_path, BY_NAME, {'accel_chip': 'adxl345'})
+    assert events == ['preflight'] + [e for label in sweeps for e in ('check', 'sweep ' + label)] \
+        + ['check'] and closing == [True]
