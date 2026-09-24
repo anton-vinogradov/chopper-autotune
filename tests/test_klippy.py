@@ -35,8 +35,39 @@ class Responder(threading.Thread):
             buffer += self.server_sock.recv(4096)
         request = json.loads(buffer.split(b'\x03')[0])
         send(self.server_sock, {'id': request['id'], 'result': self.result})
+        template = request['params'].get('response_template', {})
         for batch in self.batches:
-            send(self.server_sock, {'key': 'accel', 'params': batch})
+            send(self.server_sock, dict(template, params=batch))
+
+
+class BulkSensor(threading.Thread):
+    """Klipper's bulk_sensor.py behind the API server: every dump request adds one more
+    client, and a batch goes to every client of its sensor."""
+
+    def __init__(self, server_sock):
+        super().__init__(daemon=True)
+        self.server_sock = server_sock
+        self.requests = []
+        self.clients = {}
+
+    def run(self):
+        buffer = b''
+        while True:
+            chunk = self.server_sock.recv(4096)
+            if not chunk:
+                return
+            buffer += chunk
+            while b'\x03' in buffer:
+                raw, buffer = buffer.split(b'\x03', 1)
+                request = json.loads(raw)
+                sensor = request['params']['sensor']
+                self.requests.append((request['method'], sensor))
+                self.clients.setdefault(sensor, []).append(request['params']['response_template'])
+                send(self.server_sock, {'id': request['id'], 'result': {}})
+
+    def push(self, sensor, data):
+        for template in self.clients.get(sensor, []):
+            send(self.server_sock, dict(template, params={'data': data, 'overflows': 0}))
 
 
 def test_request_response_roundtrip():
@@ -70,6 +101,46 @@ def test_batches_and_sample_window():
     kl.close()
 
 
+def test_a_chip_is_subscribed_once_per_connection():
+    # tune scans and then descends on one connection, both subscribing: Klipper sent
+    # every batch once per request, so each sample reached the buffer twice
+    kl, server = make_pair()
+    klipper = BulkSensor(server)
+    klipper.start()
+    kl.subscribe_accel('adxl345')
+    kl.subscribe_accel('adxl345')
+    batch = [[1.0, 1, 2, 3], [1.5, 4, 5, 6]]
+    klipper.push('adxl345', batch)
+    klipper.push('adxl345', [[2.0, 7, 8, 9]])       # all copies of the first batch are in
+    kl.wait_for_sample(2.0, timeout=2.0)
+
+    assert klipper.requests == [('adxl345/dump_adxl345', 'adxl345')]
+    assert kl.samples_between(0.0, 1.9) == batch
+    kl.close()
+
+
+def test_the_buffer_holds_the_chip_subscribed_last():
+    # tune AXIS=xy with accel_chip_x and accel_chip_y: the first motor's chip streams on
+    # after the second one is subscribed, and both landed in one buffer
+    kl, server = make_pair()
+    klipper = BulkSensor(server)
+    klipper.start()
+    kl.subscribe_accel('adxl345 hotend')
+    kl.subscribe_accel('adxl345 bed')
+    klipper.push('hotend', [[1.0, 9, 9, 9]])
+    klipper.push('bed', [[1.0, 1, 1, 1], [1.5, 2, 2, 2]])
+    kl.wait_for_sample(1.5, timeout=2.0)
+    assert kl.samples_between(0.0, 2.0) == [[1.0, 1, 1, 1], [1.5, 2, 2, 2]]
+
+    kl.subscribe_accel('adxl345 hotend')            # back to the first chip: no new request
+    klipper.push('bed', [[3.0, 2, 2, 2]])
+    klipper.push('hotend', [[3.0, 9, 9, 9]])
+    kl.wait_for_sample(3.0, timeout=2.0)
+    assert kl.samples_between(0.0, 4.0) == [[3.0, 9, 9, 9]]
+    assert klipper.requests == [('adxl345/dump_adxl345', 'hotend'), ('adxl345/dump_adxl345', 'bed')]
+    kl.close()
+
+
 @pytest.mark.parametrize('section, endpoint, sensor', [
     ('adxl345', 'adxl345/dump_adxl345', 'adxl345'),
     ('adxl345 head', 'adxl345/dump_adxl345', 'head'),
@@ -77,7 +148,7 @@ def test_batches_and_sample_window():
     ('bmi160 toolhead', 'bmi160/dump_bmi160', 'toolhead'),
 ])
 def test_the_accelerometer_stream_endpoint(section, endpoint, sensor):
-    kl = Klippy.__new__(Klippy)
+    kl = Klippy('<test>')
     calls = []
     kl.request = lambda method, params: calls.append((method, params['sensor']))
     kl.subscribe_accel(section)
