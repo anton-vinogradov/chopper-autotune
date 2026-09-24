@@ -12,8 +12,8 @@ from __future__ import annotations
 import math
 import os
 
-from .collect import (Screen, coupled_xy, detect_hardware, refuse_if_printing, refuse_multi_motor,
-                      run_restore)
+from .collect import (Screen, ThermalGuard, coupled_xy, detect_hardware, refuse_if_printing,
+                      refuse_multi_motor, rehome_unless_hot, run_restore)
 from .dataset import save_json
 from .klippy import Klippy, find_socket
 
@@ -124,19 +124,24 @@ class Referee:
 
 
 def run_rung(kl: Klippy, board, motor: str, current: float, configured: float,
-             vec: 'tuple[float, float]', span: float, accel: float):
+             vec: 'tuple[float, float]', span: float, accel: float, check=lambda: None):
+    """One rung at `current`. check() runs before every stroke pair (about a second each,
+    Klipper's own polling cadence): a whole rung is 15-30 s of load, a driver that
+    warns of over-temperature may shut down within seconds (#133)."""
     cx, cy = board.center
+    check()
     kl.gcode('G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, cx, cy))
     kl.gcode('SET_TMC_CURRENT STEPPER=stepper_%s CURRENT=%.2f' % (motor, current))
     factor = math.hypot(*vec)                   # belt speed per unit of head feed
-    moves = []
     for belt in BELT_SPEEDS:
         feed = belt / factor * 60
         for _ in range(STROKES_PER_SPEED):
-            moves += ['G1 X%.1f Y%.1f F%.0f' % (cx + span * vec[0], cy + span * vec[1], feed),
-                      'G1 X%.1f Y%.1f F%.0f' % (cx - span * vec[0], cy - span * vec[1], feed)]
-    moves.append('G1 X%.1f Y%.1f F6000' % (cx, cy))
-    kl.gcode('\n'.join(moves) + '\nM400')
+            check()
+            # a stroke reverses through zero speed anyway: pausing between pairs keeps the load
+            kl.gcode('G1 X%.1f Y%.1f F%.0f\nG1 X%.1f Y%.1f F%.0f\nM400'
+                     % (cx + span * vec[0], cy + span * vec[1], feed,
+                        cx - span * vec[0], cy - span * vec[1], feed))
+    kl.gcode('G1 X%.1f Y%.1f F6000\nM400' % (cx, cy))
     kl.gcode('SET_TMC_CURRENT STEPPER=stepper_%s CURRENT=%.2f' % (motor, configured))
 
 
@@ -189,20 +194,24 @@ def current_tune(kl: Klippy, args) -> int:
 
     refuse_if_printing(kl)
     screen = Screen(kl, board.display)
+    guard = ThermalGuard(kl, settings)
     recommended, thresholds = {}, {}
     try:
+        guard.preflight()
         kl.gcode('G28 X Y\nG90')
         for m in motors:
             label = motor_label(m)
             ref = Referee(kl, referee_axis(board.kinematics, m), settings,
                           board.center[0 if referee_axis(board.kinematics, m) == 'y' else 1])
+            guard.check()
             ref.calibrate()
             vec = stress_vector(board.kinematics, m)
             rungs = []
 
             def holds(current, m=m, vec=vec, ref=ref, label=label):
                 screen.update('Chopper current %s @ %.2fA' % (label, current), force=True)
-                run_rung(kl, board, m, current, configured[m], vec, span, accel)
+                run_rung(kl, board, m, current, configured[m], vec, span, accel, guard.check)
+                guard.check()                        # before the referee's crawl
                 slip = ref.slipped()
                 held = slip is not None and abs(slip) < SLIP_HEAD_MM
                 rungs.append((current, held))
@@ -230,7 +239,8 @@ def current_tune(kl: Klippy, args) -> int:
         run_restore(
             *[lambda m=m: kl.gcode('SET_TMC_CURRENT STEPPER=stepper_%s CURRENT=%.2f'
                                    % (m, configured[m])) for m in motors],
-            lambda: kl.gcode('M204 S%.0f\nG28 X Y' % board.max_accel))
+            lambda: kl.gcode('M204 S%.0f' % board.max_accel),
+            lambda: rehome_unless_hot(kl))
 
     unified = unify_recommendation(recommended, configured, coupled_xy(board.kinematics),
                                    args.per_motor)

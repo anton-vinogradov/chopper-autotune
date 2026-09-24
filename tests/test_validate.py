@@ -15,6 +15,9 @@ class FakeKl:
     def gcode(self, script):
         self.scripts.append(script)
 
+    def settings(self):
+        return {}              # no X/Y driver sections: the thermal guard stays idle
+
 
 def make_hw(kl):
     return Hardware(kl=kl, stepper='stepper_x', driver=tmc.DRIVERS['2209'],

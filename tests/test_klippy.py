@@ -1,6 +1,7 @@
 import json
 import socket
 import threading
+import time
 
 import pytest
 
@@ -181,4 +182,28 @@ def test_gcode_output_surfaces_klipper_errors():
     serve_scripts(server, lambda line: [])
     with pytest.raises(KlippyError, match='Malformed command'):
         kl.gcode_output('DUMP_TMC stepper_x')
+    kl.close()
+
+
+def test_status_subscription_keeps_a_live_copy_without_round_trips():
+    # the thermal guard reads this before every move: Klipper pushes changed fields only
+    kl, server = make_pair()
+
+    def serve():
+        buffer = b''
+        while b'\x03' not in buffer:
+            buffer += server.recv(4096)
+        request = json.loads(buffer.split(b'\x03')[0])
+        assert request['method'] == 'objects/subscribe'
+        key = request['params']['response_template']['key']
+        send(server, {'id': request['id'], 'result': {'eventtime': 1.0, 'status': {
+            'tmc2240 stepper_x': {'drv_status': None, 'temperature': None}}}})
+        send(server, {'key': key, 'params': {'eventtime': 1.25, 'status': {
+            'tmc2240 stepper_x': {'drv_status': {'otpw': 1}}}}})
+    threading.Thread(target=serve, daemon=True).start()
+    kl.subscribe_status({'tmc2240 stepper_x': ['drv_status', 'temperature']})
+    deadline = time.monotonic() + 2
+    while kl.status()['tmc2240 stepper_x']['drv_status'] is None and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert kl.status() == {'tmc2240 stepper_x': {'drv_status': {'otpw': 1}, 'temperature': None}}
     kl.close()

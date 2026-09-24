@@ -156,6 +156,7 @@ def test_show_writes_state_for_both_motors(tmp_path, monkeypatch):
     kl = type('K', (), {'gcode': lambda self, s: None,
                         'gcode_output': lambda self, s: [],
                         'subscribe_accel': lambda self, chip: None,
+                        'settings': lambda self: {},          # no driver sections: guard idle
                         'is_printing': lambda self: False})()
 
     assert demo_module.showcase_together(kl, demo_args(dry_run=False, rounds=2)) == 0
@@ -163,6 +164,31 @@ def test_show_writes_state_for_both_motors(tmp_path, monkeypatch):
     # the Show button must feed the panel's vibration column for both motors
     assert state == {'x': {'regs': '2/1/4/14', 'quieter': 2.0},
                      'y': {'regs': '2/1/4/14', 'quieter': 2.0}}
+
+
+def test_show_refuses_a_hot_driver_and_writes_nothing_after_m18(tmp_path, monkeypatch):
+    # the preflight runs outside the try: after its M18 the finally would write toff into
+    # the switched-off drivers and re-energize a hot one (no enable pin, #133)
+    import chopper_autotune.collect as collect_mod
+    from chopper_autotune.collect import DriverTooHot
+    monkeypatch.setattr(collect_mod, 'PREFLIGHT_SEC', 0)
+    monkeypatch.setattr('chopper_autotune.dataset.RESULTS_HOME', tmp_path)
+    monkeypatch.setattr(demo_module, 'detect_hardware',
+                        lambda kl, axis: make_hw({'tbl': 2, 'toff': 1, 'hstrt': 4, 'hend': 14}))
+    monkeypatch.setattr(demo_module, 'known_speed', lambda axis: 58 if axis == 'x' else 34)
+    scripts = []
+    kl = type('K', (), {'gcode': lambda self, s: scripts.append(s),
+                        'gcode_output': lambda self, s: [],
+                        'subscribe_accel': lambda self, chip: None,
+                        'settings': lambda self: {'stepper_x': {}, 'stepper_y': {},
+                                                  'tmc2209 stepper_x': {}, 'tmc2209 stepper_y': {}},
+                        'subscribe_status': lambda self, objects: None,
+                        'status': lambda self: {'tmc2209 stepper_x': {'drv_status': {'otpw': 1}}},
+                        'is_printing': lambda self: False})()
+    with pytest.raises(DriverTooHot):
+        demo_module.showcase_together(kl, demo_args(dry_run=False, rounds=1))
+    assert scripts[-1] == 'M18'
+    assert not any('SET_TMC_FIELD' in s or 'G28' in s for s in scripts)
 
 
 def test_scan_args_share_the_find_speed_parser_defaults():

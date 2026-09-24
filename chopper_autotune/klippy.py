@@ -12,6 +12,7 @@ SOCKET_CANDIDATES = ('~/printer_data/comms/klippy.sock', '/tmp/klippy_uds')
 SEPARATOR = b'\x03'
 ACCEL_KEY = 'accel'
 OUTPUT_KEY = 'gcode_output'
+STATUS_KEY = 'chopper_status'
 OUTPUT_MAX = 256           # the console subscription is broadcast and permanent: keep a tail
 
 
@@ -56,6 +57,8 @@ class Klippy:
         self._samples = deque()
         self._output = deque(maxlen=OUTPUT_MAX)
         self._output_subscribed = False
+        self._status = {}
+        self._status_request = None
         self._next_id = 0
         self._closed = False
 
@@ -115,15 +118,27 @@ class Klippy:
         elif message.get('key') == OUTPUT_KEY:
             with self._wakeup:
                 self._output.append(str(message['params'].get('response', '')))
+        elif message.get('key') == STATUS_KEY:
+            with self._wakeup:                      # pushes carry only the changed fields
+                for name, fields in message['params'].get('status', {}).items():
+                    self._status.setdefault(name, {}).update(fields)
         elif 'id' in message:
             with self._wakeup:
+                if message['id'] == self._status_request and 'result' in message:
+                    # seeded here, in arrival order: a push right behind this response
+                    # must land on top of it, not be overwritten by it
+                    self._status = {name: dict(fields)
+                                    for name, fields in message['result'].get('status', {}).items()}
                 self._responses[message['id']] = message
                 self._wakeup.notify_all()
 
-    def request(self, method: str, params: 'dict | None' = None) -> dict:
+    def request(self, method: str, params: 'dict | None' = None, status_base: bool = False) -> dict:
+        """status_base: this response seeds the status copy (see subscribe_status)."""
         with self._lock:
             self._next_id += 1
             request_id = self._next_id
+            if status_base:
+                self._status_request = request_id
         payload = json.dumps({'id': request_id, 'method': method, 'params': params or {}})
         self.sock.sendall(payload.encode() + SEPARATOR)
         deadline = time.monotonic() + self.timeout
@@ -177,6 +192,17 @@ class Klippy:
             raise KlippyError('console fence %s not seen (%d console lines captured)'
                               % ('END' if begun else 'BEGIN', len(lines)))
         return fenced
+
+    def subscribe_status(self, objects: 'dict[str, list[str]]'):
+        """Keep a live copy of printer object fields: Klipper pushes their changes on this
+        connection (every 0.25 s), so status() needs no round trip — an objects/query
+        waits for Klipper's next 0.25 s tick. One subscription per connection."""
+        self.request('objects/subscribe',
+                     {'objects': objects, 'response_template': {'key': STATUS_KEY}}, status_base=True)
+
+    def status(self) -> dict:
+        with self._wakeup:
+            return {name: dict(fields) for name, fields in self._status.items()}
 
     def settings(self) -> dict:
         result = self.request('objects/query', {'objects': {'configfile': ['settings']}})
