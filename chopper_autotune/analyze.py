@@ -290,6 +290,14 @@ def _persist(mk, edits: 'list[tuple[str, object]]', what: str):
 def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]', extruder_state: 'dict | None' = None):
     """Persist chopper winners into the Klipper config, one restart for the batch;
     the extruder's stored winner (see extruder.save_winner_state) rides along."""
+    checks = [(manifest['driver'], manifest['stepper'], combo) for manifest, combo in items]
+    if extruder_state:
+        checks.append((extruder_state['driver'], 'extruder', tmc.Chopper(**extruder_state['fields'])))
+    for driver_name, stepper, combo in checks:
+        why = tmc.validate(combo, tmc.DRIVERS.get(driver_name))
+        if why:
+            raise SystemExit('refusing to save %s to [tmc%s %s]: %s'
+                             % (combo.label(), driver_name, stepper, why))
     edits = [('tmc%s %s' % (manifest['driver'], manifest['stepper']),
               lambda text, section, combo=combo: updated_config(text, section,
                                                                 combo.fields()))

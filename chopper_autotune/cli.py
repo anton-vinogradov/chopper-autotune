@@ -201,7 +201,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help='motor a/b/ab (a=stepper_x, b=stepper_y); default ab = both; x/y/xy also accepted')
     d.add_argument('--speed', type=Range.parse, default=None, help='resonance speed; auto-detected if omitted')
     d.add_argument('--default', type=_chopper, default=None,
-                   help='the "before" config as tbl,toff,hstrt,hend (default: Klipper 2,3,5,0)')
+                   help='the "before" config as tbl,toff,hstrt,hend (default: the driver\'s Klipper stock registers)')
     d.add_argument('--report', action='store_true',
                    help='measured numbers (defaults vs tuned, Nx quieter) instead of the audible showcase')
     d.add_argument('--iterations', type=int, default=3, help='--report: repeats per config, default 3')

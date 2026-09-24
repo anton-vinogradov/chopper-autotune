@@ -82,6 +82,15 @@ def test_run_save_refuses_when_printing():
     assert mk.uploads == []
 
 
+def test_run_save_refuses_a_winner_klipper_would_not_load():
+    # a TMC2660 winner from an older dataset with raw hstrt + hend 16..18: saving it
+    # would keep Klipper from starting, so nothing is written
+    mk = FakeMoonraker({'printer.cfg': CFG.replace('tmc2209', 'tmc2660')})
+    with pytest.raises(SystemExit, match='Klipper refuses'):
+        run_save(mk, [({'driver': '2660', 'stepper': 'stepper_x'}, tmc.Chopper(2, 4, 7, 9))])
+    assert mk.uploads == [] and mk.scripts == []
+
+
 def test_run_save_refuses_genuinely_ambiguous_sections():
     # both files are actually loaded (printer.cfg includes extra.cfg) and both carry
     # the section -> genuine ambiguity, refuse

@@ -25,7 +25,7 @@ def coordinate_descent(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range
 
     def consider(candidate: tmc.Chopper):
         nonlocal best, best_score
-        if tmc.validate(candidate) is not None:
+        if tmc.validate(candidate, driver) is not None:
             return
         score = evaluate(candidate)
         if score < best_score:
@@ -48,7 +48,8 @@ def coordinate_descent(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range
     return best
 
 
-def _spanning_starts(tbl: Range, toff: Range, hstrt: Range, hend: Range) -> 'list[tmc.Chopper]':
+def _spanning_starts(tbl: Range, toff: Range, hstrt: Range, hend: Range,
+                     driver: 'tmc.Driver | None' = None) -> 'list[tmc.Chopper]':
     """Seeds spread across the (toff, hend) plane. Phase A of the descent sweeps
     (tbl, toff) at a *fixed* hend, so which toff looks best depends on the starting
     hend — a single low-hend start hides the low-toff/high-hend valley. Starting
@@ -57,7 +58,7 @@ def _spanning_starts(tbl: Range, toff: Range, hstrt: Range, hend: Range) -> 'lis
         return sorted({r.lo, (r.lo + r.hi) // 2, r.hi})
     tbl0, hstrt0 = tbl.lo, (hstrt.lo + hstrt.hi) // 2
     seeds = [tmc.Chopper(tbl0, o, hstrt0, e) for o in levels(toff) for e in levels(hend)]
-    return [c for c in seeds if tmc.validate(c) is None]
+    return [c for c in seeds if tmc.validate(c, driver) is None]
 
 
 def multi_start_descent(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range, hend: Range,
@@ -67,7 +68,7 @@ def multi_start_descent(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Rang
     so seeds that converge to the same region cost nothing extra."""
     # the seeds take the start's tpfd spelling: a None next to an explicit value would be
     # the same physical registers under two cache keys
-    seeds = [replace(c, tpfd=baseline.tpfd) for c in _spanning_starts(tbl, toff, hstrt, hend)]
+    seeds = [replace(c, tpfd=baseline.tpfd) for c in _spanning_starts(tbl, toff, hstrt, hend, driver)]
     starts = [baseline] + [c for c in seeds if c != baseline]
     best, best_score = None, float('inf')
     for start in starts:

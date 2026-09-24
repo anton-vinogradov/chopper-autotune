@@ -212,7 +212,7 @@ def build_plan(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range, hend: 
     for t, o, hs, he, tp in itertools.product(tbl.values(), toff.values(), hstrt.values(),
                                               hend.values(), tpfd_values):
         combo = tmc.Chopper(t, o, hs, he, tp)
-        if tmc.validate(combo) is not None:
+        if tmc.validate(combo, driver) is not None:
             continue
         if skip_audible and tmc.is_audible(combo, driver):
             continue
@@ -723,7 +723,7 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
         print('Seeded from %s: starting at %s' % (args.seed_from, start.label()))
     else:
         start = tmc.baseline_chopper(hw.baseline, default=stock)
-    if tmc.validate(start) is not None:
+    if tmc.validate(start, hw.driver) is not None:
         start = stock
     # one tpfd spelling per run: None when the register is not swept, explicit otherwise
     start = replace(start, tpfd=None if stock.tpfd is None
