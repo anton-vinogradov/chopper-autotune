@@ -105,6 +105,10 @@
 cd ~ && git clone https://github.com/anton-vinogradov/chopper-autotune && bash ./chopper-autotune/install.sh
 ```
 
+Установщик сначала собирает окружение Python и меняет конфиг Klipper, только когда оно заработало. Он рассчитан на один экземпляр Klipper с конфигом в `~/printer_data/config`. CI гоняет его на чистых Debian bookworm и trixie (amd64, и trixie на arm64).
+
+Долгие команды работают в фоне и пишут полный вывод в `~/printer_data/config/chopper-autotune/<команда>.log` (например, `tune.log`, `find-speed.log`). `CHOPPER_STATUS` и `CHOPPER_ANALYZE` без `APPLY`/`SAVE` печатают прямо в консоль. Если макрос пишет `ERROR: chopper-autotune is not installed` или после обновления ОС прогон падает с `ModuleNotFoundError`, запустите `bash ~/chopper-autotune/install.sh` ещё раз и прочитайте его последние строки. Сам `install.sh` не правьте: Moonraker не обновляет изменённый репозиторий. Если уже правили, верните файл командой `git -C ~/chopper-autotune checkout -- install.sh`, затем обновитесь и снова запустите `install.sh`.
+
 ### План — как выжать максимум из принтера
 
 Нумерованные кнопки на сенсорной панели — *и есть* этот план; каждый шаг — одна кнопка (или одна команда в консоли).

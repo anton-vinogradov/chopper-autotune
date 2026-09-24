@@ -10,6 +10,6 @@ case " $* " in
         exec "$here/run.sh" analyze "$@"
         ;;
     *)
-        exec "$here/.venv/bin/chopper-autotune" analyze "$@"
+        exec "$here/run.sh" --sync analyze "$@"
         ;;
 esac

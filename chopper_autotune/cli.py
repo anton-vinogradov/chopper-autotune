@@ -2,12 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 import re
 import signal
 import sys
 
 from . import tmc
-from .collect import Range
+from .tmc import Range                  # not from collect: parse before numpy loads
 
 
 def _chopper(text: str) -> tmc.Chopper:
@@ -323,7 +324,12 @@ def build_parser() -> argparse.ArgumentParser:
 def announce_failure(args, message: str):
     """Best-effort last words on the printer display: the tools run detached, so a
     failure that only lands in the log looks like 'nothing starts' at the machine
-    (field: a missing accelerometer died silently). Never masks the real error."""
+    (field: a missing accelerometer died silently). Never masks the real error.
+    Not in a foreground run (run.sh --sync): RUN_SHELL_COMMAND holds Klipper's gcode
+    queue until the tool exits, so the M117 would wait out the macro timeout, and the
+    error reaches the console directly anyway."""
+    if os.environ.get('CHOPPER_SYNC'):
+        return
     try:
         from .klippy import Klippy, find_socket
         kl = Klippy(find_socket(getattr(args, 'socket', None))).connect()

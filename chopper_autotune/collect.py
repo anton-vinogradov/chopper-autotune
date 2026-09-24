@@ -20,6 +20,7 @@ from . import __version__, tmc
 from .dataset import Dataset, RESULTS_HOME
 from .klippy import Klippy, KlippyError, find_socket
 from .metrics import parse_accel_csv, transients, vibration_score, window
+from .tmc import Range
 
 CSV_WAIT_SEC = 30.0
 MOVE_MARGIN = 0.4
@@ -30,23 +31,6 @@ OVERHEAD_STREAM_SEC = 0.3
 OVERHEAD_CSV_SEC = 3.0
 VALIDATE_EXTRA_ITERATIONS = 2
 MAX_VALIDATE_ROUNDS = 4
-
-
-@dataclass(frozen=True)
-class Range:
-    lo: int
-    hi: int
-
-    @classmethod
-    def parse(cls, text: str) -> 'Range':
-        lo, _, hi = text.partition(':')
-        r = cls(int(lo), int(hi or lo))
-        if r.hi < r.lo:
-            raise ValueError('range %s: max < min' % text)
-        return r
-
-    def values(self) -> range:
-        return range(self.lo, self.hi + 1)
 
 
 def motor_label(axis: str) -> str:

@@ -1,3 +1,2 @@
 #!/bin/bash
-here=$(dirname "$(realpath "$0")")
-exec "$here/.venv/bin/chopper-autotune" status "$@"
+exec "$(dirname "$(realpath "$0")")/run.sh" --sync status "$@"
