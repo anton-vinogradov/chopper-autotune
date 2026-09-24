@@ -364,24 +364,55 @@ def motors_off_but_z(kl: Klippy, cycle: bool = False) -> str:
     return '\n'.join(lines)
 
 
-_CLEAR_HOMING = {}
+_KLIPPER_EXTRAS = {}
+
+
+def process_start(pid: int, proc: str = '/proc') -> 'float | None':
+    """When a Linux process started, in epoch seconds (to 10 ms); None when /proc cannot
+    tell. The boot time comes from uptime: /proc/stat btime is cut to whole seconds, and a
+    service restart right after a git pull would read as older than the pulled files."""
+    try:
+        with open(os.path.join(proc, str(int(pid)), 'stat')) as stat:
+            ticks = int(stat.read().rsplit(')', 1)[1].split()[19])     # field 22: starttime
+        with open(os.path.join(proc, 'uptime')) as uptime:
+            since_boot = float(uptime.read().split()[0])
+        return time.time() - since_boot + ticks / os.sysconf('SC_CLK_TCK')
+    except (OSError, TypeError, ValueError, IndexError):
+        return None
+
+
+def klipper_extra(kl: Klippy, filename: str, any_age: bool = False) -> str:
+    """The running Klipper's own klippy/extras/<filename> (info: klipper_path), '' when it
+    cannot be read. RESTART and FIRMWARE_RESTART keep the modules the process imported,
+    so after a git pull without a service restart the file can be newer than the code
+    that runs: it counts only when it is older than the Klipper process (process_id,
+    reported since v0.12), unless any_age — for a question older code answers the same
+    way. The feature checks read the code itself: forks and commits between releases
+    make a version number unreliable."""
+    try:
+        info = kl.info()
+    except KlippyError:
+        return ''
+    key = (info.get('klipper_path'), info.get('process_id'), filename)
+    if key not in _KLIPPER_EXTRAS:
+        _KLIPPER_EXTRAS[key] = ('', False)
+        try:
+            path = os.path.join(info['klipper_path'], 'klippy', 'extras', filename)
+            with open(path) as source:
+                text = source.read()
+            started = process_start(info.get('process_id'))
+            _KLIPPER_EXTRAS[key] = (text, started is not None and os.path.getmtime(path) <= started)
+        except (OSError, TypeError, KeyError):
+            pass
+    text, current = _KLIPPER_EXTRAS[key]
+    return text if current or any_age else ''
 
 
 def can_clear_homing(kl: Klippy) -> bool:
     """SET_KINEMATIC_POSITION SET_HOMED=/CLEAR_HOMED= (Klipper v0.13+, Kalico since July
-    2026); older code marks EVERY axis homed with that same command. Read the running
-    Klipper's own force_move.py; anything unclear counts as unsupported."""
-    try:
-        root = kl.info().get('klipper_path')
-    except KlippyError:
-        return False
-    if root not in _CLEAR_HOMING:
-        try:
-            with open(os.path.join(root, 'klippy', 'extras', 'force_move.py')) as source:
-                _CLEAR_HOMING[root] = 'CLEAR_HOMED' in source.read()
-        except (OSError, TypeError):
-            _CLEAR_HOMING[root] = False
-    return _CLEAR_HOMING[root]
+    2026); older code marks EVERY axis homed with that same command. Anything unclear
+    counts as unsupported."""
+    return 'CLEAR_HOMED' in klipper_extra(kl, 'force_move.py')
 
 
 def release_gantry(kl: Klippy, cycle: bool = False):

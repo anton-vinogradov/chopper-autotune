@@ -283,3 +283,55 @@ def test_mid_run_rehome_keeps_the_motors_energized():
         before_move(1, 1.0)
     # a disable->enable mid-run would reset toff (Klipper's config copy or klipper_tmc_autotune)
     assert 'G28 X Y' in scripts[-1] and 'M18' not in scripts[-1]
+
+
+def test_process_start_reads_linux_proc(tmp_path, monkeypatch):
+    import os
+
+    import chopper_autotune.collect as collect_mod
+    monkeypatch.setattr(collect_mod.time, 'time', lambda: 1700000500.25)
+    (tmp_path / '4242').mkdir()
+    # a command name may hold spaces and ')': the fields count from the last ')'
+    (tmp_path / '4242' / 'stat').write_text('4242 (py) klippy) S 1 ' + '0 ' * 17 + '12345 0 0\n')
+    (tmp_path / 'uptime').write_text('500.25 1900.00\n')     # seconds since boot, to 10 ms
+    assert collect_mod.process_start(4242, str(tmp_path)) == pytest.approx(
+        1700000000 + 12345 / os.sysconf('SC_CLK_TCK'))
+    assert collect_mod.process_start(4243, str(tmp_path)) is None
+    assert collect_mod.process_start(None, str(tmp_path)) is None   # v0.10, v0.11: no process_id
+
+
+def test_process_start_of_this_process():
+    import os
+    import time
+
+    from chopper_autotune.collect import process_start
+    if not os.path.exists('/proc/self/stat'):
+        pytest.skip('no /proc here (Linux only)')
+    started = process_start(os.getpid())
+    assert time.time() - 3600 < started <= time.time() + 1
+
+
+@pytest.mark.parametrize('mtime, process_id, trusted', [
+    (1000, 7, True),        # the process started after the file was written
+    (3000, 7, False),       # a git pull without a service restart: older code may run
+    (1000, None, False),    # v0.10, v0.11: the process is unknown
+])
+def test_klipper_extra_trusts_only_code_older_than_the_process(tmp_path, monkeypatch,
+                                                               mtime, process_id, trusted):
+    import os
+    from types import SimpleNamespace
+
+    import chopper_autotune.collect as collect_mod
+    monkeypatch.setattr(collect_mod, '_KLIPPER_EXTRAS', {})
+    monkeypatch.setattr(collect_mod, 'process_start', lambda pid: {7: 2000.0}.get(pid))
+    (tmp_path / 'klippy' / 'extras').mkdir(parents=True)
+    for name, text in (('force_move.py', 'CLEAR_HOMED'), ('resonance_tester.py', 'CHIPS')):
+        path = tmp_path / 'klippy' / 'extras' / name
+        path.write_text(text)
+        os.utime(path, (mtime, mtime))
+    kl = SimpleNamespace(info=lambda: {'klipper_path': str(tmp_path), 'process_id': process_id})
+    assert collect_mod.klipper_extra(kl, 'force_move.py') == ('CLEAR_HOMED' if trusted else '')
+    assert collect_mod.can_clear_homing(kl) is trusted
+    # a question older code answers the same way reads the file whatever its age
+    assert collect_mod.klipper_extra(kl, 'resonance_tester.py', any_age=True) == 'CHIPS'
+    assert collect_mod.klipper_extra(kl, 'missing.py', any_age=True) == ''

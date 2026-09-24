@@ -28,11 +28,12 @@ from __future__ import annotations
 
 import glob
 import os
+import re
 
 import numpy as np
 
 from .collect import (Screen, await_flushed, capture_span, coupled_xy, detect_hardware, home_xy,
-                      motor_label, refuse_if_printing, release_gantry, run_restore)
+                      klipper_extra, motor_label, refuse_if_printing, release_gantry, run_restore)
 from .current import stress_vector
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
@@ -44,6 +45,7 @@ STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/belts.json')
 # the sweep's run-to-run deltas live apart: its structural response frequencies must
 # never land in belts.json, which the panel renders as TENSION (pluck fundamentals)
 SWEEP_STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/belts_sweep.json')
+CAPTURE = '/tmp/raw_data_*belt%s*.csv'   # TEST_RESONANCES OUTPUT=raw_data NAME=belt<label>
 
 PLUCK_BAND = (40.0, 1000.0)  # near-head spans ring ~200-450 Hz, their 2f up to ~900;
                              # ambient lines (e.g. a persistent ~600 Hz) are excluded
@@ -105,6 +107,63 @@ def wait_for_capture(pattern: str, min_span_sec: float = 0.0, timeout: float = 3
         raise SystemExit('capture incomplete for %s: %.0fs of the %.0fs sweep flushed — '
                          'check the [resonance_tester] output path'
                          % (pattern, capture_span(newest) if newest else 0.0, min_span_sec))
+
+
+def diagonal_chips(settings: dict) -> 'list[str]':
+    """The chips TEST_RESONANCES measures a diagonal with when no CHIPS= names one: every
+    chip [resonance_tester] names for X or Y (Kalico's accel_chips first)."""
+    tester = settings.get('resonance_tester') or {}
+    names = (tester.get('accel_chips') or '').split(',')
+    if not any(name.strip() for name in names):
+        names = ([tester.get('accel_chip_x'), tester.get('accel_chip_y')]
+                 if tester.get('accel_chip_x') else [tester.get('accel_chip')])
+    return sorted({name.strip() for name in names if name and name.strip()})
+
+
+def sweep_chip(kl: Klippy, settings: dict, chip: str) -> 'str | None':
+    """The chip to name in CHIPS=, or None to leave it to [resonance_tester]. With several
+    chips each writes its own file and the newest could be another chip's, so the sweep
+    names its chip where the running Klipper takes the name as given. v0.11 and v0.12 look
+    up 'adxl345 <name>' for a name without 'adxl345' in it, and a failed lookup is no
+    G-code error there: Klipper shuts down (Kalico did the same until April 2025). v0.10
+    has no CHIPS=. Without CHIPS= those releases write every chip to one file, so a
+    second chip is refused before anything moves."""
+    chips = diagonal_chips(settings)
+    if chip not in chips and chip not in kl.config_sections():
+        # Kalico reads accel_chip_x beside accel_chips without looking the chip up at start
+        raise SystemExit('[resonance_tester] accel_chip_x names %s, which is not a section in the '
+                         'config, and CHIPS= with it would shut Klipper down. Write the section '
+                         'name exactly, as in accel_chips. Nothing was moved' % chip)
+    if 'adxl345' in chip:
+        # every release with CHIPS= looks such a name up as given
+        source = klipper_extra(kl, 'resonance_tester.py', any_age=True)
+        if 'CHIPS' in source:
+            return chip
+    else:
+        source = klipper_extra(kl, 'resonance_tester.py')
+        if 'CHIPS' in source and not re.search(r'''["']adxl345 ["']''', source):
+            return chip
+    if len(chips) < 2:
+        return None
+    if not source:
+        raise SystemExit('the sweep cannot check that the running Klipper takes CHIPS="%s": its '
+                         'klippy/extras/resonance_tester.py cannot be read, or changed after '
+                         'Klipper started (Klipper before v0.12 does not say when). Without '
+                         'CHIPS= the sweep may read another chip of %s. Restart the klipper '
+                         'service after an update. Nothing was moved; the pluck test (the '
+                         'default) streams %s directly' % (chip, ', '.join(chips), chip))
+    raise SystemExit('the sweep cannot measure %s alone on this Klipper: its TEST_RESONANCES '
+                     'takes CHIPS= for adxl345 names only, or has no CHIPS=, and without it the '
+                     'chips [resonance_tester] names (%s) write one file. Any chip works from '
+                     'Klipper v0.13 and in Kalico since April 2025. Nothing was moved; the pluck '
+                     'test (the default) streams %s directly' % (chip, ', '.join(chips), chip))
+
+
+def sweep_command(axis: str, label: str, chip: 'str | None', band: 'tuple[float, float]',
+                  hz_per_sec: float) -> str:
+    return ('TEST_RESONANCES AXIS=%s OUTPUT=raw_data NAME=belt%s%s FREQ_START=%g FREQ_END=%g '
+            'HZ_PER_SEC=%g' % (axis, label, ' CHIPS="%s"' % chip if chip else '', band[0],
+                               band[1], hz_per_sec))
 
 
 def welch_psd(path: str) -> 'tuple[np.ndarray, np.ndarray]':
@@ -234,6 +293,7 @@ def belts(kl: Klippy, args) -> int:
     if not tester.get('probe_points'):
         raise SystemExit('needs a [resonance_tester] with probe_points (same as Klipper '
                          'input-shaper calibration) — TEST_RESONANCES drives the excitation')
+    chip = sweep_chip(kl, settings, hw.accel_chip)
 
     band = (float(args.min_freq), float(args.max_freq))
     hz_per_sec = min(args.hz_per_sec, MAX_HZ_PER_SEC)   # Klipper rejects a faster sweep
@@ -262,16 +322,12 @@ def belts(kl: Klippy, args) -> int:
             label = motor_label(motor)
             vec = stress_vector(hw.kinematics, motor)
             axis = '%g,%g' % vec
-            for stale in glob.glob('/tmp/raw_data_*belt%s*.csv' % label):
+            for stale in glob.glob(CAPTURE % label):
                 os.remove(stale)
             screen.update('Chopper belts: exciting %s' % label, force=True)
             print(' exciting belt %s (head diagonal %s)...' % (label, axis))
-            # CHIPS: with several chips each writes its own file, and the newest one
-            # could be another chip's (Klipper v0.11+ and Kalico; v0.10 ignores it)
-            kl.gcode('TEST_RESONANCES AXIS=%s OUTPUT=raw_data NAME=belt%s CHIPS="%s" '
-                     'FREQ_START=%g FREQ_END=%g HZ_PER_SEC=%g\nM400'
-                     % (axis, label, hw.accel_chip, band[0], band[1], hz_per_sec))
-            path = wait_for_capture('/tmp/raw_data_*belt%s*.csv' % label,
+            kl.gcode(sweep_command(axis, label, chip, band, hz_per_sec) + '\nM400')
+            path = wait_for_capture(CAPTURE % label,
                                     min_span_sec=(band[1] - band[0]) / hz_per_sec)
             freqs, psd = welch_psd(path)
             peak, binwidth = dominant(freqs, psd, band)
