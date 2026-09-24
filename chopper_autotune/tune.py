@@ -6,7 +6,7 @@ all winners are written into the Klipper config in one batch with a single resta
 from __future__ import annotations
 
 from . import tmc
-from .collect import Range, Screen, collect, motor_label
+from .collect import Range, Screen, collect, motor_label, refuse_multi_motor
 from .dataset import Dataset
 from .find_speed import scan
 from .klippy import Klippy, find_socket
@@ -76,6 +76,7 @@ def improvement_note(manifest: dict) -> str:
 def run_tune(args) -> int:
     axes = ['x', 'y'] if args.axis == 'xy' else [args.axis]
     kl = Klippy(find_socket(args.socket)).connect()
+    refuse_multi_motor(kl.settings(), args.axis)
     screen = Screen(kl, True)
     winners = []
     worst = 0

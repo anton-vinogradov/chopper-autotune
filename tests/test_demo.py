@@ -62,7 +62,8 @@ def test_demo_defaults_to_showcase_report_switches_to_numbers(monkeypatch, capsy
 
 
 def fake_klippy(*_):
-    return type('K', (), {'connect': lambda self: self, 'close': lambda self: None})()
+    return type('K', (), {'connect': lambda self: self, 'close': lambda self: None,
+                          'settings': lambda self: {}})()
 
 
 def test_run_demo_report_measures_both_motors(monkeypatch):

@@ -11,7 +11,7 @@ import math
 import os
 
 from .collect import (Screen, detect_hardware, enter_spreadcycle, exit_spreadcycle, full_steps_per_mm,
-                      refuse_if_printing, run_restore)
+                      rail_twins, refuse_if_printing, run_restore)
 from .current import Referee, referee_axis, stress_vector
 from .dataset import save_json
 from .klippy import Klippy, find_socket
@@ -165,12 +165,23 @@ def run_envelope(args) -> int:
         kl.close()
 
 
+def awd_note(settings: dict, motors: 'list[str]') -> str:
+    """The moves turn both motors of a pair, but spreadCycle reaches stepper_x/y only.
+    The run is detached: the note must reach the display and the result, not just the log."""
+    twins = [name for motor in motors for name in rail_twins(settings, motor)]
+    return ('%s share an axis: spreadCycle forced on stepper_x/stepper_y only, the verdict '
+            'is approximate (issue #129)' % ', '.join(twins)) if twins else ''
+
+
 def envelope(kl: Klippy, args) -> int:
     from .collect import motor_label
     motors = ['x', 'y'] if args.axis == 'xy' else [args.axis]
     hw = {m: detect_hardware(kl, m, accel=False) for m in motors}
     board = hw[motors[0]]
     settings = kl.settings()
+    note = awd_note(settings, motors)
+    if note:
+        print('WARNING: ' + note)
     base_accel = args.accel or board.max_accel
     speeds = tuple(range(args.min_speed, args.max_speed + 1, args.step))
     accels = tuple(round(base_accel * f, -2) for f in (1.0, 1.5, 2.0, 3.0, 4.0))
@@ -206,6 +217,8 @@ def envelope(kl: Klippy, args) -> int:
 
     refuse_if_printing(kl)
     screen = Screen(kl, board.display)
+    if note:
+        screen.update('WARNING: ' + note, force=True)
     achieved = {}
     speed_holds, accel_holds = {}, {}
     try:
@@ -266,6 +279,8 @@ def envelope(kl: Klippy, args) -> int:
                                           coupled_xy(board.kinematics), shaper_caps,
                                           settings.get('printer', {}))
     if recommendation:
+        if note:
+            recommendation['approximate'] = 'AWD'
         save_state({'recommend': recommendation})   # Results carries the numbers
         rec = recommendation
         print('\n=== What to set ===')
@@ -309,6 +324,8 @@ def envelope(kl: Klippy, args) -> int:
             print('(no [input_shaper] found — run SHAPER_CALIBRATE for the print-accel guidance)')
         finale += ' · set vel<=%d acc<=%dk print<=%.1fk' % (
             rec['max_velocity'], rec['max_accel'] / 1000, (rec['print_accel'] or 0) / 1000)
+    if finale and note:
+        finale += ' · AWD: approximate (#129)'
     if finale:
         screen.final(finale)
     print('\nThis is the motor (torque) limit only. For which speeds are quiet vs ringy, '

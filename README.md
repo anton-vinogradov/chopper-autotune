@@ -270,6 +270,7 @@ Python 3.9+ on the printer host. The klippy API socket for orchestration and sam
 
 - Klipper + Moonraker (Mainsail, Fluidd or any other frontend).
 - A supported TMC driver on the motor being tuned (see the datasheet list below).
+- One motor per X/Y axis. AWD and two-motor X/Y setups (`stepper_x1`, `stepper_y1`) are not supported yet ([#129](https://github.com/anton-vinogradov/chopper-autotune/issues/129)): the tools that move or tune one motor refuse the affected axis, `CHOPPER_ENVELOPE` marks its verdict as approximate, and registers are never written to one driver of a pair (`CHOPPER_SAVE` skips that motor, `CHOPPER_RESTORE DEFAULTS=1` resets both). Several Z motors are fine: the tool does not tune Z.
 - **An accelerometer on the toolhead** — the measuring instrument of the whole tool:
   - any chip supported by Klipper's resonance stack works: ADXL345 (the classic), LIS2DW, the MPU-9250 family; USB sticks (KUSBA, FYSETC PIS) and CAN toolhead boards with an onboard chip (EBB36/42, SB2209, …) count too;
   - mount it **rigidly on the printhead** (screwed down, not taped) — exactly as for input-shaper calibration;

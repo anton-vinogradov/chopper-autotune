@@ -41,11 +41,15 @@ def test_updated_config_errors():
 
 
 class FakeMoonraker:
-    def __init__(self, files, printing=False):
+    def __init__(self, files, printing=False, settings=None):
         self.files = dict(files)
         self.printing = printing
+        self.config_settings = settings or {}
         self.uploads = []
         self.scripts = []
+
+    def settings(self):
+        return self.config_settings
 
     def is_printing(self):
         return self.printing
@@ -150,7 +154,7 @@ def test_run_save_latest_saves_newest_tuning_dataset_per_motor(monkeypatch, tmp_
 
     monkeypatch.setattr('chopper_autotune.tune.winner_of', fake_winner)
     monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: None)
-    monkeypatch.setattr(analyze, 'Moonraker', lambda url: object())
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: FakeMoonraker({}))
     saved = {}
     monkeypatch.setattr(analyze, 'run_save',
                         lambda mk, items, extruder_state=None: saved.update(
@@ -161,6 +165,33 @@ def test_run_save_latest_saves_newest_tuning_dataset_per_motor(monkeypatch, tmp_
     assert set(called) == {'03_x', '02_y'}                 # newest tuning dataset per motor
     assert {m['axis'] for m, _ in saved['items']} == {'x', 'y'}
     assert saved['extruder'] is None
+
+
+def test_run_save_latest_skips_a_motor_with_a_twin_and_saves_the_rest(monkeypatch, tmp_path, capsys):
+    # AWD on X only: motor A would reach one driver of its pair; B and the extruder still save
+    import argparse
+
+    from chopper_autotune import analyze
+    from chopper_autotune.dataset import Dataset
+    for name, axis in (('01_x', 'x'), ('02_y', 'y')):
+        Dataset.create(tmp_path / name, {'axis': axis, 'search': 'descent'})
+    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: sorted(tmp_path.iterdir()))
+    monkeypatch.setattr('chopper_autotune.tune.winner_of',
+                        lambda root, weight: (Dataset(root).manifest(), tmc.Chopper(0, 8, 7, 5)))
+    state = {'driver': '2209', 'fields': {'tbl': 3, 'toff': 7, 'hstrt': 6, 'hend': 0}}
+    monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: state)
+    monkeypatch.setattr(analyze, 'Moonraker',
+                        lambda url: FakeMoonraker({}, settings={'stepper_x': {}, 'stepper_x1': {}}))
+    saved = {}
+    monkeypatch.setattr(analyze, 'run_save',
+                        lambda mk, items, extruder_state=None: saved.update(
+                            items=items, extruder=extruder_state))
+
+    analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
+
+    assert [m['axis'] for m, _ in saved['items']] == ['y']
+    assert saved['extruder'] == state
+    assert 'motor A: NOT saving' in capsys.readouterr().out
 
 
 def test_run_save_latest_includes_the_extruder_winner(monkeypatch):
@@ -382,3 +413,29 @@ def test_extruder_save_last_refuses_a_winner_klipper_would_not_load(monkeypatch,
     with pytest.raises(SystemExit, match='Klipper refuses'):
         extruder.extruder_tune(None, SimpleNamespace(save_last=True, url='http://x'))
     assert mk.uploads == [] and mk.scripts == []
+
+
+def test_run_save_refuses_to_write_one_driver_of_a_pair():
+    # AWD: stepper_x1 drives the same belt; saving to [tmc stepper_x] alone would
+    # leave the twin on its old registers (#129)
+    mk = FakeMoonraker({'printer.cfg': CFG}, settings={'stepper_x': {}, 'stepper_x1': {}})
+    with pytest.raises(SystemExit, match='stepper_x1 share its axis'):
+        run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))])
+    assert mk.uploads == [] and mk.scripts == []
+
+
+def test_apply_refuses_to_set_one_driver_of_a_pair():
+    from chopper_autotune.analyze import run_apply
+    mk = FakeMoonraker({}, settings={'stepper_x': {}, 'stepper_x1': {}})
+    with pytest.raises(SystemExit, match='stepper_x1 share its axis'):
+        run_apply(mk, 'stepper_x', tmc.Chopper(0, 8, 7, 5))
+    assert mk.scripts == []
+
+
+def test_restore_defaults_resets_both_drivers_of_a_pair():
+    # an AWD pair tuned by hand in both sections: a stock reset must reach the twin too,
+    # or the two motors of one belt end up on different choppers
+    from chopper_autotune.analyze import tuned_tmc_sections
+    text = ('[tmc5160 stepper_x]\ndriver_TBL: 1\n\n[tmc5160 stepper_x1]\ndriver_TBL: 1\n\n'
+            '[tmc5160 stepper_y]\nrun_current: 1.0\n')
+    assert tuned_tmc_sections({'printer.cfg': text}) == ['tmc5160 stepper_x', 'tmc5160 stepper_x1']

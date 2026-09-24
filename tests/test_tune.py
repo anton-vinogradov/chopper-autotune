@@ -7,6 +7,12 @@ from chopper_autotune.collect import Range
 from chopper_autotune.dataset import Dataset
 
 
+@pytest.fixture(autouse=True)
+def two_wheel_drive(monkeypatch):
+    # tune refuses multi-motor axes first thing; these tests run a 2WD config
+    monkeypatch.setattr(tune.Klippy, 'settings', lambda self: {})
+
+
 def tune_args(**overrides):
     base = {'axis': 'xy', 'speed': None, 'save': False, 'iterations': 1,
             'audible_weight': 0.25, 'accel': None, 'no_raw': False, 'csv': False,

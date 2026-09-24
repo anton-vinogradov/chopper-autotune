@@ -46,6 +46,10 @@ class Moonraker:
     def set_tmc_fields(self, stepper: str, fields: dict):
         self.gcode(tmc.set_fields_script(stepper, fields))
 
+    def settings(self) -> dict:
+        result = self._request('GET', '/printer/objects/query', {'configfile': 'settings'})
+        return result['status']['configfile']['settings']
+
     def is_printing(self) -> bool:
         result = self._request('GET', '/printer/objects/query', {'print_stats': 'state'})
         return result['status'].get('print_stats', {}).get('state') == 'printing'
