@@ -22,7 +22,8 @@ from pathlib import Path
 from . import __version__
 from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen,
                       default_dataset_root, detect_hardware, enter_spreadcycle, exit_spreadcycle,
-                      make_parker, now, park, refuse_if_printing, refuse_multi_motor, run_restore)
+                      make_parker, now, park, refuse_if_printing, refuse_multi_motor, rehome_unless_hot,
+                      run_restore)
 from .dataset import Dataset, save_json
 from .find_speed import (build_curve, build_speed_plan, find_peaks, find_valleys, run_sweep,
                          smooth, write_report)
@@ -143,7 +144,7 @@ def resonance_map(kl: Klippy, args) -> int:
         failed = run_sweep(hw, ds, args, plan, accel, screen, before_move, done)
     finally:
         print('Homing')
-        run_restore(lambda: exit_spreadcycle(kl, hw), lambda: kl.gcode('G28 X Y'),
+        run_restore(lambda: exit_spreadcycle(kl, hw), lambda: rehome_unless_hot(kl),
                     ds.flush_raw)
 
     curve = build_curve(ds)

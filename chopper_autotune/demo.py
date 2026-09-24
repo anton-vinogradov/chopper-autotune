@@ -11,9 +11,9 @@ import statistics
 from datetime import datetime
 
 from . import __version__, tmc
-from .collect import (MOVE_MARGIN, Screen, capture_stream, coupled_xy, default_dataset_root,
+from .collect import (MOVE_MARGIN, DriverTooHot, Screen, capture_stream, coupled_xy, default_dataset_root,
                       detect_hardware, enter_spreadcycle, exit_spreadcycle, fit_measure_time,
-                      make_parker, measure_baseline, motor_label, now, park, refuse_multi_motor,
+                      make_parker, measure_baseline, motor_label, now, park, refuse_multi_motor, rehome_unless_hot,
                       refuse_if_printing, run_measurement, run_restore, travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, KlippyError, find_socket
@@ -47,7 +47,7 @@ def run_demo(args) -> int:
             except SystemExit as skip:
                 # only a per-motor refusal (a string message) is skippable; an integer
                 # code is the SIGTERM handler — CHOPPER_STOP must stop the whole demo
-                if len(axes) == 1 or not isinstance(skip.code, str):
+                if len(axes) == 1 or not isinstance(skip.code, str) or isinstance(skip, DriverTooHot):
                     raise
                 print('motor %s skipped: %s' % (motor_label(axis), skip))
                 worst = max(worst, 2)
@@ -123,7 +123,8 @@ def showcase_together(kl, args) -> int:
                                                                tuned[axis].fields()))
               for axis in MOTORS],
             *[lambda axis=axis: exit_spreadcycle(kl, hw[axis]) for axis in MOTORS],
-            lambda: kl.gcode('M204 S%.0f\nG28 X Y' % board.max_accel))
+            lambda: kl.gcode('M204 S%.0f' % board.max_accel),
+            lambda: rehome_unless_hot(kl))
 
     if not results['default'] or not results['tuned']:
         raise SystemExit('show failed to collect measurements')
@@ -254,7 +255,7 @@ def demo(kl: Klippy, args) -> int:
         run_restore(
             lambda: kl.gcode(tmc.set_fields_script(hw.stepper, tuned.fields())),
             lambda: exit_spreadcycle(kl, hw),
-            lambda: kl.gcode('G28 X Y'),
+            lambda: rehome_unless_hot(kl),
             ds.flush_raw)
 
     if not results['default'] or not results['tuned']:

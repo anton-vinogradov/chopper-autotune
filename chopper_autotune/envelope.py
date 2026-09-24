@@ -10,8 +10,9 @@ from __future__ import annotations
 import math
 import os
 
-from .collect import (Screen, detect_hardware, enter_spreadcycle, exit_spreadcycle, full_steps_per_mm,
-                      rail_twins, refuse_if_printing, run_restore)
+from .collect import (Screen, ThermalGuard, detect_hardware, enter_spreadcycle, exit_spreadcycle,
+                      full_steps_per_mm, rail_twins, refuse_if_printing, rehome_unless_hot,
+                      run_restore)
 from .current import Referee, referee_axis, stress_vector
 from .dataset import save_json
 from .klippy import Klippy, find_socket
@@ -217,6 +218,7 @@ def envelope(kl: Klippy, args) -> int:
 
     refuse_if_printing(kl)
     screen = Screen(kl, board.display)
+    guard = ThermalGuard(kl, settings)
     if note:
         screen.update('WARNING: ' + note, force=True)
     achieved = {}
@@ -246,12 +248,14 @@ def envelope(kl: Klippy, args) -> int:
                 print(' speed ceiling (accel %.0f):' % base_accel)
                 s_hold, s_skip = ceiling(
                     speeds,
-                    lambda v: stress_burst(kl, board, m, vec, v, base_accel, span) or skips(ref.slipped()),
+                    lambda v: guard.check() or stress_burst(kl, board, m, vec, v, base_accel, span)
+                    or skips(ref.slipped()),
                     lambda v, sk: report(v, sk, 'mm/s'))
                 print(' accel ceiling (speed %d mm/s):' % args.accel_probe_speed)
                 a_hold, a_skip = ceiling(
                     accels,
-                    lambda a: stress_burst(kl, board, m, vec, args.accel_probe_speed, a, span) or skips(ref.slipped()),
+                    lambda a: guard.check() or stress_burst(kl, board, m, vec, args.accel_probe_speed, a, span)
+                    or skips(ref.slipped()),
                     lambda a, sk: report(a, sk, 'mm/s2'))
             finally:
                 run_restore(lambda: kl.gcode('M204 S%.0f' % board.max_accel),
@@ -262,7 +266,7 @@ def envelope(kl: Klippy, args) -> int:
                                'accel': ceiling_label(a_hold, a_skip, kilo=True)}
             speed_holds[label], accel_holds[label] = s_hold, a_hold
     finally:
-        run_restore(lambda: kl.gcode('M204 S%.0f\nG28 X Y' % board.max_accel))
+        run_restore(lambda: kl.gcode('M204 S%.0f' % board.max_accel), lambda: rehome_unless_hot(kl))
 
     finale = ''
     if achieved:

@@ -11,6 +11,7 @@ from . import __version__, tmc
 from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen,
                       default_dataset_root, detect_hardware, enter_spreadcycle,
                       exit_spreadcycle, make_parker, measure_baseline, measure_move, now, park, refuse_multi_motor,
+                      rehome_unless_hot,
                       refuse_if_printing, run_restore, travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, find_socket
@@ -267,7 +268,7 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
             lambda: kl.gcode(tmc.set_fields_script(
                 hw.stepper, hw.baseline or hw.driver.default.fields())),
             lambda: exit_spreadcycle(kl, hw),
-            lambda: kl.gcode('G28 X Y'),
+            lambda: rehome_unless_hot(kl),
             ds.flush_raw)
 
     if not curve:

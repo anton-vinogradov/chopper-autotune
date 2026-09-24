@@ -12,8 +12,8 @@ from __future__ import annotations
 import math
 import os
 
-from .collect import (Screen, coupled_xy, detect_hardware, refuse_if_printing, refuse_multi_motor,
-                      run_restore)
+from .collect import (Screen, ThermalGuard, coupled_xy, detect_hardware, refuse_if_printing,
+                      refuse_multi_motor, rehome_unless_hot, run_restore)
 from .dataset import save_json
 from .klippy import Klippy, find_socket
 
@@ -189,6 +189,7 @@ def current_tune(kl: Klippy, args) -> int:
 
     refuse_if_printing(kl)
     screen = Screen(kl, board.display)
+    guard = ThermalGuard(kl, settings)
     recommended, thresholds = {}, {}
     try:
         kl.gcode('G28 X Y\nG90')
@@ -201,6 +202,7 @@ def current_tune(kl: Klippy, args) -> int:
             rungs = []
 
             def holds(current, m=m, vec=vec, ref=ref, label=label):
+                guard.check()
                 screen.update('Chopper current %s @ %.2fA' % (label, current), force=True)
                 run_rung(kl, board, m, current, configured[m], vec, span, accel)
                 slip = ref.slipped()
@@ -230,7 +232,8 @@ def current_tune(kl: Klippy, args) -> int:
         run_restore(
             *[lambda m=m: kl.gcode('SET_TMC_CURRENT STEPPER=stepper_%s CURRENT=%.2f'
                                    % (m, configured[m])) for m in motors],
-            lambda: kl.gcode('M204 S%.0f\nG28 X Y' % board.max_accel))
+            lambda: kl.gcode('M204 S%.0f' % board.max_accel),
+            lambda: rehome_unless_hot(kl))
 
     unified = unify_recommendation(recommended, configured, coupled_xy(board.kinematics),
                                    args.per_motor)

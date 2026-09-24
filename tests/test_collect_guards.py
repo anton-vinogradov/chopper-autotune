@@ -243,7 +243,7 @@ def test_mid_run_rehome_keeps_the_motors_energized():
 
     from chopper_autotune.collect import PARK_INTERVAL_MOVES, make_parker, park
     scripts = []
-    kl = SimpleNamespace(gcode=scripts.append)
+    kl = SimpleNamespace(gcode=scripts.append, settings=lambda: {})
     hw = SimpleNamespace(center=(130.0, 130.0), axis_span=260.0)
     park(kl, hw)                                   # the start: motors released for the noise floor
     assert scripts[-1].endswith('M18')
