@@ -22,7 +22,7 @@ from pathlib import Path
 from . import __version__
 from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen,
                       default_dataset_root, detect_hardware, enter_spreadcycle, exit_spreadcycle,
-                      make_parker, now, park, refuse_if_printing, run_restore)
+                      make_parker, now, park, refuse_if_printing, refuse_multi_motor, run_restore)
 from .dataset import Dataset, save_json
 from .find_speed import (build_curve, build_speed_plan, find_peaks, find_valleys, run_sweep,
                          smooth, write_report)
@@ -83,6 +83,7 @@ def resonance_map(kl: Klippy, args) -> int:
     if args.trim is None:
         args.trim = 0.25 if args.csv else 0.1
 
+    refuse_multi_motor(kl.settings())
     hw = detect_hardware(kl, args.axis)
     print('Driver tmc%s on %s (motor %s), accelerometer %s, kinematics %s, current registers %s'
           % (hw.driver.name, hw.stepper, hw.motor, hw.accel_chip, hw.kinematics, hw.baseline))

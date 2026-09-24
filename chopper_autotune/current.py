@@ -12,7 +12,8 @@ from __future__ import annotations
 import math
 import os
 
-from .collect import Screen, coupled_xy, detect_hardware, refuse_if_printing, run_restore
+from .collect import (Screen, coupled_xy, detect_hardware, refuse_if_printing, refuse_multi_motor,
+                      run_restore)
 from .dataset import save_json
 from .klippy import Klippy, find_socket
 
@@ -165,9 +166,10 @@ def run_current_tune(args) -> int:
 def current_tune(kl: Klippy, args) -> int:
     from .collect import motor_label
     motors = ['x', 'y'] if args.axis == 'xy' else [args.axis]
+    settings = kl.settings()
+    refuse_multi_motor(settings)
     hw = {m: detect_hardware(kl, m, accel=False) for m in motors}
     board = hw[motors[0]]
-    settings = kl.settings()
     configured = {m: float(settings['tmc%s stepper_%s' % (hw[m].driver.name, m)]['run_current'])
                   for m in motors}
     accel = args.accel or board.max_accel

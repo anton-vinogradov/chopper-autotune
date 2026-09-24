@@ -304,11 +304,22 @@ def refuse_unloadable(driver_name: str, stepper: str, fields: dict):
                          % (tmc.Chopper(**fields).label(), driver_name, stepper, why))
 
 
+def refuse_twin_write(mk, stepper: str):
+    """A register write to stepper_x/stepper_y alone leaves a twin on the same axis
+    (stepper_x1...) with its old registers (#129)."""
+    from .collect import rail_twins
+    twins = rail_twins(mk.settings(), stepper.rsplit('_', 1)[-1])
+    if twins:
+        raise SystemExit('refusing to write registers to %s only: %s share its axis and would '
+                         'keep their old registers (see issue #129)' % (stepper, ', '.join(twins)))
+
+
 def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]', extruder_state: 'dict | None' = None):
     """Persist chopper winners into the Klipper config, one restart for the batch;
     the extruder's stored winner (see extruder.save_winner_state) rides along."""
     for manifest, combo in items:
         refuse_unloadable(manifest['driver'], manifest['stepper'], combo.fields())
+        refuse_twin_write(mk, manifest['stepper'])
     if extruder_state:
         refuse_unloadable(extruder_state['driver'], 'extruder', extruder_state['fields'])
     edits = [('tmc%s %s' % (manifest['driver'], manifest['stepper']),
@@ -604,7 +615,9 @@ def run_analyze(args) -> int:
     print('\nRecommended for printer.cfg:\n')
     print(tmc.cfg_snippet(driver, manifest['stepper'], best['chopper']))
     if args.apply and not args.save:
-        Moonraker(args.url).set_tmc_fields(manifest['stepper'], best['chopper'].fields())
+        mk = Moonraker(args.url)
+        refuse_twin_write(mk, manifest['stepper'])
+        mk.set_tmc_fields(manifest['stepper'], best['chopper'].fields())
         print('\nApplied via SET_TMC_FIELD (runtime only, use SAVE=1 to persist)')
     if args.save:
         run_save(Moonraker(args.url), [(manifest, best['chopper'])])

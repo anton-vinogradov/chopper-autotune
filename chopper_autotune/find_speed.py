@@ -10,7 +10,7 @@ from pathlib import Path
 from . import __version__, tmc
 from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen,
                       default_dataset_root, detect_hardware, enter_spreadcycle,
-                      exit_spreadcycle, make_parker, measure_baseline, measure_move, now, park,
+                      exit_spreadcycle, make_parker, measure_baseline, measure_move, now, park, refuse_multi_motor,
                       refuse_if_printing, run_restore, travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, find_socket
@@ -180,6 +180,7 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
     if args.trim is None:
         args.trim = 0.25 if args.csv else 0.1
 
+    refuse_multi_motor(kl.settings())
     hw = detect_hardware(kl, args.axis)
     print('Driver tmc%s on %s (motor %s), accelerometer %s, kinematics %s, registers %s'
           % (hw.driver.name, hw.stepper, hw.motor, hw.accel_chip, hw.kinematics, hw.baseline))

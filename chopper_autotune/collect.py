@@ -145,6 +145,37 @@ def unexpected_stealth(name: str) -> str:
             'default auto goal on Z and the extruder with a motor above 0.3 Nm)' % name)
 
 
+def rail_twins(settings: dict, axis: str) -> 'list[str]':
+    """Extra steppers on a rail, found the way Klipper finds them (stepper.py
+    LookupMultiRail): stepper_x1, stepper_x2, ... up to the first gap."""
+    twins = []
+    for index in range(1, 99):
+        name = 'stepper_%s%d' % (axis, index)
+        if name not in settings:
+            break
+        twins.append(name)
+    return twins
+
+
+def refuse_multi_motor(settings: dict):
+    """The tools that move or tune one motor act on stepper_x/stepper_y only. With a
+    second motor on the same axis (AWD, a two-motor gantry) the twin first idles on the
+    belt, then, after a re-home, holds against it, and registers, current and saves
+    reach one driver of the pair (#129). Refuse before anything moves, dry run included."""
+    twins = rail_twins(settings, 'x') + rail_twins(settings, 'y')
+    if twins:
+        raise SystemExit('%s: several motors drive one axis (AWD or a two-motor gantry); '
+                         'this tool does not support that yet, nothing was moved (see issue #129)'
+                         % ', '.join(twins))
+
+
+def release_gantry(kl: Klippy):
+    """Switch off every X/Y motor, twins included (Z stays on)."""
+    settings = kl.settings()
+    steppers = [name for axis in ('x', 'y') for name in ['stepper_' + axis] + rail_twins(settings, axis)]
+    kl.gcode('\n'.join('SET_STEPPER_ENABLE STEPPER=%s ENABLE=0' % name for name in steppers))
+
+
 def wake_stepper(kl: Klippy, stepper: str):
     """Enable the stepper BEFORE any register write: enabling re-sends the driver
     registers, and on a stepper without a dedicated enable pin it resets toff (Klipper
@@ -775,6 +806,7 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
     if args.trim is None:
         args.trim = 0.25 if args.csv else 0.1
 
+    refuse_multi_motor(kl.settings())
     hw = detect_hardware(kl, args.axis)
     print('Driver tmc%s on %s (motor %s), accelerometer %s, kinematics %s, baseline %s'
           % (hw.driver.name, hw.stepper, hw.motor, hw.accel_chip, hw.kinematics, hw.baseline))

@@ -11,7 +11,7 @@ import math
 import os
 
 from .collect import (Screen, detect_hardware, enter_spreadcycle, exit_spreadcycle, full_steps_per_mm,
-                      refuse_if_printing, run_restore)
+                      rail_twins, refuse_if_printing, run_restore)
 from .current import Referee, referee_axis, stress_vector
 from .dataset import save_json
 from .klippy import Klippy, find_socket
@@ -171,6 +171,11 @@ def envelope(kl: Klippy, args) -> int:
     hw = {m: detect_hardware(kl, m, accel=False) for m in motors}
     board = hw[motors[0]]
     settings = kl.settings()
+    twins = rail_twins(settings, 'x') + rail_twins(settings, 'y')
+    if twins:
+        print('WARNING: %s share an axis: the moves turn both motors of a pair, but spreadCycle '
+              'is forced on stepper_x/stepper_y only, the verdict is less exact (issue #129)'
+              % ', '.join(twins))
     base_accel = args.accel or board.max_accel
     speeds = tuple(range(args.min_speed, args.max_speed + 1, args.step))
     accels = tuple(round(base_accel * f, -2) for f in (1.0, 1.5, 2.0, 3.0, 4.0))

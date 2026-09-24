@@ -13,7 +13,7 @@ from datetime import datetime
 from . import __version__, tmc
 from .collect import (MOVE_MARGIN, Screen, capture_stream, coupled_xy, default_dataset_root,
                       detect_hardware, enter_spreadcycle, exit_spreadcycle, fit_measure_time,
-                      make_parker, measure_baseline, motor_label, now, park,
+                      make_parker, measure_baseline, motor_label, now, park, refuse_multi_motor,
                       refuse_if_printing, run_measurement, run_restore, travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, KlippyError, find_socket
@@ -33,6 +33,8 @@ def run_demo(args) -> int:
                          'LIVE plays the audible showcase (the default)')
     kl = Klippy(find_socket(args.socket)).connect()
     try:
+        # before the per-motor loop: a refusal there reads as 'motor A/B skipped'
+        refuse_multi_motor(kl.settings())
         if args.axis == 'xy' and not args.report:
             return showcase_together(kl, args)          # both motors together, like printing
         axes = ['x', 'y'] if args.axis == 'xy' else [args.axis]

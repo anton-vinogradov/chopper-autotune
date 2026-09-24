@@ -41,11 +41,15 @@ def test_updated_config_errors():
 
 
 class FakeMoonraker:
-    def __init__(self, files, printing=False):
+    def __init__(self, files, printing=False, settings=None):
         self.files = dict(files)
         self.printing = printing
+        self.config_settings = settings or {}
         self.uploads = []
         self.scripts = []
+
+    def settings(self):
+        return self.config_settings
 
     def is_printing(self):
         return self.printing
@@ -381,4 +385,13 @@ def test_extruder_save_last_refuses_a_winner_klipper_would_not_load(monkeypatch,
     monkeypatch.setattr('chopper_autotune.moonraker.Moonraker', lambda url: mk)
     with pytest.raises(SystemExit, match='Klipper refuses'):
         extruder.extruder_tune(None, SimpleNamespace(save_last=True, url='http://x'))
+    assert mk.uploads == [] and mk.scripts == []
+
+
+def test_run_save_refuses_to_write_one_driver_of_a_pair():
+    # AWD: stepper_x1 drives the same belt; saving to [tmc stepper_x] alone would
+    # leave the twin on its old registers (#129)
+    mk = FakeMoonraker({'printer.cfg': CFG}, settings={'stepper_x': {}, 'stepper_x1': {}})
+    with pytest.raises(SystemExit, match='stepper_x1 share its axis'):
+        run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))])
     assert mk.uploads == [] and mk.scripts == []

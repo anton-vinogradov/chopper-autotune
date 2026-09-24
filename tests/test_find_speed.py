@@ -19,6 +19,9 @@ def test_scan_sweeps_on_stock_registers_and_restores(tmp_path, monkeypatch):
         def __init__(self):
             self.scripts = []
 
+        def settings(self):
+            return {}
+
         def gcode(self, script):
             self.scripts.append(script)
 

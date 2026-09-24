@@ -32,7 +32,7 @@ import os
 import numpy as np
 
 from .collect import (Screen, await_flushed, capture_span, coupled_xy, detect_hardware,
-                      motor_label, refuse_if_printing, run_restore)
+                      motor_label, refuse_if_printing, release_gantry, run_restore)
 from .current import stress_vector
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
@@ -193,9 +193,8 @@ def identify_belt(kl: Klippy, hw, motor: str, screen: Screen, cycles: int = 4):
                   'G1 X%.1f Y%.1f F4800' % (cx - span * vec[0], cy - span * vec[1])]
     moves.append('G1 X%.1f Y%.1f F6000' % (cx, cy))
     # release the gantry motors (not Z) so the loosened belt is easy to reach and tension
-    kl.gcode('\n'.join(moves) + '\nM400\n'
-             'SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=0\n'
-             'SET_STEPPER_ENABLE STEPPER=stepper_y ENABLE=0')
+    kl.gcode('\n'.join(moves) + '\nM400')
+    release_gantry(kl)
 
 
 def run_belts(args) -> int:
@@ -295,8 +294,7 @@ def belts(kl: Klippy, args) -> int:
     if gap_pct(peaks['A'], peaks['B']) >= args.tolerance:
         # release the gantry so the belts are easy to reach; the Motor A/B buttons
         # (SHOW=) point at a motor when needed
-        kl.gcode('SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=0\n'
-                 'SET_STEPPER_ENABLE STEPPER=stepper_y ENABLE=0')
+        release_gantry(kl)
         message += ' · motors off'
     screen.final(message)
     print('\nIf you adjust a belt, change it a LITTLE and re-run: the per-belt delta tells '
@@ -593,8 +591,7 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
         # hand the gantry over on every exit — verdict, failed plucks or Stop — the
         # user's next move is a tensioner screw; no parting G28: releasing forgets the
         # position anyway and every next job homes first
-        run_restore(lambda: kl.gcode('SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=0\n'
-                                     'SET_STEPPER_ENABLE STEPPER=stepper_y ENABLE=0'))
+        run_restore(lambda: release_gantry(kl))
 
     pair = resolve_pair(fundamentals['A'], fundamentals['B'])
     if pair is None:
