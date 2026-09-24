@@ -492,7 +492,9 @@ def test_the_advice_carries_over_what_autotune_sets(driver, section, lines):
     settings = {'autotune_tmc stepper_x': section}
     assert autotune_carry_over(settings, driver, 'stepper_x') == lines
     advice = autotune_advice(settings, driver, 'stepper_x')
-    assert all(line in advice for line in lines) and 'tune again' in advice
+    assert all(line in advice for line in lines)
+    # a TMC2208 has no CoolStep: its result stays good once autotune is off
+    assert ('save the result already measured' if driver == '2208' else 'tune again') in advice
 
 
 def test_a_winner_measured_under_autotune_is_not_saved_once_it_is_gone():

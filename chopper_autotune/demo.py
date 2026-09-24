@@ -73,7 +73,8 @@ def showcase_together(kl, args) -> int:
              for axis in MOTORS}
     default = {axis: args.default if args.default is not None else hw[axis].driver.default
                for axis in MOTORS}
-    if all(tuned[axis] == default[axis] for axis in MOTORS):
+    # autotune's motor runs its own registers, not its config lines: judged once read live
+    if all(hw[axis].autotune is None and tuned[axis] == default[axis] for axis in MOTORS):
         raise SystemExit('current registers equal the defaults on both motors — tune and save first')
 
     board = hw['x']
@@ -112,6 +113,8 @@ def showcase_together(kl, args) -> int:
             # puts back what the motor runs, not config lines autotune overrides
             tuned[axis] = tmc.baseline_chopper(hw[axis].baseline, hw[axis].baseline.get('tpfd'),
                                                hw[axis].driver.default)
+        if all(tuned[axis] == default[axis] for axis in MOTORS):
+            raise SystemExit('the drivers run the defaults on both motors — nothing to show')
         for r in range(1, args.rounds + 1):
             round_avg = {}
             for name, regs in configs:
@@ -193,7 +196,7 @@ def demo(kl: Klippy, args) -> int:
     tpfd = hw.baseline.get('tpfd')
     tuned = tmc.baseline_chopper(hw.baseline, tpfd, hw.driver.default)
     default = args.default if args.default is not None else hw.driver.default
-    if tuned == default:
+    if hw.autotune is None and tuned == default:
         raise SystemExit('current registers equal the defaults — nothing to demo '
                          '(tune and save the motor first)')
 
@@ -254,6 +257,9 @@ def demo(kl: Klippy, args) -> int:
         enter_spreadcycle(kl, hw)
         # as in showcase_together: on autotune's motor, what it runs, read live
         tuned = tmc.baseline_chopper(hw.baseline, hw.baseline.get('tpfd'), hw.driver.default)
+        if tuned == default:
+            raise SystemExit('klipper_tmc_autotune runs the driver defaults on motor %s — nothing '
+                             'to demo' % hw.motor)
         configs = [('default', default), ('tuned', tuned)]
         if live:
             results = _showcase(kl, hw, args, ds, configs, speed, travel, accel,

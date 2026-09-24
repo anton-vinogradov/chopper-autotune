@@ -202,3 +202,34 @@ def test_autotunes_extruder_is_read_live_and_its_spreadcycle_kept():
     plain = SimpleNamespace(settings=lambda: {}, gcode_output=lambda script: [answers['GCONF']])
     assert resolve_extruder_stealth(plain, driver, driver.spreadcycle_switch) == driver.spreadcycle_switch
     assert autotune_extruder_baseline(plain, driver, {'tbl': 1}) == {'tbl': 1}
+
+
+def test_an_early_stop_enables_the_extruder_before_putting_registers_back(monkeypatch):
+    # M104 above max_temp fails before wake_stepper: without the enable first, the register
+    # write energizes a driver without an enable pin that Klipper counts as off
+    from types import SimpleNamespace
+
+    import pytest
+
+    import chopper_autotune.extruder as extruder_mod
+    from chopper_autotune.klippy import KlippyError
+    sent = []
+
+    def gcode(script):
+        sent.append(script)
+        if script.startswith('M104 S260'):
+            raise KlippyError("gcode/script failed: Requested temperature (260.0) out of range")
+    kl = SimpleNamespace(settings=lambda: {'tmc2209 extruder': {'driver_toff': 3}, 'extruder': {}},
+                         gcode=gcode, subscribe_accel=lambda chip: None)
+    monkeypatch.setattr(extruder_mod, 'detect_hardware', lambda kl, axis: SimpleNamespace(
+        accel_chip='adxl345', display=False))
+    monkeypatch.setattr(extruder_mod, 'refuse_if_printing', lambda kl: None)
+    monkeypatch.setattr(extruder_mod, 'Screen', lambda kl, display: SimpleNamespace(
+        update=lambda *a, **k: None, final=lambda *a: None))
+    args = SimpleNamespace(save_last=False, save=False, temp=260.0, demo=False, min_speed=3,
+                           max_speed=8, speed=None, dry_run=False, yes=True)
+    with pytest.raises(KlippyError):
+        extruder_mod.extruder_tune(kl, args)
+    enable = sent.index('SET_STEPPER_ENABLE STEPPER=extruder ENABLE=1')
+    first_write = next(i for i, s in enumerate(sent) if s.startswith('SET_TMC_FIELD'))
+    assert enable < first_write < sent.index('SET_STEPPER_ENABLE STEPPER=extruder ENABLE=0')

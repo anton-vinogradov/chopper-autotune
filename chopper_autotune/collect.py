@@ -178,19 +178,21 @@ def live_chopper(kl: Klippy, stepper: str, driver: tmc.Driver) -> 'dict | None':
     return values
 
 
-def resolve_autotune_baseline(kl: Klippy, hw: Hardware):
+def resolve_autotune_baseline(kl: Klippy, hw: Hardware, restores: bool = True):
     """On a motor klipper_tmc_autotune manages, the run puts back what the driver ran,
     read live: its registers. The config's driver_* lines would leave the motor, and the
-    re-home right after the run, on a chopper its StallGuard threshold was not tuned for."""
+    re-home right after the run, on a chopper its StallGuard threshold was not tuned for.
+    restores=False: a tool that leaves the registers alone (map, envelope) only reports."""
     if hw.autotune is None:
         return
     live = live_chopper(kl, hw.stepper, hw.driver)
     if live is None:
-        print('%s: klipper_tmc_autotune manages it, and its registers could not be read: the run '
-              'ends on the config registers; restart Klipper afterwards to get autotune\'s back'
-              % hw.stepper)
+        print('%s: klipper_tmc_autotune manages it, and its registers could not be read%s'
+              % (hw.stepper, ': the run ends on the config registers; restart Klipper afterwards '
+                             'to get autotune\'s back' if restores else ''))
         return
-    print('%s: klipper_tmc_autotune registers %s, put back at the end' % (hw.stepper, live))
+    print('%s: klipper_tmc_autotune registers %s%s' % (hw.stepper, live, ', put back at the end'
+                                                        if restores else ''))
     hw.baseline = live
 
 
@@ -265,6 +267,13 @@ def autotune_tag(driver_name: str, autotune: 'str | None') -> 'str | None':
 
 
 def autotune_advice(settings: dict, driver_name: str, stepper: str) -> str:
+    if autotune_tag(driver_name, 'auto') is None:
+        # no CoolStep, no StallGuard: the result already measured stays good
+        return ('klipper_tmc_autotune ([autotune_tmc %s]) writes its own tbl, toff, hstrt and hend '
+                'over driver_* at every Klipper start. Keep it, or switch it off for this motor: '
+                'remove [autotune_tmc %s], restart Klipper, then save the result already measured '
+                '(a TMC%s has no CoolStep: autotune did not change its current). README: With '
+                'klipper_tmc_autotune' % (stepper, stepper, driver_name))
     carry = autotune_carry_over(settings, driver_name, stepper)
     return ('klipper_tmc_autotune ([autotune_tmc %s]) writes its own tbl, toff, tpfd, hstrt and '
             'hend over driver_* at every Klipper start. Keep it, or switch it off for this '
@@ -771,13 +780,13 @@ def eta_text(seconds: float) -> str:
     return '%d:%02d' % (seconds // 3600, seconds % 3600 // 60)
 
 
-def enter_spreadcycle(kl: Klippy, hw: Hardware):
+def enter_spreadcycle(kl: Klippy, hw: Hardware, restores: bool = True):
     """Chopper registers only act in spreadCycle; stealthChop would measure noise.
     Runs after the dry-run/printing guards: it wakes the stepper, reads the live mode
     and forces spreadCycle when needed."""
     wake_stepper(kl, hw.stepper)
     resolve_stealth(kl, hw)
-    resolve_autotune_baseline(kl, hw)
+    resolve_autotune_baseline(kl, hw, restores)
     hw.settled = True
     if hw.stealth:
         field, force, _ = hw.stealth

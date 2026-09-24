@@ -200,6 +200,9 @@ def extruder_show(kl: Klippy, args, driver: tmc.Driver, baseline_regs: dict,
         screen.final('Extruder: %.1fx less vibration (%.0f -> %.0f)' % (d / t, d, t))
     finally:
         run_restore(
+            # the motor on before any register write (wake_stepper): a stop during the heat-up
+            # would otherwise energize a driver without an enable pin that Klipper counts off
+            lambda: untouched or wake_stepper(kl, 'extruder'),
             lambda: untouched or kl.gcode(tmc.set_fields_script('extruder', baseline_regs)),
             lambda: untouched or stealth and kl.gcode(tmc.set_fields_script(
                 'extruder', {stealth[0]: stealth[2]})),
@@ -355,6 +358,7 @@ def extruder_tune(kl: Klippy, args) -> int:
         run_restore(
             # a stock config carries no driver_* lines (empty baseline) — fall back to
             # Klipper defaults rather than silently leaving the last swept combo active
+            lambda: untouched or wake_stepper(kl, 'extruder'),    # as in extruder_show
             lambda: untouched or kl.gcode(tmc.set_fields_script(
                 'extruder', baseline_regs or tmc.stock_chopper(driver, False).fields())),
             lambda: untouched or stealth and kl.gcode(tmc.set_fields_script(

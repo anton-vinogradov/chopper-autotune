@@ -56,7 +56,9 @@ def test_tune_runs_both_axes_and_seeds_second(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert '[tmc2209 stepper_x]' in out and 'driver_TOFF: 8' in out
     assert '[tmc2209 stepper_y]' in out and 'driver_TOFF: 6' in out
-    assert 'CHOPPER_SAVE writes this into the config, or paste it manually' in out
+    # the exact command for this run alone, and what CHOPPER_SAVE takes along
+    assert 'To save stepper_x from this run alone: CHOPPER_ANALYZE DATASET=%s SAVE=1' % roots['x'] in out
+    assert 'CHOPPER_SAVE writes the latest result of every motor, and the stored' in out
 
 
 def test_tune_single_axis_with_explicit_speed(tmp_path, monkeypatch):
@@ -236,7 +238,26 @@ def test_autotune_on_one_motor_marks_only_that_one(tmp_path, monkeypatch, capsys
     out = capsys.readouterr().out
     assert 'stepper_x: klipper_tmc_autotune' in out and 'driver_SGTHRS: 80' in out
     assert 'stepper_y: klipper_tmc_autotune' not in out
-    assert 'CHOPPER_SAVE writes stepper_y into the config (it skips the motors autotune manages)' in out
+    assert 'To save stepper_y from this run alone' in out and 'To save stepper_x' not in out
     assert out.count('driver_TOFF: 8') == 1          # a snippet for B only, advice for A
     assert '(autotune)' in finals[-1] and finals[-1].count('(autotune)') == 1
     assert finals[-1].endswith('CHOPPER_SAVE to persist B')
+
+
+def test_a_tmc2208_under_autotune_gets_the_advice_not_a_paste(tmp_path, monkeypatch, capsys):
+    # no CoolStep, so no 'measured under' tag: yet autotune still writes its own at start
+    ds = Dataset.create(tmp_path / 'x', {'driver': '2208', 'stepper': 'stepper_x', 'trim': 0.1,
+                                         'autotune': None})
+    ds.append({'id': 'a', 'kind': 'move', 'status': 'ok', **tmc.Chopper(0, 8, 7, 5).fields(),
+               'score': {'median_magnitude': 1000.0}})
+    monkeypatch.setattr(tune.Klippy, 'settings', lambda self: {
+        'tmc2208 stepper_x': {}, 'autotune_tmc stepper_x': {}})
+    monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
+    monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
+    monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
+    monkeypatch.setattr(tune, 'scan', lambda kl, args: (0, 58))
+    monkeypatch.setattr(tune, 'collect', lambda kl, args: (0, str(ds.root)))
+    assert tune.run_tune(tune_args(axis='x')) == 0
+    out = capsys.readouterr().out
+    assert 'save the result already measured' in out
+    assert 'To save stepper_x' not in out and 'driver_TOFF' not in out

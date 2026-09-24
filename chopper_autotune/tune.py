@@ -6,8 +6,8 @@ all winners are written into the Klipper config in one batch with a single resta
 from __future__ import annotations
 
 from . import tmc
-from .collect import (Range, Screen, autotune_advice, collect, driver_of, motor_label,
-                      refuse_autotune_save, refuse_multi_motor)
+from .collect import (Range, Screen, autotune_advice, autotune_goal, collect, driver_of,
+                      motor_label, refuse_autotune_save, refuse_multi_motor)
 from .dataset import Dataset
 from .find_speed import scan
 from .klippy import Klippy, find_socket
@@ -78,6 +78,12 @@ def run_tune(args) -> int:
     axes = ['x', 'y'] if args.axis == 'xy' else [args.axis]
     kl = Klippy(find_socket(args.socket)).connect()
     settings = kl.settings()
+
+    def managed(manifest: dict) -> bool:
+        """klipper_tmc_autotune manages the motor now (a TMC2208 included, whose result
+        carries no 'measured under autotune' tag): pasting or saving would be undone."""
+        return autotune_goal(settings, manifest['stepper']) is not None
+
     refuse_multi_motor(settings, args.axis)
     if args.save:
         # say it now, not after twenty minutes of tuning
@@ -85,7 +91,7 @@ def run_tune(args) -> int:
             stepper = 'stepper_' + axis
             refuse_autotune_save(settings, driver_of(settings, stepper) or 'XXXX', stepper)
     screen = Screen(kl, True)
-    winners = []
+    winners, roots = [], {}
     worst = 0
     try:
         seed_root = None
@@ -107,20 +113,21 @@ def run_tune(args) -> int:
             worst = max(worst, code)
             if root:
                 winners.append(winner_of(root, args.audible_weight))
+                roots[winners[-1][0]['stepper']] = root
                 seed_root = root
 
         # the run's outcome must reach the screen: the console summary below only lands
         # in the detached log, and SAVE=1 restarts Klipper, wiping the status line — so
         # say how it ended (popup included) while the connection is still alive
         if not args.dry_run and winners:
-            # a motor klipper_tmc_autotune manages is marked: Save skips it
+            # a motor klipper_tmc_autotune manages now is marked: Save skips it
             labels = ' · '.join(
                 '%s %s%s%s' % (motor_label(manifest['stepper'].rsplit('_', 1)[-1]),
                                compact_label(combo), improvement_note(manifest),
-                               ' (autotune)' if manifest.get('autotune') else '')
+                               ' (autotune)' if managed(manifest) else '')
                 for manifest, combo in winners)
             free = [motor_label(manifest['stepper'].rsplit('_', 1)[-1])
-                    for manifest, _ in winners if not manifest.get('autotune')]
+                    for manifest, _ in winners if not managed(manifest)]
             tail = (' — saving' if args.save
                     else ' — autotune resets these at start' if not free
                     else ' — CHOPPER_SAVE to persist' if len(free) == len(winners)
@@ -134,7 +141,7 @@ def run_tune(args) -> int:
 
     print('\n=== Summary ===')
     for manifest, combo in winners:
-        if manifest.get('autotune'):
+        if managed(manifest):
             # no snippet: pasting it would change nothing, autotune writes its own at start
             print('%s: %s\n' % (manifest['stepper'],
                                 autotune_advice(settings, manifest['driver'], manifest['stepper'])))
@@ -144,14 +151,16 @@ def run_tune(args) -> int:
             print('# %.1fx less vibration than Klipper defaults\n'
                   % manifest['improvement'])
         print()
-    free = [manifest for manifest, _ in winners if not manifest.get('autotune')]
+    free = [manifest for manifest, _ in winners if not managed(manifest)]
     if args.save:
         from .analyze import run_save
         run_save(Moonraker(args.url), winners)
     elif free:
-        # CHOPPER_SAVE takes these very datasets: no second twenty-minute run
-        print('CHOPPER_SAVE writes %s into the config%s, or paste it manually'
-              % ('this' if len(free) == len(winners) else
-                 ' and '.join(manifest['stepper'] for manifest in free),
-                 '' if len(free) == len(winners) else ' (it skips the motors autotune manages)'))
+        # no second twenty-minute run: these datasets can be saved as they are
+        for manifest in free:
+            print('To save %s from this run alone: CHOPPER_ANALYZE DATASET=%s SAVE=1'
+                  % (manifest['stepper'], roots[manifest['stepper']]))
+        print('CHOPPER_SAVE writes the latest result of every motor, and the stored '
+              'CHOPPER_EXTRUDER winner, in one go (it skips the motors autotune manages). '
+              'Or paste the lines above manually.')
     return worst
