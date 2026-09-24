@@ -180,7 +180,7 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
     if args.trim is None:
         args.trim = 0.25 if args.csv else 0.1
 
-    refuse_multi_motor(kl.settings())
+    refuse_multi_motor(kl.settings(), args.axis)
     hw = detect_hardware(kl, args.axis)
     print('Driver tmc%s on %s (motor %s), accelerometer %s, kinematics %s, registers %s'
           % (hw.driver.name, hw.stepper, hw.motor, hw.accel_chip, hw.kinematics, hw.baseline))

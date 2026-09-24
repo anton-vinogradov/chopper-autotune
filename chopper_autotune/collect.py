@@ -157,12 +157,13 @@ def rail_twins(settings: dict, axis: str) -> 'list[str]':
     return twins
 
 
-def refuse_multi_motor(settings: dict):
+def refuse_multi_motor(settings: dict, axes: str = 'xy'):
     """The tools that move or tune one motor act on stepper_x/stepper_y only. With a
     second motor on the same axis (AWD, a two-motor gantry) the twin first idles on the
     belt, then, after a re-home, holds against it, and registers, current and saves
-    reach one driver of the pair (#129). Refuse before anything moves, dry run included."""
-    twins = rail_twins(settings, 'x') + rail_twins(settings, 'y')
+    reach one driver of the pair (#129). Refuse before anything moves, dry run included;
+    only the axes the run drives count (a dual-Y gantry can still tune X)."""
+    twins = [name for axis in axes for name in rail_twins(settings, axis)]
     if twins:
         raise SystemExit('%s: several motors drive one axis (AWD or a two-motor gantry); '
                          'this tool does not support that yet, nothing was moved (see issue #129)'
@@ -806,7 +807,7 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
     if args.trim is None:
         args.trim = 0.25 if args.csv else 0.1
 
-    refuse_multi_motor(kl.settings())
+    refuse_multi_motor(kl.settings(), args.axis)
     hw = detect_hardware(kl, args.axis)
     print('Driver tmc%s on %s (motor %s), accelerometer %s, kinematics %s, baseline %s'
           % (hw.driver.name, hw.stepper, hw.motor, hw.accel_chip, hw.kinematics, hw.baseline))

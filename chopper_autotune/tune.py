@@ -76,7 +76,7 @@ def improvement_note(manifest: dict) -> str:
 def run_tune(args) -> int:
     axes = ['x', 'y'] if args.axis == 'xy' else [args.axis]
     kl = Klippy(find_socket(args.socket)).connect()
-    refuse_multi_motor(kl.settings())
+    refuse_multi_motor(kl.settings(), args.axis)
     screen = Screen(kl, True)
     winners = []
     worst = 0

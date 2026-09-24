@@ -34,7 +34,7 @@ def run_demo(args) -> int:
     kl = Klippy(find_socket(args.socket)).connect()
     try:
         # before the per-motor loop: a refusal there reads as 'motor A/B skipped'
-        refuse_multi_motor(kl.settings())
+        refuse_multi_motor(kl.settings(), args.axis)
         if args.axis == 'xy' and not args.report:
             return showcase_together(kl, args)          # both motors together, like printing
         axes = ['x', 'y'] if args.axis == 'xy' else [args.axis]

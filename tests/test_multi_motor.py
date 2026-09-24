@@ -58,20 +58,54 @@ def test_single_motor_tools_refuse_awd_before_any_gcode(module, function, argv):
     assert kl.scripts == []
 
 
-@pytest.mark.parametrize('module, function, argv', [
-    ('chopper_autotune.tune', 'run_tune', ['tune', '--dry-run']),
-    ('chopper_autotune.demo', 'run_demo', ['demo', '--dry-run']),
+def _never(*args, **kwargs):
+    pytest.fail('the entry point went on to a per-motor step')
+
+
+@pytest.mark.parametrize('module, function, argv, next_steps', [
+    ('chopper_autotune.tune', 'run_tune', ['tune', '--dry-run'], ('scan', 'collect')),
+    ('chopper_autotune.demo', 'run_demo', ['demo', '--dry-run'], ('showcase_together', 'demo')),
+    ('chopper_autotune.demo', 'run_demo', ['demo', '--report', '--dry-run'], ('showcase_together', 'demo')),
 ])
-def test_pipeline_entry_points_refuse_awd_first(monkeypatch, module, function, argv):
-    # demo: before the per-motor loop, where a refusal would read as 'motor A skipped'
+def test_pipeline_entry_points_refuse_awd_first(monkeypatch, module, function, argv, next_steps):
+    # refused at the entry itself: demo's per-motor loop would read it as 'motor A skipped'
     import importlib
     target = importlib.import_module(module)
     kl = RecordingKl(AWD)
     monkeypatch.setattr(target, 'find_socket', lambda *args: '<sock>')
     monkeypatch.setattr(target, 'Klippy', lambda path: kl)
+    for name in next_steps:
+        monkeypatch.setattr(target, name, _never)
     with pytest.raises(SystemExit, match='several motors drive one axis'):
         getattr(target, function)(build_parser().parse_args(argv))
     assert kl.scripts == []
+
+
+def test_only_the_driven_axes_count():
+    # a dual-Y gantry can still tune X; tuning Y or both is refused
+    dual_y = {'stepper_x': {}, 'stepper_y': {}, 'stepper_y1': {}}
+    refuse_multi_motor(dual_y, 'x')
+    for axes in ('y', 'xy'):
+        with pytest.raises(SystemExit, match='stepper_y1'):
+            refuse_multi_motor(dual_y, axes)
+
+
+def test_envelope_note_names_the_twins_of_the_measured_motors():
+    from chopper_autotune.envelope import awd_note
+    assert 'stepper_x1' in awd_note(AWD, ['x']) and 'stepper_y1' not in awd_note(AWD, ['x'])
+    assert awd_note({'stepper_x': {}, 'stepper_y': {}}, ['x', 'y']) == ''
+    assert '"' not in awd_note(AWD, ['x', 'y'])              # travels inside RESPOND MSG="..."
+
+
+def test_belt_jog_releases_the_twins(monkeypatch):
+    from types import SimpleNamespace
+
+    from chopper_autotune.belts import identify_belt
+    kl = RecordingKl(AWD)
+    hw = SimpleNamespace(center=(60.0, 60.0), kinematics='corexy', axis_span=120.0)
+    identify_belt(kl, hw, 'x', SimpleNamespace(update=lambda *args, **kwargs: None), cycles=1)
+    assert 'SET_STEPPER_ENABLE STEPPER=stepper_x1 ENABLE=0' in kl.scripts[-1]
+    assert 'SET_STEPPER_ENABLE STEPPER=stepper_y1 ENABLE=0' in kl.scripts[-1]
 
 
 def test_release_gantry_switches_off_the_twins_too():

@@ -310,10 +310,12 @@ class Panel(ScreenPanel):
                 for name, values in envelope.items()))
         if recommend:
             crisp = recommend.get("print_accel_crisp")
-            lines.append(_("set: ") + "[printer] velocity ≤%s · accel ≤%s · print accel ≤%s%s"
+            lines.append(_("set: ") + "[printer] velocity ≤%s · accel ≤%s · print accel ≤%s%s%s"
                          % (recommend.get("max_velocity"), recommend.get("max_accel"),
                             recommend.get("print_accel") or "?",
-                            " (crisp ≤%s)" % crisp if crisp else ""))
+                            " (crisp ≤%s)" % crisp if crisp else "",
+                            " (%s, approximate)" % recommend["approximate"]
+                            if recommend.get("approximate") else ""))
         vfa_map = self.load_json(MAP_STATE)
         for name, entry in vfa_map.items():
             peaks = ",".join(str(s) for s in entry.get("peaks", [])) or "—"

@@ -167,7 +167,7 @@ def current_tune(kl: Klippy, args) -> int:
     from .collect import motor_label
     motors = ['x', 'y'] if args.axis == 'xy' else [args.axis]
     settings = kl.settings()
-    refuse_multi_motor(settings)
+    refuse_multi_motor(settings, ''.join(motors))
     hw = {m: detect_hardware(kl, m, accel=False) for m in motors}
     board = hw[motors[0]]
     configured = {m: float(settings['tmc%s stepper_%s' % (hw[m].driver.name, m)]['run_current'])

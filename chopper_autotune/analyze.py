@@ -314,6 +314,12 @@ def refuse_twin_write(mk, stepper: str):
                          'keep their old registers (see issue #129)' % (stepper, ', '.join(twins)))
 
 
+def run_apply(mk, stepper: str, chopper: tmc.Chopper):
+    """Set a combo live (SET_TMC_FIELD), not persisted."""
+    refuse_twin_write(mk, stepper)
+    mk.set_tmc_fields(stepper, chopper.fields())
+
+
 def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]', extruder_state: 'dict | None' = None):
     """Persist chopper winners into the Klipper config, one restart for the batch;
     the extruder's stored winner (see extruder.save_winner_state) rides along."""
@@ -346,13 +352,14 @@ TUNED_FIELD_RE = re.compile(r'^\s*driver_(tbl|toff|hstrt|hend|tpfd)\s*[:=]',
 
 
 def tuned_tmc_sections(files: 'dict[str, str]') -> 'list[str]':
-    """TMC sections of the tool's motors that carry active driver_* tuning lines —
-    the ones a defaults-restore must rewrite (a section without them already runs
-    the Klipper defaults, adding explicit lines there would only be churn)."""
+    """TMC sections of the tool's motors (X/Y twins included) that carry active
+    driver_* tuning lines — the ones a defaults-restore must rewrite (a section without
+    them already runs the Klipper defaults, adding explicit lines there would only be
+    churn). Each gets its own driver's stock, so a pair ends up matched."""
     found = []
     for text in files.values():
         lines = text.splitlines(keepends=True)
-        for match in re.finditer(r'^\[(tmc\w+ (?:stepper_x|stepper_y|extruder))\]',
+        for match in re.finditer(r'^\[(tmc\w+ (?:stepper_[xy]\d*|extruder))\]',
                                  text, re.MULTILINE):
             section = match.group(1)
             start, end = _section_span(lines, section)
@@ -421,14 +428,24 @@ def run_save_latest(args) -> int:
     """Persist the most recent tuning result for each motor into the config, batched into
     one restart. Backs the panel's Save button: save what the last tuning achieved, whether
     the motors were tuned separately (Tune A, Tune B) or together (Tune both)."""
-    from .collect import motor_label
+    from .collect import motor_label, rail_twins
     from .extruder import load_winner_state
     from .tune import winner_of
-    seen, items = set(), []
+    mk = Moonraker(args.url)
+    seen, items, settings = set(), [], None
     for path in reversed(dataset_dirs()):
         info = Dataset(str(path)).manifest()
         axis = info.get('axis')
         if axis in ('x', 'y') and axis not in seen and 'search' in info:
+            if settings is None:
+                settings = mk.settings()
+            twins = rail_twins(settings, axis)
+            if twins:
+                # like a stale extruder winner: skip it, keep saving the rest
+                seen.add(axis)
+                print('motor %s: NOT saving %s (%s share its axis, see issue #129)'
+                      % (motor_label(axis), Path(path).name, ', '.join(twins)))
+                continue
             try:
                 manifest, combo = winner_of(str(path), args.audible_weight)
             except SystemExit as reason:
@@ -450,7 +467,7 @@ def run_save_latest(args) -> int:
         print('extruder: saving %s (last CHOPPER_EXTRUDER winner)' % extruder_state['fields'])
     if not items and not extruder_state:
         raise SystemExit('no tuning datasets to save — run CHOPPER_TUNE first')
-    run_save(Moonraker(args.url), items, extruder_state)
+    run_save(mk, items, extruder_state)
     return 0
 
 
@@ -615,9 +632,7 @@ def run_analyze(args) -> int:
     print('\nRecommended for printer.cfg:\n')
     print(tmc.cfg_snippet(driver, manifest['stepper'], best['chopper']))
     if args.apply and not args.save:
-        mk = Moonraker(args.url)
-        refuse_twin_write(mk, manifest['stepper'])
-        mk.set_tmc_fields(manifest['stepper'], best['chopper'].fields())
+        run_apply(Moonraker(args.url), manifest['stepper'], best['chopper'])
         print('\nApplied via SET_TMC_FIELD (runtime only, use SAVE=1 to persist)')
     if args.save:
         run_save(Moonraker(args.url), [(manifest, best['chopper'])])
