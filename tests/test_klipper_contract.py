@@ -8,6 +8,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import select
 import socket
 import sys
@@ -20,7 +21,7 @@ import pytest
 import fake_klipper
 from klipper_config import CFG, named, read_like_klipper, selfcheck, settings_of
 from chopper_autotune import tmc
-from chopper_autotune.collect import live_stealth
+from chopper_autotune.collect import ACCEL_SECTIONS, live_stealth
 from chopper_autotune.klippy import Klippy, KlippyError, fence_markers
 
 # old Klipper releases carry regex strings Python warns about while compiling them
@@ -390,3 +391,30 @@ def test_klipper_accepts_our_macro_names(source):
     for section in read_like_klipper(CFG).sections():
         if section.startswith('gcode_macro '):
             dispatch.register_command(section.split()[1].upper(), lambda gcmd: None)
+
+
+@pytest.mark.parametrize('source', fetched('lis2dw.py'))
+def test_every_accelerometer_streams_where_we_subscribe(source):
+    """subscribe_accel builds the endpoint from the section type: hold it to the one the
+    real module registers (a [lis3dh] section is served by lis2dw.py)."""
+    require(source)
+    root = os.path.join(SRC, source)
+    checked = []
+    for section in ACCEL_SECTIONS:
+        path = os.path.join(root, section + '.py')
+        if not os.path.exists(path):
+            continue                                    # Kalico has no bmi160
+        with open(path) as module:
+            text = module.read()
+        delegate = re.search(r'from \. import (\w+)', text)
+        if 'add_mux_endpoint' not in text and delegate:
+            with open(os.path.join(root, delegate.group(1) + '.py')) as module:
+                text = module.read()
+        registered = re.findall(r'add_mux_endpoint\(\s*"(\w+/dump_\w+)",\s*"sensor"', text)
+        calls = []
+        kl = Klippy.__new__(Klippy)
+        kl.request = lambda method, params: calls.append(method)
+        kl.subscribe_accel(section)
+        assert calls == registered, (source, section)
+        checked.append(section)
+    assert {'adxl345', 'lis2dw', 'lis3dh', 'mpu9250', 'icm20948'} <= set(checked)
