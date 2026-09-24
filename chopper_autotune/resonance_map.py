@@ -22,8 +22,8 @@ from pathlib import Path
 from . import __version__
 from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen, ThermalGuard,
                       default_dataset_root, detect_hardware, enter_spreadcycle, exit_spreadcycle,
-                      make_parker, now, park, refuse_blind_z_hop, refuse_if_printing,
-                      refuse_multi_motor, rehome_unless_hot, run_restore)
+                      make_parker, measure_baseline, now, park, refuse_blind_z_hop,
+                      refuse_if_printing, refuse_multi_motor, rehome_unless_hot, run_restore)
 from .dataset import Dataset, save_json
 from .find_speed import (build_curve, build_speed_plan, find_peaks, find_valleys, run_sweep,
                          smooth, write_report)
@@ -143,6 +143,7 @@ def resonance_map(kl: Klippy, args) -> int:
     screen = Screen(kl, hw.display)
     before_move = make_parker(kl, hw, guard)
     try:
+        measure_baseline(hw, ds, args, done)         # the noise floor: motors still off
         enter_spreadcycle(kl, hw, restores=False)    # measure in spreadCycle; registers untouched
         failed = run_sweep(hw, ds, args, plan, accel, screen, before_move, done)
     finally:
