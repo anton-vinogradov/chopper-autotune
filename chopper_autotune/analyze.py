@@ -459,11 +459,6 @@ def run_save_latest(args) -> int:
                 skipped.append(autotune_refusal(info.get('driver', 'XXXX'), 'stepper_' + axis, settings))
                 print('motor %s: NOT saving %s: %s' % (motor_label(axis), Path(path).name, skipped[-1]))
                 continue
-            if info.get('autotune'):
-                seen.add(axis)
-                skipped.append(measured_under_autotune(info.get('driver', 'XXXX'), 'stepper_' + axis))
-                print('motor %s: NOT saving %s: %s' % (motor_label(axis), Path(path).name, skipped[-1]))
-                continue
             try:
                 manifest, combo = winner_of(str(path), args.audible_weight)
             except SystemExit as reason:
@@ -472,6 +467,11 @@ def run_save_latest(args) -> int:
                 print('motor %s: skipping %s (%s)' % (motor_label(axis), Path(path).name, reason))
                 continue
             seen.add(axis)
+            if info.get('autotune'):
+                # the newest result stands for the motor: an older one would be stale
+                skipped.append(measured_under_autotune(info.get('driver', 'XXXX'), 'stepper_' + axis))
+                print('motor %s: NOT saving %s: %s' % (motor_label(axis), Path(path).name, skipped[-1]))
+                continue
             items.append((manifest, combo))
             print('motor %s: saving %s (from %s)' % (motor_label(axis), combo.label(), Path(path).name))
     extruder_state = load_winner_state()
@@ -663,7 +663,7 @@ def run_analyze(args) -> int:
     print(tmc.cfg_snippet(driver, manifest['stepper'], best['chopper']))
     if manifest.get('autotune'):
         from .collect import AUTOTUNE_MEASURED
-        print('\nNote: %s' % AUTOTUNE_MEASURED)
+        print('\nNot for saving: %s' % AUTOTUNE_MEASURED)
     if args.apply and not args.save:
         run_apply(Moonraker(args.url), manifest['stepper'], best['chopper'])
         print('\nApplied via SET_TMC_FIELD (runtime only, use SAVE=1 to persist)')

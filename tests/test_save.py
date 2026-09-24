@@ -497,7 +497,7 @@ def test_the_advice_carries_over_what_autotune_sets(driver, section, lines):
 def test_a_winner_measured_under_autotune_is_not_saved_once_it_is_gone():
     # its CoolStep lowers the current under load: the optimum was found at another current
     mk = FakeMoonraker({'printer.cfg': CFG}, settings={})
-    with pytest.raises(SystemExit, match='measured while klipper_tmc_autotune managed the motor'):
+    with pytest.raises(SystemExit, match='measured under autotune; the log says what to do'):
         run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x', 'autotune': 'performance'},
                        tmc.Chopper(0, 8, 7, 5))])
     assert mk.uploads == [] and mk.scripts == []
@@ -513,5 +513,53 @@ def test_run_save_latest_skips_a_dataset_measured_under_autotune(monkeypatch):
     monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: {
         'driver': '2209', 'fields': {'tbl': 1, 'toff': 3, 'hstrt': 5, 'hend': 2}, 'autotune': 'silent'})
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: type('M', (), {'settings': lambda self: {}})())
-    with pytest.raises(SystemExit, match=r'not saving \[tmc2209 stepper_x\]: measured while'):
+    monkeypatch.setattr('chopper_autotune.tune.winner_of', lambda path, weight: (
+        {'driver': '2209', 'stepper': 'stepper_x', 'autotune': 'auto'}, tmc.Chopper(0, 8, 7, 5)))
+    with pytest.raises(SystemExit, match=r'not saving \[tmc2209 stepper_x\]: measured under autotune'):
         analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
+
+
+def save_latest_with(monkeypatch, manifests, winners, settings, extruder=None):
+    """run_save_latest over fake datasets: manifests by path, winners by path (or a
+    SystemExit for an aborted-at-start one); returns what reached run_save."""
+    import argparse
+
+    from chopper_autotune import analyze
+    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: list(manifests))
+    monkeypatch.setattr(analyze, 'Dataset', lambda path: type('D', (), {
+        'manifest': lambda self: manifests[path]})())
+    monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: extruder)
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: type('M', (), {'settings': lambda self: settings})())
+
+    def winner_of(path, weight):
+        if isinstance(winners[path], BaseException):
+            raise winners[path]
+        return winners[path]
+    monkeypatch.setattr('chopper_autotune.tune.winner_of', winner_of)
+    saved = {}
+    monkeypatch.setattr(analyze, 'run_save', lambda mk, items, extruder_state=None: saved.update(
+        items=items, extruder=extruder_state))
+    analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
+    return saved
+
+
+def test_save_skips_the_autotune_motor_and_saves_the_other(monkeypatch):
+    x = {'axis': 'x', 'search': 'descent', 'driver': '2209', 'stepper': 'stepper_x'}
+    y = {'axis': 'y', 'search': 'descent', 'driver': '2209', 'stepper': 'stepper_y'}
+    combo = tmc.Chopper(0, 8, 7, 5)
+    saved = save_latest_with(monkeypatch, {'/d/x': x, '/d/y': y},
+                             {'/d/x': (x, combo), '/d/y': (y, combo)},
+                             {'autotune_tmc stepper_x': {'tuning_goal': 'performance'}})
+    assert saved['items'] == [(y, combo)]
+
+
+def test_an_aborted_autotune_dataset_does_not_hide_an_older_result(monkeypatch):
+    # the newest dataset, measured under autotune, stopped before any measurement:
+    # the older complete one (no autotune then) is still the motor's result
+    old = {'axis': 'x', 'search': 'descent', 'driver': '2209', 'stepper': 'stepper_x'}
+    new = dict(old, autotune='auto')
+    combo = tmc.Chopper(0, 8, 7, 5)
+    saved = save_latest_with(monkeypatch, {'/d/old': old, '/d/new': new},
+                             {'/d/old': (old, combo), '/d/new': SystemExit('no successful measurements')},
+                             {})
+    assert saved['items'] == [(old, combo)]

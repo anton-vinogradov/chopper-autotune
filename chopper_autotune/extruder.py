@@ -17,9 +17,9 @@ import statistics
 
 from . import tmc
 from .collect import (Range, Screen, autotune_advice, autotune_goal, autotune_stealth,
-                      capture_stream, detect_hardware, live_stealth, measured_under_autotune,
-                      refuse_autotune_save, refuse_if_printing, run_restore, unexpected_stealth,
-                      wake_stepper)
+                      capture_stream, detect_hardware, live_chopper, live_stealth,
+                      measured_under_autotune, refuse_autotune_save, refuse_if_printing,
+                      run_restore, unexpected_stealth, wake_stepper)
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
 from .metrics import transients, vibration_score
@@ -69,17 +69,34 @@ def resolve_extruder_stealth(kl: Klippy, driver: tmc.Driver, configured: 'tuple 
     if not driver.spreadcycle_switch:
         return configured
     live = live_stealth(kl, 'extruder', driver)
-    by_autotune = autotune_stealth(kl.settings(), 'extruder') if live is None else None
-    if by_autotune is not None:
+    by_autotune = autotune_stealth(kl.settings(), 'extruder') if not live else None
+    if live is None and by_autotune is not None:
         print('extruder: klipper_tmc_autotune runs it in %s'
               % ('stealthChop' if by_autotune else 'spreadCycle'))
         return driver.spreadcycle_switch if by_autotune else None
+    if live is False and by_autotune is False and configured:
+        print('extruder: klipper_tmc_autotune keeps it in spreadCycle')
+        return None
     if live is None:
         print('trusting the config for the extruder driver mode')
     elif live and not configured:
         print(unexpected_stealth('the extruder'))
         return driver.spreadcycle_switch
     return configured
+
+
+def autotune_extruder_baseline(kl: Klippy, driver: tmc.Driver, configured: dict) -> dict:
+    """The registers the run puts back (see collect.resolve_autotune_baseline): on an
+    extruder klipper_tmc_autotune manages, its own, read live after the enable."""
+    if autotune_goal(kl.settings(), 'extruder') is None:
+        return configured
+    live = live_chopper(kl, 'extruder', driver)
+    if live is None:
+        print('extruder: klipper_tmc_autotune manages it, and its registers could not be read: '
+              'the run ends on the config registers; restart Klipper afterwards')
+        return configured
+    print('extruder: klipper_tmc_autotune registers %s, put back at the end' % live)
+    return live
 
 
 def oscillation(speed: float, amp: float, cycles: int) -> str:
@@ -157,6 +174,7 @@ def extruder_show(kl: Klippy, args, driver: tmc.Driver, baseline_regs: dict,
         kl.gcode('TEMPERATURE_WAIT SENSOR=extruder MINIMUM=%.0f' % (temp - 3))
         wake_stepper(kl, 'extruder')
         stealth = resolve_extruder_stealth(kl, driver, stealth)
+        baseline_regs = autotune_extruder_baseline(kl, driver, baseline_regs)
         if stealth:
             # chopper registers only act in spreadCycle: without the force, both phases
             # would measure stealthChop vs stealthChop and report a fake 1.0x
@@ -260,6 +278,7 @@ def extruder_tune(kl: Klippy, args) -> int:
 
         wake_stepper(kl, 'extruder')
         stealth = resolve_extruder_stealth(kl, driver, stealth)
+        baseline_regs = autotune_extruder_baseline(kl, driver, baseline_regs)
         if stealth:
             field, force, _ = stealth
             print('stealthChop is active on the extruder: forcing spreadCycle')

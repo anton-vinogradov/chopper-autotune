@@ -113,14 +113,16 @@ def run_tune(args) -> int:
         # in the detached log, and SAVE=1 restarts Klipper, wiping the status line — so
         # say how it ended (popup included) while the connection is still alive
         if not args.dry_run and winners:
+            # a motor klipper_tmc_autotune manages is marked: Save skips it
             labels = ' · '.join(
-                '%s %s%s' % (motor_label(manifest['stepper'].rsplit('_', 1)[-1]),
-                             compact_label(combo), improvement_note(manifest))
+                '%s %s%s%s' % (motor_label(manifest['stepper'].rsplit('_', 1)[-1]),
+                               compact_label(combo), improvement_note(manifest),
+                               ' (autotune)' if manifest.get('autotune') else '')
                 for manifest, combo in winners)
-            managed = any(manifest.get('autotune') for manifest, _ in winners)
+            savable = [manifest for manifest, _ in winners if not manifest.get('autotune')]
             screen.final('Tune done: %s%s' % (labels, ' — saving' if args.save
-                                              else ' — autotune resets these at start' if managed
-                                              else ' — tap Save to persist'))
+                                              else ' — tap Save to persist' if savable
+                                              else ' — autotune resets these at start'))
     finally:
         kl.close()
 
@@ -137,11 +139,12 @@ def run_tune(args) -> int:
     if args.save:
         from .analyze import run_save
         run_save(Moonraker(args.url), winners)
-    elif any(manifest.get('autotune') for manifest, _ in winners):
-        # pasting these lines would change nothing: autotune writes its own at start
+    else:
+        # pasting these lines would change nothing where autotune writes its own at start
         for manifest, _ in winners:
             if manifest.get('autotune'):
-                print(autotune_advice(settings, manifest['driver'], manifest['stepper']))
-    else:
-        print('Re-run with SAVE=1 to write this into the config, or paste it manually')
+                print('%s: %s' % (manifest['stepper'],
+                                  autotune_advice(settings, manifest['driver'], manifest['stepper'])))
+        if any(not manifest.get('autotune') for manifest, _ in winners):
+            print('Re-run with SAVE=1 to write this into the config, or paste it manually')
     return worst

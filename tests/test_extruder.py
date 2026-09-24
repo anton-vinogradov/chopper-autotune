@@ -179,5 +179,23 @@ def test_save_on_an_autotune_extruder_is_refused_before_the_heat_up(monkeypatch)
     # autotune gone since: a winner measured under it is still not saved
     state['autotune'] = 'silent'
     kl.settings = lambda: {'tmc2209 extruder': {}, 'extruder': {}}
-    with pytest.raises(SystemExit, match='measured while klipper_tmc_autotune managed the motor'):
+    with pytest.raises(SystemExit, match='measured under autotune; the log says what to do'):
         extruder_mod.extruder_tune(kl, SimpleNamespace(save_last=True, save=False, url='http://x'))
+
+
+def test_autotunes_extruder_is_read_live_and_its_spreadcycle_kept():
+    from types import SimpleNamespace
+
+    from chopper_autotune import tmc
+    from chopper_autotune.extruder import autotune_extruder_baseline, resolve_extruder_stealth
+    driver = tmc.DRIVERS['2240']
+    answers = {'GCONF': '// GCONF: 00000000', 'CHOPCONF': '// CHOPCONF: 14410153 toff=3 hstrt=5 hend=2 tbl=2 tpfd=4'}
+    kl = SimpleNamespace(settings=lambda: {'autotune_tmc extruder': {'tuning_goal': 'performance'}},
+                         gcode_output=lambda script: [answers[script.rsplit('=', 1)[1]]])
+    # en_pwm_mode clear = spreadCycle, autotune's doing: no stealthChop at the end
+    assert resolve_extruder_stealth(kl, driver, driver.spreadcycle_switch) is None
+    assert autotune_extruder_baseline(kl, driver, {'tbl': 1}) == {
+        'tbl': 2, 'toff': 3, 'hstrt': 5, 'hend': 2, 'tpfd': 4}
+    plain = SimpleNamespace(settings=lambda: {}, gcode_output=lambda script: [answers['GCONF']])
+    assert resolve_extruder_stealth(plain, driver, driver.spreadcycle_switch) == driver.spreadcycle_switch
+    assert autotune_extruder_baseline(plain, driver, {'tbl': 1}) == {'tbl': 1}

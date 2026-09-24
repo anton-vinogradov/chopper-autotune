@@ -212,3 +212,30 @@ def test_a_run_under_autotune_advises_instead_of_offering_to_paste(tmp_path, mon
     out = capsys.readouterr().out
     assert 'driver_SGTHRS: 80' in out and 'tune again' in out
     assert 'paste it manually' not in out
+
+
+def test_autotune_on_one_motor_marks_only_that_one(tmp_path, monkeypatch, capsys):
+    # Save still persists the other motor: its hint must not go away
+    roots = {}
+    for axis, autotune in (('x', 'performance'), ('y', None)):
+        ds = Dataset.create(tmp_path / axis, {'driver': '2209', 'stepper': 'stepper_' + axis,
+                                              'trim': 0.1, 'autotune': autotune})
+        ds.append({'id': 'a', 'kind': 'move', 'status': 'ok', **tmc.Chopper(0, 8, 7, 5).fields(),
+                   'score': {'median_magnitude': 1000.0}})
+        roots[axis] = str(ds.root)
+    monkeypatch.setattr(tune.Klippy, 'settings', lambda self: {
+        'tmc2209 stepper_x': {}, 'autotune_tmc stepper_x': {'sg4_thrs': 80}, 'tmc2209 stepper_y': {}})
+    monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
+    monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
+    monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
+    monkeypatch.setattr(tune, 'scan', lambda kl, args: (0, 58))
+    monkeypatch.setattr(tune, 'collect', lambda kl, args: (0, roots[args.axis]))
+    finals = []
+    monkeypatch.setattr(tune.Screen, 'final', lambda self, text: finals.append(text))
+    assert tune.run_tune(tune_args()) == 0
+    out = capsys.readouterr().out
+    assert 'stepper_x: klipper_tmc_autotune' in out and 'driver_SGTHRS: 80' in out
+    assert 'stepper_y: klipper_tmc_autotune' not in out
+    assert 'Re-run with SAVE=1' in out
+    assert '(autotune)' in finals[-1] and finals[-1].count('(autotune)') == 1
+    assert finals[-1].endswith('tap Save to persist')
