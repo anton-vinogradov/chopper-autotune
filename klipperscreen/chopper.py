@@ -371,6 +371,8 @@ class Panel(ScreenPanel):
             # explicit stock lines (a defaults-Restore writes them) read as untuned too:
             # "2/3/5/0 -> 2/3/5/0" looks like a comparison of something with something
             shown = tuned if tuned and tuned != default else _("untuned")
+            if self.autotune(stepper):
+                shown = _("autotune")
             rows.append("%-3s %9s → %-10s %s" % (name, default, shown,
                                                  self.noise_change(axis, tuned, state)))
         return "\n".join(rows)
@@ -386,9 +388,14 @@ class Panel(ScreenPanel):
         driver = self.tmc_section(stepper)[0]
         return "/".join(str(v) for v in DEFAULTS.get(driver, DEFAULTS["tmc2209"]))
 
+    def autotune(self, stepper):
+        """klipper_tmc_autotune writes its own chopper over the driver_* lines at every
+        Klipper start: on its motors those lines are not what the driver runs."""
+        return bool(self.printer.get_config_section("autotune_tmc " + stepper))
+
     def tuned_registers(self, stepper):
         driver, section = self.tmc_section(stepper)
-        if section:
+        if section and not self.autotune(stepper):
             values = [section.get(reg) for reg in REGISTERS]
             if all(value is not None for value in values):
                 default = DEFAULTS.get(driver, DEFAULTS["tmc2209"])

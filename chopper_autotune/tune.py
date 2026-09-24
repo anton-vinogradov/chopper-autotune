@@ -6,7 +6,8 @@ all winners are written into the Klipper config in one batch with a single resta
 from __future__ import annotations
 
 from . import tmc
-from .collect import Range, Screen, collect, driver_of, motor_label, refuse_autotune_save, refuse_multi_motor
+from .collect import (Range, Screen, autotune_advice, collect, driver_of, motor_label,
+                      refuse_autotune_save, refuse_multi_motor)
 from .dataset import Dataset
 from .find_speed import scan
 from .klippy import Klippy, find_socket
@@ -116,7 +117,9 @@ def run_tune(args) -> int:
                 '%s %s%s' % (motor_label(manifest['stepper'].rsplit('_', 1)[-1]),
                              compact_label(combo), improvement_note(manifest))
                 for manifest, combo in winners)
+            managed = any(manifest.get('autotune') for manifest, _ in winners)
             screen.final('Tune done: %s%s' % (labels, ' — saving' if args.save
+                                              else ' — autotune resets these at start' if managed
                                               else ' — tap Save to persist'))
     finally:
         kl.close()
@@ -134,6 +137,11 @@ def run_tune(args) -> int:
     if args.save:
         from .analyze import run_save
         run_save(Moonraker(args.url), winners)
+    elif any(manifest.get('autotune') for manifest, _ in winners):
+        # pasting these lines would change nothing: autotune writes its own at start
+        for manifest, _ in winners:
+            if manifest.get('autotune'):
+                print(autotune_advice(settings, manifest['driver'], manifest['stepper']))
     else:
         print('Re-run with SAVE=1 to write this into the config, or paste it manually')
     return worst

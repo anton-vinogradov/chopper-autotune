@@ -448,7 +448,7 @@ def test_run_save_refuses_a_motor_klipper_tmc_autotune_manages():
     # autotune writes its own tbl/toff/hstrt/hend at every Klipper start: saved values
     # would never reach the driver, and the restart would be for nothing
     mk = FakeMoonraker({'printer.cfg': CFG}, settings=AUTOTUNE)
-    with pytest.raises(SystemExit, match=r"\[autotune_tmc stepper_x\] resets its chopper"):
+    with pytest.raises(SystemExit, match=r"autotune resets its chopper at start"):
         run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))])
     assert mk.uploads == [] and mk.scripts == []
 
@@ -462,15 +462,56 @@ def test_run_save_latest_skips_a_managed_motor_and_names_why(monkeypatch):
         'axis': 'x', 'search': 'descent', 'driver': '2209'}})())
     monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: None)
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: type('M', (), {'settings': lambda self: AUTOTUNE})())
-    with pytest.raises(SystemExit, match=r'not saving \[tmc2209 stepper_x\]: \[autotune_tmc stepper_x\]'):
+    with pytest.raises(SystemExit, match=r'not saving \[tmc2209 stepper_x\]: autotune resets'):
         analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
 
 
 @pytest.mark.parametrize('command, driver, stepper', [('tune', '2240', 'stepper_x'),
                                                        ('extruder', '5160', 'extruder'),
                                                        ('save', '2209', 'stepper_y')])
-def test_the_autotune_refusal_keeps_its_action_on_the_display(command, driver, stepper):
-    # announce_failure shows '<command> FAILED: <message>' cut at 120 characters
+def test_the_autotune_refusal_points_the_display_at_the_log(command, driver, stepper):
+    # announce_failure shows '<command> FAILED: <message>' cut at 120 characters: a bare
+    # "remove it" there would drop the StallGuard threshold sensorless homing stops on
     from chopper_autotune.collect import autotune_refusal
     shown = ('%s FAILED: %s' % (command, autotune_refusal(driver, stepper)))[:120]
-    assert 'remove it to save' in shown
+    assert 'the log says what to do' in shown and 'remove' not in shown
+
+
+@pytest.mark.parametrize('driver, section, lines', [
+    ('2209', {'sg4_thrs': 80}, ['driver_SGTHRS: 80']),
+    ('2240', {'sgt': 2, 'sg4_thrs': 0}, ['driver_SGT: 2', 'driver_SLOPE_CONTROL: 3']),
+    ('2240', {'sgt': 1, 'sg4_thrs': 60}, ['driver_SGT: 1', 'driver_SG4_THRS: 60', 'driver_SLOPE_CONTROL: 3']),
+    ('5160', {'sgt': -4}, ['driver_SGT: -4']),
+    ('2208', {}, []),
+])
+def test_the_advice_carries_over_what_autotune_sets(driver, section, lines):
+    # Klipper records autotune's defaults in the settings too; its own README moves the
+    # StallGuard thresholds from [tmc...] into [autotune_tmc], so they must come back
+    from chopper_autotune.collect import autotune_advice, autotune_carry_over
+    settings = {'autotune_tmc stepper_x': section}
+    assert autotune_carry_over(settings, driver, 'stepper_x') == lines
+    advice = autotune_advice(settings, driver, 'stepper_x')
+    assert all(line in advice for line in lines) and 'tune again' in advice
+
+
+def test_a_winner_measured_under_autotune_is_not_saved_once_it_is_gone():
+    # its CoolStep lowers the current under load: the optimum was found at another current
+    mk = FakeMoonraker({'printer.cfg': CFG}, settings={})
+    with pytest.raises(SystemExit, match='measured while klipper_tmc_autotune managed the motor'):
+        run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x', 'autotune': 'performance'},
+                       tmc.Chopper(0, 8, 7, 5))])
+    assert mk.uploads == [] and mk.scripts == []
+
+
+def test_run_save_latest_skips_a_dataset_measured_under_autotune(monkeypatch):
+    import argparse
+
+    from chopper_autotune import analyze
+    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: ['/datasets/x'])
+    monkeypatch.setattr(analyze, 'Dataset', lambda path: type('D', (), {'manifest': lambda self: {
+        'axis': 'x', 'search': 'descent', 'driver': '2209', 'autotune': 'auto'}})())
+    monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: {
+        'driver': '2209', 'fields': {'tbl': 1, 'toff': 3, 'hstrt': 5, 'hend': 2}, 'autotune': 'silent'})
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: type('M', (), {'settings': lambda self: {}})())
+    with pytest.raises(SystemExit, match=r'not saving \[tmc2209 stepper_x\]: measured while'):
+        analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))

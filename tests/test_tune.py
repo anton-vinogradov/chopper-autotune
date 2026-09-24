@@ -193,3 +193,22 @@ def test_save_on_an_autotune_motor_is_refused_before_tuning(monkeypatch):
     monkeypatch.setattr(tune, 'scan', lambda kl, args: (_ for _ in ()).throw(RuntimeError('ran')))
     with pytest.raises(RuntimeError, match='ran'):
         tune.run_tune(tune_args())
+
+
+def test_a_run_under_autotune_advises_instead_of_offering_to_paste(tmp_path, monkeypatch, capsys):
+    # pasting the snippet would change nothing: autotune writes its own chopper at start
+    ds = Dataset.create(tmp_path / 'x', {'driver': '2209', 'stepper': 'stepper_x', 'trim': 0.1,
+                                         'autotune': 'performance'})
+    ds.append({'id': 'a', 'kind': 'move', 'status': 'ok', **tmc.Chopper(0, 8, 7, 5).fields(),
+               'score': {'median_magnitude': 1000.0}})
+    monkeypatch.setattr(tune.Klippy, 'settings', lambda self: {
+        'tmc2209 stepper_x': {}, 'autotune_tmc stepper_x': {'sg4_thrs': 80}})
+    monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
+    monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
+    monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
+    monkeypatch.setattr(tune, 'scan', lambda kl, args: (0, 58))
+    monkeypatch.setattr(tune, 'collect', lambda kl, args: (0, str(ds.root)))
+    assert tune.run_tune(tune_args(axis='x')) == 0
+    out = capsys.readouterr().out
+    assert 'driver_SGTHRS: 80' in out and 'tune again' in out
+    assert 'paste it manually' not in out

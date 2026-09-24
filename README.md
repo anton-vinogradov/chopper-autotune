@@ -122,12 +122,14 @@ To fix a conflict, keep one of the two tools. In `printer.cfg`, comment out the 
 
 ### With klipper_tmc_autotune
 
-[klipper_tmc_autotune](https://github.com/andrewmcgr/klipper_tmc_autotune) writes its own chopper registers (`tbl`, `toff`, `hstrt`, `hend`) at every Klipper start, over the `driver_*` values of the `[tmc…]` section. So on a motor with an `[autotune_tmc …]` section, registers saved by this tool would never reach the driver.
+[klipper_tmc_autotune](https://github.com/andrewmcgr/klipper_tmc_autotune) writes its own chopper registers (`tbl`, `toff`, `tpfd`, `hstrt`, `hend`) at every Klipper start, over the `driver_*` values of the `[tmc…]` section. So on a motor with an `[autotune_tmc …]` section, registers saved by this tool would never reach the driver.
 
-- `CHOPPER_TUNE SAVE=1` and `CHOPPER_EXTRUDER SAVE=1` refuse such a motor before they start, and `CHOPPER_SAVE` skips it. Without `SAVE=1` the tuning still runs.
-- To use tuned registers on that motor, remove its `[autotune_tmc …]` section. On a TMC2240, add `driver_SLOPE_CONTROL: 3` to its `[tmc2240 …]` section: autotune sets it, and it keeps the driver cooler.
-- At the end of a run the tool puts back the registers from the config. Autotune's own come back at the next Klipper restart.
-- The tool reads the driver mode, spreadCycle or stealthChop, from the live driver. If that read fails, it takes autotune's `silent` and `autoswitch` goals as stealthChop.
+- `CHOPPER_TUNE SAVE=1` and `CHOPPER_EXTRUDER SAVE=1` refuse such a motor before they start, and `CHOPPER_SAVE` skips it. Without `SAVE=1` the tuning still runs. The display says the log has the details; the log names the exact lines below.
+- To use tuned registers on that motor, first add to its `[tmc…]` section what autotune sets there. That is the StallGuard threshold sensorless homing stops on: `driver_SGTHRS` on a TMC2209 (autotune's `sg4_thrs`), `driver_SGT` on the others. On a TMC2240 it is also `driver_SLOPE_CONTROL: 3`, which keeps the driver cooler. Then remove the `[autotune_tmc …]` section, restart Klipper and tune again.
+- Tune again, because a run under autotune measured with its CoolStep on, which lowers the current under load, and the chopper optimum depends on the current. Such results are not saved, not even after autotune is gone.
+- At the end of a run the tool puts back the registers from the config. Autotune's own come back at the next Klipper restart. On a motor without an enable pin, autotune's `toff` also comes back each time the motor is switched on.
+- The tool reads the driver mode, spreadCycle or stealthChop, from the live driver. If that read fails, it follows autotune's goal: `silent` and `autoswitch` mean stealthChop, `performance` means spreadCycle, and so does `auto` on X and Y.
+- The KlipperScreen panel shows such a motor as `autotune`, not with the `driver_*` lines of its config.
 
 ### The plan — getting the most out of your printer
 

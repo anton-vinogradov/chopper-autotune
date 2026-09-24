@@ -67,6 +67,7 @@ class Hardware:
     baseline: 'dict[str, int]'
     stealth: 'Optional[tuple[str, int, int]]' = None
     display: bool = False
+    autotune: 'str | None' = None                  # the klipper_tmc_autotune goal, if any
 
     @property
     def motor(self) -> str:
@@ -140,9 +141,22 @@ def live_stealth(kl: Klippy, stepper: str, driver: tmc.Driver) -> 'bool | None':
     return None if value is None else value == stealth_value
 
 
-# klipper_tmc_autotune goals that clear en_spreadcycle; its auto goal depends on the
-# motor's torque outside X/Y, which only its motor database knows
-AUTOTUNE_STEALTH_GOALS = ('silent', 'autoswitch')
+# klipper_tmc_autotune's auto goal runs these in spreadCycle (performance); elsewhere
+# it depends on the motor's torque, which only its motor database knows
+AUTOTUNE_PERFORMANCE_MOTORS = ('stepper_x', 'stepper_y', 'dual_carriage', 'stepper_x1',
+                               'stepper_y1', 'stepper_a', 'stepper_b', 'stepper_c')
+
+
+def autotune_stealth(settings: dict, stepper: str) -> 'bool | None':
+    """The driver mode a klipper_tmc_autotune goal sets: silent and autoswitch clear
+    en_spreadcycle, performance sets it. None: no autotune, or its auto goal on a motor
+    only its database can place."""
+    goal = autotune_goal(settings, stepper)
+    if goal in ('silent', 'autoswitch'):
+        return True
+    if goal == 'performance' or (goal == 'auto' and stepper in AUTOTUNE_PERFORMANCE_MOTORS):
+        return False
+    return None
 
 
 def resolve_stealth(kl: Klippy, hw: Hardware):
@@ -153,10 +167,11 @@ def resolve_stealth(kl: Klippy, hw: Hardware):
     if not hw.driver.spreadcycle_switch:
         return
     live = live_stealth(kl, hw.stepper, hw.driver)
-    goal = autotune_goal(kl.settings(), hw.stepper) if live is None else None
-    if goal in AUTOTUNE_STEALTH_GOALS:
-        print('%s: klipper_tmc_autotune runs it in stealthChop (%s goal)' % (hw.stepper, goal))
-        hw.stealth = hw.driver.spreadcycle_switch
+    by_autotune = autotune_stealth(kl.settings(), hw.stepper) if live is None else None
+    if by_autotune is not None:
+        print('%s: klipper_tmc_autotune runs it in %s' % (hw.stepper, 'stealthChop' if by_autotune
+                                                          else 'spreadCycle'))
+        hw.stealth = hw.driver.spreadcycle_switch if by_autotune else None
     elif live is None:
         print('trusting the config for the %s driver mode' % hw.stepper)
     elif live and not hw.stealth:
@@ -183,19 +198,55 @@ def autotune_goal(settings: dict, stepper: str) -> 'str | None':
     return str(section.get('tuning_goal') or 'auto').lower()
 
 
-def autotune_refusal(driver_name: str, stepper: str) -> str:
-    """The action first: the display shows '<command> FAILED: ' and 120 characters."""
-    return ('not saving [tmc%s %s]: [autotune_tmc %s] resets its chopper at start: remove it to '
-            'save (klipper_tmc_autotune writes its own tbl, toff, hstrt and hend over driver_* '
-            'at every Klipper start; on a TMC2240 also add driver_SLOPE_CONTROL: 3, which it '
-            'sets)' % (driver_name, stepper, stepper))
+def autotune_carry_over(settings: dict, driver_name: str, stepper: str) -> 'list[str]':
+    """What klipper_tmc_autotune writes at every start that the [tmc...] section must keep
+    once its section goes: the StallGuard threshold sensorless homing stops on (Klipper's
+    own default, sgthrs 0 or sgt 0, homes wrong or not at all) and the TMC2240's fast
+    slope. Its values come from the settings, where Klipper records defaults too."""
+    section = settings.get('autotune_tmc ' + stepper) or {}
+    lines = []
+    if driver_name == '2209':
+        lines.append('driver_SGTHRS: %s' % section.get('sg4_thrs', 40))
+    elif driver_name != '2208':                     # 2130, 2240, 2660, 5160: SGT
+        lines.append('driver_SGT: %s' % section.get('sgt', 1))
+    if driver_name == '2240':
+        if int(section.get('sg4_thrs') or 0):
+            lines.append('driver_SG4_THRS: %s' % section['sg4_thrs'])
+        lines.append('driver_SLOPE_CONTROL: 3')
+    return lines
+
+
+def autotune_advice(settings: dict, driver_name: str, stepper: str) -> str:
+    carry = autotune_carry_over(settings, driver_name, stepper)
+    return ('klipper_tmc_autotune ([autotune_tmc %s]) writes its own tbl, toff, tpfd, hstrt and '
+            'hend over driver_* at every Klipper start. To use tuned registers there: first add '
+            '%s to [tmc%s %s] (autotune sets them, and sensorless homing stops on the StallGuard '
+            'threshold); then remove [autotune_tmc %s], restart Klipper and tune again (a run '
+            'under autotune measured with its CoolStep current)'
+            % (stepper, ', '.join(carry) or 'nothing', driver_name, stepper, stepper))
+
+
+def autotune_refusal(driver_name: str, stepper: str, settings: 'dict | None' = None) -> str:
+    """The display shows '<command> FAILED: ' and 120 characters: they point at the log,
+    since removing the section alone would drop the StallGuard threshold with it."""
+    return ('not saving [tmc%s %s]: autotune resets its chopper at start; the log says what to '
+            'do. %s' % (driver_name, stepper, autotune_advice(settings or {}, driver_name, stepper)))
+
+
+AUTOTUNE_MEASURED = ('measured while klipper_tmc_autotune managed the motor; tune again '
+                     'without it. Its CoolStep lowers the current under load, and the chopper '
+                     'optimum depends on the current')
+
+
+def measured_under_autotune(driver_name: str, stepper: str) -> str:
+    return 'not saving [tmc%s %s]: %s' % (driver_name, stepper, AUTOTUNE_MEASURED)
 
 
 def refuse_autotune_save(settings: dict, driver_name: str, stepper: str):
     """Saved driver_* values on a motor klipper_tmc_autotune manages never reach the
     driver: say so instead of saving them (and restarting Klipper for nothing)."""
     if autotune_goal(settings, stepper) is not None:
-        raise SystemExit(autotune_refusal(driver_name, stepper))
+        raise SystemExit(autotune_refusal(driver_name, stepper, settings))
 
 
 def rail_twins(settings: dict, axis: str) -> 'list[str]':
@@ -461,6 +512,7 @@ def detect_hardware(kl: Klippy, axis: str, accel: bool = True) -> Hardware:
         # display_status is usually an implicit runtime object (auto-loaded on
         # Mainsail/Fluidd setups), not a config section — check the live objects
         display='display_status' in kl.object_list(),
+        autotune=autotune_goal(settings, stepper),
     )
 
 
@@ -1111,6 +1163,7 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
         'accel_chip': hw.accel_chip,
         'kinematics': hw.kinematics,
         'baseline_registers': hw.baseline,
+        'autotune': hw.autotune,
         'forced_spreadcycle': bool(hw.stealth),
         'skip_audible': args.skip_audible,
         'ranges': {'tbl': [args.tbl.lo, args.tbl.hi], 'toff': [args.toff.lo, args.toff.hi],

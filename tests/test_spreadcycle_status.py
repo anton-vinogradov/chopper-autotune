@@ -242,9 +242,18 @@ def test_an_unreadable_mode_falls_back_to_the_autotune_goal():
     from chopper_autotune import tmc
     from chopper_autotune.collect import resolve_stealth
     driver = tmc.DRIVERS['2209']
-    for goal, forced in (('silent', True), ('autoswitch', True), ('performance', False), (None, False)):
-        settings = {'autotune_tmc stepper_x': {'tuning_goal': goal}} if goal else {}
+    switch = driver.spreadcycle_switch
+    # (goal, stepper, the config's own guess) -> the mode the run assumes
+    for goal, stepper, configured, expected in (
+            ('silent', 'stepper_x', None, switch), ('autoswitch', 'stepper_x', None, switch),
+            # performance, and auto on X/Y, keep spreadCycle: a stale stealthchop_threshold
+            # must not turn stealthChop on at the end of the run
+            ('performance', 'stepper_x', switch, None), ('auto', 'stepper_y', switch, None),
+            # auto on another motor: only autotune's motor database knows
+            ('auto', 'stepper_z', switch, switch), (None, 'stepper_x', switch, switch),
+            (None, 'stepper_x', None, None)):
+        settings = {'autotune_tmc ' + stepper: {'tuning_goal': goal}} if goal else {}
         kl = SimpleNamespace(gcode_output=lambda script: ['// ok'], settings=lambda: settings)
-        hw = SimpleNamespace(driver=driver, stepper='stepper_x', stealth=None)
+        hw = SimpleNamespace(driver=driver, stepper=stepper, stealth=configured)
         resolve_stealth(kl, hw)
-        assert (hw.stealth == driver.spreadcycle_switch) == forced, goal
+        assert hw.stealth == expected, (goal, stepper)

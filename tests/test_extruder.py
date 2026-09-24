@@ -150,10 +150,12 @@ def test_extruder_stealth_resolved_live_before_the_force():
     assert resolve_extruder_stealth(DeafKl(), driver, None) is None
     assert resolve_extruder_stealth(DeafKl(), driver, driver.spreadcycle_switch) == driver.spreadcycle_switch
     # unreadable: klipper_tmc_autotune's silent and autoswitch goals clear en_spreadcycle
-    for goal, stealth in (('silent', driver.spreadcycle_switch), ('autoswitch', driver.spreadcycle_switch),
-                          ('performance', None), ('auto', None)):
+    switch = driver.spreadcycle_switch
+    for goal, configured, stealth in (('silent', None, switch), ('autoswitch', None, switch),
+                                      ('performance', switch, None),
+                                      ('auto', switch, switch)):     # the extruder: torque decides
         deaf = DeafKl({'autotune_tmc extruder': {'tuning_goal': goal}})
-        assert resolve_extruder_stealth(deaf, driver, None) == stealth, goal
+        assert resolve_extruder_stealth(deaf, driver, configured) == stealth, goal
 
 
 def test_save_on_an_autotune_extruder_is_refused_before_the_heat_up(monkeypatch):
@@ -173,4 +175,9 @@ def test_save_on_an_autotune_extruder_is_refused_before_the_heat_up(monkeypatch)
     state = {'driver': '2209', 'fields': {'tbl': 1, 'toff': 3, 'hstrt': 5, 'hend': 2}}
     monkeypatch.setattr(extruder_mod, 'load_winner_state', lambda: state)
     with pytest.raises(SystemExit, match=r'not saving \[tmc2209 extruder\]'):
+        extruder_mod.extruder_tune(kl, SimpleNamespace(save_last=True, save=False, url='http://x'))
+    # autotune gone since: a winner measured under it is still not saved
+    state['autotune'] = 'silent'
+    kl.settings = lambda: {'tmc2209 extruder': {}, 'extruder': {}}
+    with pytest.raises(SystemExit, match='measured while klipper_tmc_autotune managed the motor'):
         extruder_mod.extruder_tune(kl, SimpleNamespace(save_last=True, save=False, url='http://x'))

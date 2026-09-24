@@ -16,9 +16,10 @@ import os
 import statistics
 
 from . import tmc
-from .collect import (AUTOTUNE_STEALTH_GOALS, Range, Screen, autotune_goal, capture_stream,
-                      detect_hardware, live_stealth, refuse_autotune_save, refuse_if_printing,
-                      run_restore, unexpected_stealth, wake_stepper)
+from .collect import (Range, Screen, autotune_advice, autotune_goal, autotune_stealth,
+                      capture_stream, detect_hardware, live_stealth, measured_under_autotune,
+                      refuse_autotune_save, refuse_if_printing, run_restore, unexpected_stealth,
+                      wake_stepper)
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
 from .metrics import transients, vibration_score
@@ -30,10 +31,14 @@ VALIDATE_TOP = 3            # re-measure the best candidates before recommending
 STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/extruder.json')
 
 
-def save_winner_state(driver_name: str, winner: tmc.Chopper):
+def save_winner_state(driver_name: str, winner: tmc.Chopper, autotune: 'str | None' = None):
     """The extruder has no dataset like the axes do; remember the winner so SAVE_LAST=1
-    can persist it later without re-running the whole heated tune."""
-    save_json(STATE, {'driver': driver_name, 'fields': winner.fields()})
+    can persist it later without re-running the whole heated tune. autotune: the
+    klipper_tmc_autotune goal it was measured under (its CoolStep changes the current)."""
+    state = {'driver': driver_name, 'fields': winner.fields()}
+    if autotune:
+        state['autotune'] = autotune
+    save_json(STATE, state)
 
 
 def load_winner_state() -> 'dict | None':
@@ -64,10 +69,11 @@ def resolve_extruder_stealth(kl: Klippy, driver: tmc.Driver, configured: 'tuple 
     if not driver.spreadcycle_switch:
         return configured
     live = live_stealth(kl, 'extruder', driver)
-    goal = autotune_goal(kl.settings(), 'extruder') if live is None else None
-    if goal in AUTOTUNE_STEALTH_GOALS:
-        print('extruder: klipper_tmc_autotune runs it in stealthChop (%s goal)' % goal)
-        return driver.spreadcycle_switch
+    by_autotune = autotune_stealth(kl.settings(), 'extruder') if live is None else None
+    if by_autotune is not None:
+        print('extruder: klipper_tmc_autotune runs it in %s'
+              % ('stealthChop' if by_autotune else 'spreadCycle'))
+        return driver.spreadcycle_switch if by_autotune else None
     if live is None:
         print('trusting the config for the extruder driver mode')
     elif live and not configured:
@@ -195,6 +201,8 @@ def extruder_tune(kl: Klippy, args) -> int:
         from .moonraker import Moonraker
         refuse_unloadable(state['driver'], 'extruder', state['fields'])
         refuse_autotune_save(kl.settings(), state['driver'], 'extruder')
+        if state.get('autotune'):
+            raise SystemExit(measured_under_autotune(state['driver'], 'extruder'))
         print('Persisting the stored extruder winner: %s' % state['fields'])
         _persist(Moonraker(args.url),
                  [('tmc%s extruder' % state['driver'],
@@ -291,7 +299,7 @@ def extruder_tune(kl: Klippy, args) -> int:
             rescored[combo] = statistics.mean(scores)
             print('  validate %s: %.0f' % (combo.label(), rescored[combo]))
         winner = min(rescored, key=rescored.get)
-        save_winner_state(driver_name, winner)
+        save_winner_state(driver_name, winner, autotune_goal(settings, 'extruder'))
 
         print('\n=== Extruder winner ===')
         print('%s  score %.0f  (f_chop %.1f kHz, h_eff %d)'
@@ -311,6 +319,8 @@ def extruder_tune(kl: Klippy, args) -> int:
                      [('tmc%s extruder' % driver_name,
                        lambda text, section: updated_config(text, section, winner.fields()))],
                      'the extruder registers')
+        elif autotune_goal(settings, 'extruder') is not None:
+            print(autotune_advice(settings, driver_name, 'extruder'))
         else:
             print('SAVE_LAST=1 persists this winner into the config without re-tuning')
         return 0

@@ -187,3 +187,16 @@ def test_the_panel_marks_a_replaced_button(tmp_path, panel_module):
     panel.mark_done_steps()
     assert {label: button.text for label, button in panel.buttons.items()} == {
         '1 Belts': '✓ 1 Belts', '2,4 Tune': '⚠ 2,4 Tune', 'Map': 'Map', 'Stop': '⚠ Stop'}
+
+
+def test_the_panel_does_not_show_autotunes_motor_as_tuned(tmp_path, panel_module):
+    # klipper_tmc_autotune writes its own chopper over these lines at every start
+    managed = tmp_path / 'printer.cfg'
+    managed.write_text('[tmc2209 stepper_x]\ndriver_tbl: 0\ndriver_toff: 8\ndriver_hstrt: 7\n'
+                       'driver_hend: 5\n[autotune_tmc stepper_x]\nmotor: ldo-42sth48-2004mah\n'
+                       '[tmc2209 stepper_y]\ndriver_tbl: 0\ndriver_toff: 8\ndriver_hstrt: 7\n'
+                       'driver_hend: 5\n')
+    panel = panel_on(panel_module, str(managed))
+    assert panel.autotune('stepper_x') and not panel.autotune('stepper_y')
+    assert panel.tuned_registers('stepper_x') == ''
+    assert panel.tuned_registers('stepper_y') == '0/8/7/5'
