@@ -11,10 +11,11 @@ import statistics
 from datetime import datetime
 
 from . import __version__, tmc
-from .collect import (MOVE_MARGIN, DriverTooHot, Screen, capture_stream, coupled_xy, default_dataset_root,
-                      detect_hardware, enter_spreadcycle, exit_spreadcycle, fit_measure_time,
-                      make_parker, measure_baseline, motor_label, now, park, refuse_multi_motor, rehome_unless_hot,
-                      refuse_if_printing, run_measurement, run_restore, travel_for)
+from .collect import (MOVE_MARGIN, DriverTooHot, Screen, ThermalGuard, capture_stream, coupled_xy,
+                      default_dataset_root, detect_hardware, enter_spreadcycle, exit_spreadcycle,
+                      fit_measure_time, make_parker, measure_baseline, motor_label, now, park,
+                      refuse_if_printing, refuse_multi_motor, rehome_unless_hot, run_measurement,
+                      run_restore, travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, KlippyError, find_socket
 from .metrics import vibration_score
@@ -96,7 +97,9 @@ def showcase_together(kl, args) -> int:
     configs = [('default', default), ('tuned', tuned)]
     playing = {'default': '>> DEFAULTS', 'tuned': '>> TUNED'}
     results = {name: [] for name, _ in configs}
+    guard = ThermalGuard(kl, kl.settings())
     try:
+        guard.preflight()
         # home and hold at center with the motors ENABLED (park disables them) for G1 moves
         kl.gcode('G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, *board.center))
         for axis in MOTORS:
@@ -108,7 +111,7 @@ def showcase_together(kl, args) -> int:
                     kl.gcode(tmc.set_fields_script(hw[axis].stepper, regs[axis].fields()))
                 screen.update('%d/%d  %s' % (r, args.rounds, playing[name]), force=True)
                 print('\n>> round %d/%d  %s — listen (both motors)' % (r, args.rounds, playing[name]))
-                mags = _sweep(board, speed, accel, span, args)
+                mags = _sweep(board, speed, accel, span, args, guard.check)
                 if mags:
                     results[name].extend(mags)
                     round_avg[name] = statistics.mean(mags)
@@ -146,7 +149,7 @@ def head_velocity(kinematics, motor_a, motor_b):
     return float(motor_a), float(motor_b)
 
 
-def _sweep(board, speed, accel, span, args):
+def _sweep(board, speed, accel, span, args, check=lambda: None):
     """One pass per config: a back-and-forth that runs each motor at its own resonance speed at
     the same time. On CoreXY that means a diagonal (stepper_x at speed['x'], stepper_y at
     speed['y']), so the head moves in both X and Y — the gantry moves too, like a print move.
@@ -158,10 +161,12 @@ def _sweep(board, speed, accel, span, args):
     # motor through more electrical cycles per pass, so the before/after is longer and clearer
     stroke = span * MOVE_MARGIN
     dx, dy = stroke * vx / feed, stroke * vy / feed
+    check()
     board.kl.gcode('G1 X%.2f Y%.2f F%.0f\nM400' % (cx - dx / 2, cy - dy / 2, feed * 60))
     mags = []
     for _ in range(args.repeats):
         for hx, hy in ((cx + dx / 2, cy + dy / 2), (cx - dx / 2, cy - dy / 2)):
+            check()
             move = 'G1 X%.2f Y%.2f F%.0f' % (hx, hy, feed * 60)
             try:
                 _, data = capture_stream(board, move, stroke / feed + feed / accel)
@@ -230,8 +235,10 @@ def demo(kl: Klippy, args) -> int:
                                'axis': args.axis, 'stepper': hw.stepper, 'driver': hw.driver.name,
                                'speed': speed, 'default': default.label(), 'tuned': tuned.label()})
     print('Preparing: home XY, park at center, disable motors')
+    guard = ThermalGuard(kl, kl.settings())
+    guard.preflight()
     park(kl, hw)
-    before_move = make_parker(kl, hw)
+    before_move = make_parker(kl, hw, guard)
     screen = Screen(kl, hw.display)
     configs = [('default', default), ('tuned', tuned)]
     results = {name: [] for name, _ in configs}

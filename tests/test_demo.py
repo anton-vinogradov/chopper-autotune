@@ -156,6 +156,7 @@ def test_show_writes_state_for_both_motors(tmp_path, monkeypatch):
     kl = type('K', (), {'gcode': lambda self, s: None,
                         'gcode_output': lambda self, s: [],
                         'subscribe_accel': lambda self, chip: None,
+                        'settings': lambda self: {},          # no driver sections: guard idle
                         'is_printing': lambda self: False})()
 
     assert demo_module.showcase_together(kl, demo_args(dry_run=False, rounds=2)) == 0

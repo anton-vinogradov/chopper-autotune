@@ -36,6 +36,7 @@ THERMAL_FLAGS = ('otpw', 'ot', 't120', 't143', 't150', 't157')
 # TMC2240 die sensor: otpw fires at 120 C by default, shutdown near 165 C; the ADC reads
 # the chip average while the output stages run hotter (datasheet), so stop earlier
 THERMAL_LIMIT_C = 110.0
+PREFLIGHT_SEC = 1.5           # Klipper polls an enabled driver once a second
 
 
 def motor_label(axis: str) -> str:
@@ -196,20 +197,21 @@ def xy_driver_sections(settings: dict) -> 'list[str]':
 class ThermalGuard:
     """Reads the status Klipper already polls from each X/Y driver, once a second while
     the motor is enabled (None while it is off): the drv_status warning flags, and the
-    die temperature a TMC2240 reports. Checked before every move of a run."""
+    die temperature a TMC2240 reports. preflight() before the first move of a run,
+    check() before every move after that."""
 
     def __init__(self, kl: Klippy, settings: dict):
         self.kl = kl
         self.sections = xy_driver_sections(settings)
         # Klipper leaves a TMC2240 at slope_control 0, the slowest switching edges (the
         # most heat); klipper_tmc_autotune sets 3 "to cool down 2240s"
-        slow = [name for name in self.sections if name.startswith('tmc2240 ')
-                and not int(settings[name].get('driver_slope_control') or 0)
-                and 'autotune_tmc ' + name.split(' ', 1)[1] not in settings]
-        self.advice = ('; %s run the default slope_control 0 (slowest, hottest edges), '
-                       'klipper_tmc_autotune sets 3: driver_SLOPE_CONTROL: 3' % ', '.join(slow)) if slow else ''
-        if self.advice:
-            print('note' + self.advice)
+        self.slow = [name for name in self.sections if name.startswith('tmc2240 ')
+                     and not int(settings[name].get('driver_slope_control') or 0)
+                     and 'autotune_tmc ' + name.split(' ', 1)[1] not in settings]
+        if self.slow:
+            print('note: %s at Klipper\'s default slope_control 0, the slowest and hottest '
+                  'switching edges; klipper_tmc_autotune sets 3 (driver_SLOPE_CONTROL: 3)'
+                  % ', '.join(self.slow))
 
     def check(self):
         if not self.sections:
@@ -221,17 +223,33 @@ class ThermalGuard:
             flags = [flag for flag in THERMAL_FLAGS if (values.get('drv_status') or {}).get(flag)]
             temperature = values.get('temperature')
             if flags or (temperature is not None and temperature >= THERMAL_LIMIT_C):
-                why = ', '.join(flags) if flags else '%.0f C' % temperature
-                raise DriverTooHot('%s is overheating (%s): stopped before the driver shuts down. '
-                                   'Motors are off; let the drivers cool and check their cooling '
-                                   '(issue #133)%s' % (section, why, self.advice))
+                why = flags[0] if flags else '%.0f C' % temperature
+                hint = '; set driver_SLOPE_CONTROL: 3' if section in self.slow else ''
+                # the display shows the first 120 characters of '<command> FAILED: ' + this
+                raise DriverTooHot('%s overheating (%s): motors off, let it cool%s (#133)'
+                                   % (section, why, hint))
+
+    def preflight(self):
+        """A driver still hot from an earlier stop must not get a fresh run. Off motors
+        publish no status, so enable them (no motion), let Klipper poll, then check."""
+        if not self.sections:
+            return
+        self.kl.gcode('\n'.join('SET_STEPPER_ENABLE STEPPER=%s ENABLE=1' % name.split(' ', 1)[1]
+                                for name in self.sections))
+        time.sleep(PREFLIGHT_SEC)
+        try:
+            self.check()
+        except DriverTooHot:
+            self.kl.gcode('M18')
+            raise
 
 
 def rehome_unless_hot(kl: Klippy):
     """The closing re-home of a run. After a thermal stop G28 would put the hot driver
-    straight back under current: the X/Y motors go off instead."""
+    straight back under current: the motors go off instead, with M18 — only motor_off
+    forgets the homing, and FORCE_MOVE has left the head away from where Klipper thinks."""
     if isinstance(sys.exc_info()[1], DriverTooHot):
-        release_gantry(kl)
+        kl.gcode('M18')
     else:
         kl.gcode('G28 X Y')
 
@@ -611,14 +629,14 @@ def run_measurement(hw: Hardware, ds: Dataset, args, combo: tmc.Chopper, speed: 
                         before_move)
 
 
-def make_parker(kl: Klippy, hw: Hardware):
+def make_parker(kl: Klippy, hw: Hardware, guard: 'ThermalGuard | None' = None):
     """Consulted before every physical move, retries included: stops on a driver
     over-temperature warning, re-homes on the periodic cadence and whenever accumulated
     net drift would leave the move no safe headroom — retries and direction-unbalanced
     resumes must never random-walk into a rail."""
     state = {'moves': 0, 'net': 0.0}
     headroom = hw.axis_span / 2 - 10.0
-    guard = ThermalGuard(kl, kl.settings())
+    guard = guard or ThermalGuard(kl, kl.settings())
 
     def before_move(direction: int, travel: float):
         guard.check()
@@ -964,9 +982,11 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
         print('Resuming %s: %d measurements already present' % (root, len(done)))
 
     print('Preparing: home XY, park at center, disable motors')
+    guard = ThermalGuard(kl, kl.settings())
+    guard.preflight()                           # before the first move: not on a hot driver
     park(kl, hw)
     started = time.time()
-    before_move = make_parker(kl, hw)
+    before_move = make_parker(kl, hw, guard)
     screen = Screen(kl, hw.display)
     try:
         measure_baseline(hw, ds, args, done)       # the noise floor: motors still off

@@ -122,18 +122,20 @@ SKIP_HEAD_MM = 0.6                            # head offset that counts as a los
 
 
 def stress_burst(kl: Klippy, board, motor: str, vec: 'tuple[float, float]',
-                 speed: float, accel: float, span: float):
+                 speed: float, accel: float, span: float, check=lambda: None):
     """One single-motor stress burst at (speed, accel): a diagonal that loads only this
-    motor on coupled-XY, a few back-and-forth passes, net-zero."""
+    motor on coupled-XY, a few back-and-forth passes, net-zero. check() runs before
+    every pass (see current.run_rung)."""
     cx, cy = board.center
     feed = speed / math.hypot(*vec) * 60.0
+    check()
     kl.gcode('G90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, cx, cy))
-    moves = []
     for _ in range(STRESS_REPS):
-        moves += ['G1 X%.1f Y%.1f F%.0f' % (cx + span * vec[0], cy + span * vec[1], feed),
-                  'G1 X%.1f Y%.1f F%.0f' % (cx - span * vec[0], cy - span * vec[1], feed)]
-    moves.append('G1 X%.1f Y%.1f F6000' % (cx, cy))
-    kl.gcode('\n'.join(moves) + '\nM400')
+        check()
+        kl.gcode('G1 X%.1f Y%.1f F%.0f\nG1 X%.1f Y%.1f F%.0f\nM400'
+                 % (cx + span * vec[0], cy + span * vec[1], feed,
+                    cx - span * vec[0], cy - span * vec[1], feed))
+    kl.gcode('G1 X%.1f Y%.1f F6000\nM400' % (cx, cy))
 
 
 def ceiling(ladder, run_one, report):
@@ -224,6 +226,7 @@ def envelope(kl: Klippy, args) -> int:
     achieved = {}
     speed_holds, accel_holds = {}, {}
     try:
+        guard.preflight()
         kl.gcode('G28 X Y\nG90')
         for m in motors:
             label = motor_label(m)
@@ -244,18 +247,19 @@ def envelope(kl: Klippy, args) -> int:
                 ref = Referee(kl, referee_axis(board.kinematics, m), settings,
                               board.center[1] if referee_axis(board.kinematics, m) == 'x'
                               else board.center[0])
+                guard.check()
                 ref.calibrate()
                 print(' speed ceiling (accel %.0f):' % base_accel)
                 s_hold, s_skip = ceiling(
                     speeds,
-                    lambda v: guard.check() or stress_burst(kl, board, m, vec, v, base_accel, span)
-                    or skips(ref.slipped()),
+                    lambda v: stress_burst(kl, board, m, vec, v, base_accel, span, guard.check)
+                    or guard.check() or skips(ref.slipped()),
                     lambda v, sk: report(v, sk, 'mm/s'))
                 print(' accel ceiling (speed %d mm/s):' % args.accel_probe_speed)
                 a_hold, a_skip = ceiling(
                     accels,
-                    lambda a: guard.check() or stress_burst(kl, board, m, vec, args.accel_probe_speed, a, span)
-                    or skips(ref.slipped()),
+                    lambda a: stress_burst(kl, board, m, vec, args.accel_probe_speed, a, span, guard.check)
+                    or guard.check() or skips(ref.slipped()),
                     lambda a, sk: report(a, sk, 'mm/s2'))
             finally:
                 run_restore(lambda: kl.gcode('M204 S%.0f' % board.max_accel),
