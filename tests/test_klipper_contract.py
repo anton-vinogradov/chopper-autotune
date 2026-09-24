@@ -109,6 +109,23 @@ def load_webhooks(source: str, gcode_module):
 
 
 class Reactor:
+    NEVER = 9999999999999999.
+
+    def __init__(self):
+        self.timers = []
+
+    def register_timer(self, callback, waketime=None):
+        self.timers.append(callback)
+        return callback
+
+    def unregister_timer(self, handle):
+        if handle in self.timers:
+            self.timers.remove(handle)
+
+    def fire_timers(self):
+        for timer in list(self.timers):
+            timer(time.monotonic())
+
     def mutex(self):
         return threading.Lock()
 
@@ -238,6 +255,38 @@ def test_live_stealth_through_the_real_gcode_parser(source, gconf, stealth):
         kl.close()
 
 
+def api_client(printer, webhooks):
+    """Our client on one real webhooks.py ClientConnection to the printer's endpoints."""
+    class Server:
+        def __init__(self):
+            self.printer, self.webhooks, self.reactor = printer, printer.objects['webhooks'], printer.reactor
+
+        def pop_client(self, uid):
+            pass
+
+    client, server_sock = socket.socketpair()
+    connection = webhooks.ClientConnection(Server(), server_sock)
+    # Klipper sends from its one reactor thread; here the pump answers requests while
+    # the test thread fires the stream timers
+    lock, send = threading.Lock(), connection.send
+
+    def locked_send(data):
+        with lock:
+            send(data)
+    connection.send = locked_send
+
+    def pump():
+        while not connection.is_closed():
+            try:
+                readable, _, _ = select.select([server_sock], [], [], 0.2)
+            except (OSError, ValueError):
+                return                              # closed under us by the test's finally
+            if readable:
+                connection.process_received(time.monotonic())
+    threading.Thread(target=pump, daemon=True).start()
+    return Klippy('<contract>', timeout=5.0).connect(sock=client), connection
+
+
 # v0.10's API server is Python 2 code, Kalico's a package module: the parser contract
 # above covers both
 @pytest.mark.parametrize('source', [source for source in fetched('webhooks.py') if source is None
@@ -262,31 +311,63 @@ def test_gcode_output_through_the_real_api_server(source):
                 raise webhooks.WebRequestError("No registered callback for path '%s'" % path)
             return self.endpoints[path]
 
-    class Server:
-        def __init__(self):
-            self.printer, self.webhooks, self.reactor = printer, printer.objects['webhooks'], printer.reactor
-
-        def pop_client(self, uid):
-            pass
-
     printer.objects['webhooks'] = Webhooks()
     webhooks.GCodeHelper(printer)
-    client, server_sock = socket.socketpair()
-    connection = webhooks.ClientConnection(Server(), server_sock)
-
-    def pump():
-        while not connection.is_closed():
-            readable, _, _ = select.select([server_sock], [], [], 0.2)
-            if readable:
-                connection.process_received(time.monotonic())
-    threading.Thread(target=pump, daemon=True).start()
-    kl = Klippy('<contract>', timeout=5.0).connect(sock=client)
+    kl, connection = api_client(printer, webhooks)
     try:
         assert kl.gcode_output('DUMP_TMC STEPPER=stepper_x REGISTER=GCONF') == ['// ' + GCONF_STEALTH]
         assert live_stealth(kl, 'stepper_x', tmc.DRIVERS['2209']) is True
         # a Klipper error comes back as an error response at once, not as a timeout
         with pytest.raises(KlippyError, match='Malformed command'):
             kl.gcode('ECHO CHOPPER-7-BEGIN')
+        assert not printer.shutdowns
+    finally:
+        kl.close()
+        connection.close()
+
+
+@pytest.mark.parametrize('source', fetched('bulk_sensor.py'))
+def test_every_streamed_sample_arrives_once(source):
+    """Klipper's stream helper (every accelerometer since v0.12.0-53, Kalico too) adds a
+    client per dump request and sends each batch to all of them, until the connection
+    closes. Replays CHOPPER_TUNE AXIS=xy without SPEED on a printer with accel_chip_x
+    and accel_chip_y: scan and descent of each motor subscribe on one connection."""
+    require(source)
+    # the API server of the Klipper whose stream helper is fetched (master)
+    api = next((name for name in fetched('bulk_sensor.py') if name and name.startswith('klipper')), None)
+    require(api)
+    gcode_module = load_gcode(api)
+    webhooks = load_webhooks(api, gcode_module)
+    bulk_sensor = load_klippy(source, 'bulk_sensor')
+    printer = Printer()
+    printer.command_error = gcode_module.CommandError
+    printer.objects['webhooks'] = webhooks.WebHooks(printer)
+    pending = {}
+    for sensor in ('hotend', 'bed'):
+        helper = bulk_sensor.BatchBulkHelper(
+            printer, lambda eventtime, sensor=sensor: pending.pop(sensor, None))
+        helper.add_mux_endpoint('adxl345/dump_adxl345', 'sensor', sensor,
+                                {'header': ('time', 'x_acceleration', 'y_acceleration', 'z_acceleration')})
+    kl, connection = api_client(printer, webhooks)
+
+    def stream(start):
+        """One batch from each chip, told apart by the value; then a later one past it."""
+        batches = {sensor: [[start + i / 3200.0, value, value, value] for i in range(64)]
+                   for sensor, value in (('hotend', 1.0), ('bed', 2.0))}
+        for data in (batches, {sensor: [[start + 1.0, 0.0, 0.0, 0.0]] for sensor in batches}):
+            pending.update((sensor, {'data': samples, 'errors': 0, 'overflows': 0})
+                           for sensor, samples in data.items())
+            printer.reactor.fire_timers()
+        kl.wait_for_sample(start + 1.0)             # every copy of the first batch is in
+        return batches
+
+    try:
+        for start, chip in enumerate(['adxl345 hotend', 'adxl345 hotend',    # motor A: scan, descent
+                                      'adxl345 bed', 'adxl345 bed']):        # motor B: scan, descent
+            kl.subscribe_accel(chip)
+            batches = stream(10.0 * start)
+            assert kl.samples_between(10.0 * start, 10.0 * start + 0.5) == batches[chip.split()[-1]], \
+                (source, start, chip)
         assert not printer.shutdowns
     finally:
         kl.close()
@@ -422,7 +503,7 @@ def test_every_accelerometer_streams_where_we_subscribe(source):
                 text = module.read()
         registered = re.findall(r'add_mux_endpoint\(\s*"(\w+/dump_\w+)",\s*"sensor"', text)
         calls = []
-        kl = Klippy.__new__(Klippy)
+        kl = Klippy('<contract>')
         kl.request = lambda method, params: calls.append(method)
         kl.subscribe_accel(section)
         assert calls == registered, (source, section)
