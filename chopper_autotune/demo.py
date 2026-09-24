@@ -14,9 +14,9 @@ from . import __version__, tmc
 from .collect import (MOVE_MARGIN, DriverTooHot, Screen, ThermalGuard, ZNotHomed, capture_stream,
                       coupled_xy, default_dataset_root, detect_hardware, enter_spreadcycle,
                       exit_spreadcycle, fit_measure_time, home_xy, make_parker, measure_baseline,
-                      motor_label, now, park, refuse_blind_z_hop, refuse_if_printing,
-                      refuse_multi_motor, rehome_unless_hot, restore_chopper, run_measurement,
-                      run_restore, travel_for)
+                      motor_label, now, park, refuse_after_shutdown, refuse_blind_z_hop,
+                      refuse_if_printing, refuse_multi_motor, rehome_unless_hot, restore_chopper,
+                      run_measurement, run_restore, travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, KlippyError, find_socket
 from .metrics import vibration_score
@@ -181,6 +181,7 @@ def _sweep(board, speed, accel, span, args, check=lambda: None):
                 _, data = capture_stream(board, move, stroke / feed + feed / accel)
                 mags.append(vibration_score(data, 0.25)['median_magnitude'])
             except (KlippyError, ValueError, TimeoutError, OSError) as failure:
+                refuse_after_shutdown(failure)
                 print('  sweep failed: %s' % failure)
     return mags
 

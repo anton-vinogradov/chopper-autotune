@@ -8,6 +8,7 @@ from __future__ import annotations
 import glob
 import itertools
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass, replace
@@ -35,8 +36,12 @@ MAX_VALIDATE_ROUNDS = 4
 KLIPPY_DIR = os.path.expanduser('~/klipper/klippy')
 THERMAL_FLAGS = ('otpw', 'ot', 't120', 't143', 't150', 't157')
 # TMC2240 die sensor: otpw fires at 120 C by default, shutdown near 165 C; the ADC reads
-# the chip average while the output stages run hotter (datasheet), so stop earlier
-THERMAL_LIMIT_C = 110.0
+# the chip average while the output stages run hotter (datasheet), so stop earlier. In
+# #133 drivers shut down at an average of 111.7 to 121.7 C, one without any otpw first
+THERMAL_LIMIT_C = 100.0
+# the die sensor's datasheet range: a reading outside it is a broken read, not a
+# temperature (#133: an ADC_TEMP of 0 read as -265 C and would pass any limit)
+PLAUSIBLE_DIE_C = (-40.0, 165.0)
 PREFLIGHT_SEC = 1.5           # Klipper polls an enabled driver once a second
 
 
@@ -503,6 +508,15 @@ class ThermalGuard:
             print('note: %s at Klipper\'s default slope_control 0, the slowest and hottest '
                   'switching edges; klipper_tmc_autotune sets 3 (driver_SLOPE_CONTROL: 3)'
                   % ', '.join(self.slow))
+        # Klipper records hold_current's default, the driver's maximum: not set means the
+        # full run current at standstill, and one bridge can then carry the sine peak
+        held = [name for name in self.sections if name.startswith('tmc2240 ')
+                and float(settings[name].get('hold_current') or float('inf'))
+                >= float(settings[name].get('run_current') or 0)]
+        if held:
+            print('note: %s hold the full run_current at standstill (hold_current not below it): '
+                  'a standstill heats the driver like a move (#133)' % ', '.join(held))
+        self.unreadable = set()
 
     def check(self):
         if not self.sections:
@@ -517,6 +531,12 @@ class ThermalGuard:
             values = status.get(section) or {}
             flags = [flag for flag in THERMAL_FLAGS if (values.get('drv_status') or {}).get(flag)]
             temperature = values.get('temperature')
+            if temperature is not None and not PLAUSIBLE_DIE_C[0] <= temperature <= PLAUSIBLE_DIE_C[1]:
+                if section not in self.unreadable:
+                    self.unreadable.add(section)
+                    print('WARNING: %s reports a die temperature of %.0f C, which it cannot have: '
+                          'the guard watches its flags only' % (section, temperature))
+                temperature = None
             if flags or (temperature is not None and temperature >= THERMAL_LIMIT_C):
                 why = flags[0] if flags else '%.0f C' % temperature
                 hint = '; set driver_SLOPE_CONTROL: 3' if section in self.slow else ''
@@ -847,9 +867,21 @@ def exit_spreadcycle(kl: Klippy, hw: Hardware):
         kl.gcode(tmc.set_fields_script(hw.stepper, {field: restore}))
 
 
-def capture_stream(hw: Hardware, script: str, duration: float) -> 'tuple[float, np.ndarray]':
+def capture_stream(hw: Hardware, script: str, duration: float,
+                   check=None) -> 'tuple[float, np.ndarray]':
+    """Run script and return the samples of its last `duration` seconds. With check, a
+    plain dwell (G4 P<ms>) runs in 1 s pieces with check() before each: a standstill
+    window holds the motors under current too (#133). M400 makes each piece real time."""
     hw.kl.gcode('M400')
-    hw.kl.gcode(script + '\nM400')
+    dwell = re.fullmatch(r'G4 P(\d+)', script)
+    if check is not None and dwell:
+        left = int(dwell.group(1))
+        while left > 0:
+            check()
+            hw.kl.gcode('G4 P%d\nM400' % min(1000, left))
+            left -= 1000
+    else:
+        hw.kl.gcode(script + '\nM400')
     t_end = hw.kl.print_time()
     hw.kl.wait_for_sample(t_end)
     samples = hw.kl.samples_between(t_end - duration, t_end)
@@ -896,6 +928,16 @@ def measure_baseline(hw: Hardware, ds: Dataset, args, done: set):
     print('Baseline noise: median magnitude %.1f' % record['score']['median_magnitude'])
 
 
+def refuse_after_shutdown(error: Exception):
+    """Klipper in shutdown answers every command with the same error: a run that went on
+    retried 95 moves after a driver shut down (#133). Stop at the first, with its cause."""
+    text = str(error)
+    if 'Printer is shutdown' in text or 'FIRMWARE_RESTART' in text:
+        cause = ' '.join(text.split('\n', 1)[0].replace('gcode/script failed: ', '').split())
+        raise SystemExit('Klipper shut down (%s): the run stops here; fix the cause, then '
+                         'FIRMWARE_RESTART' % cause)
+
+
 def measure_move(hw: Hardware, ds: Dataset, args, record: dict, speed: float, cruise: float,
                  travel: float, direction: int, accel: float, before_move) -> dict:
     """One FORCE_MOVE with capture and scoring; cruise is the steady-window duration.
@@ -931,6 +973,7 @@ def measure_move(hw: Hardware, ds: Dataset, args, record: dict, speed: float, cr
             record['status'] = 'ok'
             break
         except (KlippyError, TimeoutError, ValueError, OSError) as e:
+            refuse_after_shutdown(e)
             if attempt == 2:
                 record['status'] = 'failed'
                 record['error'] = str(e)

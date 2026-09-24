@@ -32,8 +32,9 @@ import re
 
 import numpy as np
 
-from .collect import (Screen, await_flushed, capture_span, coupled_xy, detect_hardware, home_xy,
-                      klipper_extra, motor_label, refuse_if_printing, release_gantry, run_restore)
+from .collect import (Screen, ThermalGuard, await_flushed, capture_span, coupled_xy, detect_hardware,
+                      home_xy, klipper_extra, motor_label, refuse_if_printing, rehome_unless_hot,
+                      release_gantry, run_restore)
 from .current import stress_vector
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
@@ -281,6 +282,7 @@ def belts(kl: Klippy, args) -> int:
             return 0
         screen = Screen(kl, hw.display)
         refuse_if_printing(kl)
+        ThermalGuard(kl, settings).preflight()      # not on a hot driver (#133)
         home_xy(kl, 'G28 X Y\nM400')
         identify_belt(kl, hw, motor, screen)
         screen.final('Motors off — belt %s is the one that moved' % motor_label(motor))
@@ -315,10 +317,13 @@ def belts(kl: Klippy, args) -> int:
         raise SystemExit('Z not homed: clear the bed, run G28, then retry (TEST_RESONANCES moves Z)')
     screen = Screen(kl, hw.display)
     peaks = {}
+    guard = ThermalGuard(kl, settings)
+    guard.preflight()                               # not on a hot driver (#133)
     try:
         print('Homing X/Y (TEST_RESONANCES moves to the probe point)')
         home_xy(kl, 'G28 X Y\nM400')
         for motor in ('x', 'y'):
+            guard.check()                           # each sweep holds the motors ~1.5 min
             label = motor_label(motor)
             vec = stress_vector(hw.kinematics, motor)
             axis = '%g,%g' % vec
@@ -336,7 +341,8 @@ def belts(kl: Klippy, args) -> int:
             print('   belt %s: resonance %.1f Hz (peaks: %s)%s'
                   % (label, peak, ', '.join('%.0f' % f for f in top_peaks(freqs, psd, band)), edge))
     finally:
-        run_restore(lambda: home_xy(kl, 'G28 X Y'))
+        # after a thermal stop the motors go off instead: a G28 would re-energize them
+        run_restore(lambda: rehome_unless_hot(kl))
 
     prev = load_state(SWEEP_STATE)                  # the previous run, to show what changed
     save_state(peaks['A'], peaks['B'], SWEEP_STATE)
@@ -581,7 +587,6 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
     if args.dry_run:
         return 0
     refuse_if_printing(kl)
-    screen = Screen(kl, hw.display)
     kl.subscribe_accel(hw.accel_chip)
     # park at the REAR, X centered (user idea, field-born on a 120 mm V0): the side
     # spans between the front idlers and the gantry are then at their longest — twice
@@ -591,35 +596,30 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
     # A-vs-B comparison stays honest; the front span is unchanged for big machines.
     cx, _ = hw.center
     rear_y = float(kl.settings()['stepper_y']['position_max']) - 3.0
-    home_xy(kl, 'G28 X Y\nG90\nG1 X%.1f Y%.1f F6000\nM400' % (cx, rear_y))
-
+    # the session holds X and Y under current at standstill for 1 to 1.5 minutes: in
+    # #133 four of five driver shutdowns came here. The guard checks at least once a
+    # second, and every exit hands the motors over (release_gantry in the finally)
+    guard = ThermalGuard(kl, kl.settings())
+    guard.preflight()                               # not on a hot driver
+    screen = Screen(kl, hw.display)
 
     def cue(text):
         screen.update(text, force=True)
         print('>> %s' % text, flush=True)
 
-    print('Capturing the quiet reference (do not touch)...')
-    kl.gcode('G4 P1500')                            # let the parking move's ring die out
-    _, quiet = capture_stream(hw, 'G4 P3000', 2.8)
-    ambient = pluck_tones(quiet)
-    if ambient:
-        print('   ambient lines excluded: %s' % ', '.join('%.0f Hz' % f for f, *_ in ambient))
+    def hold(ms):
+        # a dwell in 1 s pieces with the guard before each, as capture_stream does
+        for start in range(0, ms, 1000):
+            guard.check()
+            kl.gcode('G4 P%d\nM400' % min(1000, ms - start))
 
-    # the calibration shuttles ring the belts, so they run AFTER the quiet reference —
-    # a reference taken after them catches the belt's own lines and then subtracts the
-    # very signal the plucks are for (field: 321/361 'ambient' = the 4f family)
-    rot = machine_axes(hw, kl)
-    print('Axis calibration: %s' % ('ok — lines will carry polarization (along-belt = '
-                                    'tension pump at 2f)' if rot else
-                                    'ambiguous — falling back to unpolarized analysis'))
-
-    def measure_belt(label):
+    def measure_belt(label, ambient, rot):
         tries = []
         for attempt in range(1, args.plucks + 1):
             cue('Ready: belt %s in 3s' % label)
-            kl.gcode('G4 P3000')
+            hold(3000)
             cue('PLUCK belt %s now! (listening 5s...)' % label)
-            _, samples = capture_stream(hw, 'G4 P5000', 4.8)
+            _, samples = capture_stream(hw, 'G4 P5000', 4.8, guard.check)
             tones = pluck_tones(samples, ambient=ambient, rot=rot)
             if not tones:
                 cue('Belt %s: nothing heard — again' % label)
@@ -647,12 +647,27 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
 
     fundamentals = {}
     try:
+        home_xy(kl, 'G28 X Y\nG90\nG1 X%.1f Y%.1f F6000\nM400' % (cx, rear_y))
+        print('Capturing the quiet reference (do not touch)...')
+        hold(1500)                                  # let the parking move's ring die out
+        _, quiet = capture_stream(hw, 'G4 P3000', 2.8, guard.check)
+        ambient = pluck_tones(quiet)
+        if ambient:
+            print('   ambient lines excluded: %s' % ', '.join('%.0f Hz' % f for f, *_ in ambient))
+        # the calibration shuttles ring the belts, so they run AFTER the quiet reference —
+        # a reference taken after them catches the belt's own lines and then subtracts the
+        # very signal the plucks are for (field: 321/361 'ambient' = the 4f family)
+        guard.check()
+        rot = machine_axes(hw, kl)
+        print('Axis calibration: %s' % ('ok — lines will carry polarization (along-belt = '
+                                        'tension pump at 2f)' if rot else
+                                        'ambiguous — falling back to unpolarized analysis'))
         for label in ('A', 'B'):
-            fundamentals[label] = measure_belt(label)
+            fundamentals[label] = measure_belt(label, ambient, rot)
     finally:
-        # hand the gantry over on every exit — verdict, failed plucks or Stop — the
-        # user's next move is a tensioner screw; no parting G28: the release forgets the
-        # homing (hands move the head) and every next job homes first
+        # hand the gantry over on every exit — verdict, failed plucks, Stop or a hot
+        # driver — the user's next move is a tensioner screw; no parting G28: the
+        # release forgets the homing (hands move the head) and every next job homes first
         run_restore(lambda: release_gantry(kl))
 
     pair = resolve_pair(fundamentals['A'], fundamentals['B'])

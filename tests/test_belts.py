@@ -448,3 +448,51 @@ def test_diagonal_chips_follow_the_resonance_tester():
     # Kalico reads accel_chips first; an accel_chip beside it is a leftover
     assert diagonal_chips({'resonance_tester': {'accel_chips': 'lis2dw, adxl345',
                                                 'accel_chip': 'mpu9250'}}) == ['adxl345', 'lis2dw']
+
+
+def test_the_pluck_session_stops_on_a_hot_driver_and_hands_the_motors_over(monkeypatch):
+    # #133: four of five driver shutdowns came in this session, motors held at standstill
+    from types import SimpleNamespace
+
+    import pytest
+
+    import chopper_autotune.belts as belts_mod
+    import chopper_autotune.collect as collect_mod
+    from chopper_autotune.collect import DriverTooHot
+    events = []
+
+    class Guard:
+        def __init__(self, kl, settings):
+            self.checks = 0
+
+        def preflight(self):
+            events.append('preflight')
+
+        def check(self):
+            self.checks += 1
+            events.append('check')
+            if self.checks == 6:                     # before the axis calibration
+                raise DriverTooHot('tmc2240 stepper_y overheating (111 C)')
+
+    def capture(hw, script, duration, check=None):
+        for _ in range(int(script[4:]) // 1000 if check else 0):
+            check()
+        return 0.0, None
+    monkeypatch.setattr(belts_mod, 'ThermalGuard', Guard)
+    monkeypatch.setattr(belts_mod, 'home_xy', lambda kl, script: events.append('home'))
+    monkeypatch.setattr(belts_mod, 'release_gantry', lambda kl: events.append('release'))
+    monkeypatch.setattr(belts_mod, 'refuse_if_printing', lambda kl: None)
+    monkeypatch.setattr(belts_mod, 'Screen', lambda kl, display: SimpleNamespace(
+        update=lambda *a, **k: None, final=lambda *a: None))
+    monkeypatch.setattr(belts_mod, 'machine_axes', lambda hw, kl: events.append('shuttles'))
+    monkeypatch.setattr(belts_mod, 'pluck_tones', lambda *a, **k: [])
+    monkeypatch.setattr(collect_mod, 'capture_stream', capture)
+    kl = SimpleNamespace(gcode=events.append, settings=lambda: {'stepper_y': {'position_max': 300}},
+                         subscribe_accel=lambda chip: None)
+    hw = SimpleNamespace(center=(150.0, 150.0), display=False, accel_chip='adxl345')
+    with pytest.raises(DriverTooHot):
+        belts_mod.pluck_mode(kl, hw, SimpleNamespace(dry_run=False, plucks=4))
+    assert events[:2] == ['preflight', 'home']               # checked before any current
+    assert 'shuttles' not in events and events[-1] == 'release'
+    # the 1.5 s settle ran in 1 s pieces, each after a check
+    assert events[2:6] == ['check', 'G4 P1000\nM400', 'check', 'G4 P500\nM400']
