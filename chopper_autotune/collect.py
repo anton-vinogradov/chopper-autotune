@@ -119,10 +119,11 @@ def full_steps_per_mm(rail: dict) -> float:
 
 
 def live_stealth(kl: Klippy, stepper: str, driver: tmc.Driver) -> 'bool | None':
-    """Whether the driver runs stealthChop RIGHT NOW, read from the live GCONF: the
-    config's stealthchop_threshold is not the truth — klipper_tmc_autotune never writes
-    that option and sets the mode registers at runtime. Sends G-code, so callers must
-    already be past the dry-run and printing guards. None = could not read."""
+    """Whether the driver has stealthChop on RIGHT NOW, read from the live GCONF: the
+    config's stealthchop_threshold is not the whole truth — klipper_tmc_autotune sets the
+    mode at runtime without that option (silent and autoswitch goals, and its default auto
+    goal outside X/Y for motors above 0.3 Nm). Sends G-code, so callers must already be
+    past the dry-run and printing guards. None = could not read."""
     if not driver.spreadcycle_switch:
         return None
     field, _, stealth_value = driver.spreadcycle_switch
@@ -147,15 +148,24 @@ def resolve_stealth(kl: Klippy, hw: Hardware):
     if live is None:
         print('trusting the config for the %s driver mode' % hw.stepper)
     elif live and not hw.stealth:
-        print('%s runs stealthChop although the config has no stealthchop_threshold '
-              '(klipper_tmc_autotune?)' % hw.stepper)
+        print(unexpected_stealth(hw.stepper))
         hw.stealth = hw.driver.spreadcycle_switch
 
 
+def unexpected_stealth(name: str) -> str:
+    """Why a driver the config keeps in spreadCycle for moves can report stealthChop.
+    Forcing spreadCycle and restoring the read value afterwards is right either way."""
+    return ('%s reports stealthChop although the config does not enable it for moves '
+            '(stealthchop_threshold: 0 keeps it at standstill on Klipper 0.12+; '
+            'klipper_tmc_autotune turns it on at runtime: silent and autoswitch goals, and its '
+            'default auto goal on Z and the extruder with a motor above 0.3 Nm)' % name)
+
+
 def wake_stepper(kl: Klippy, stepper: str):
-    """Enable the stepper BEFORE any register write: klipper_tmc_autotune re-applies
-    its own toff on every enable event, so a write landing before the first move
-    (which enables the motor) would be silently undone."""
+    """Enable the stepper BEFORE any register write: enabling re-sends the driver
+    registers, and on a stepper without a dedicated enable pin it resets toff (Klipper
+    restores its own copy, klipper_tmc_autotune re-applies its value) — a write landing
+    before the first move, which enables the motor, would be silently undone."""
     kl.gcode('SET_STEPPER_ENABLE STEPPER=%s ENABLE=1' % stepper)
 
 
@@ -324,8 +334,9 @@ def now() -> str:
 
 
 def park(kl: Klippy, hw: Hardware, release: bool = True):
-    # a mid-run re-home keeps the motors energized: every disable->enable hands toff
-    # back to klipper_tmc_autotune's on-enable re-apply, replacing the candidate's
+    # a mid-run re-home keeps the motors energized: on a stepper without a dedicated
+    # enable pin every disable->enable resets toff (Klipper restores its config copy,
+    # klipper_tmc_autotune re-applies its value), replacing the candidate's
     kl.gcode('G28 X Y\nG0 X%.1f Y%.1f F6000\nM400' % hw.center + ('\nM18' if release else ''))
 
 

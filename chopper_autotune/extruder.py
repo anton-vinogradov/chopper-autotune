@@ -17,7 +17,7 @@ import statistics
 
 from . import tmc
 from .collect import (Range, Screen, capture_stream, detect_hardware, live_stealth, refuse_if_printing,
-                      run_restore, wake_stepper)
+                      run_restore, unexpected_stealth, wake_stepper)
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
 from .metrics import transients, vibration_score
@@ -66,8 +66,7 @@ def resolve_extruder_stealth(kl: Klippy, driver: tmc.Driver, configured: 'tuple 
     if live is None:
         print('trusting the config for the extruder driver mode')
     elif live and not configured:
-        print('the extruder runs stealthChop although the config has no stealthchop_threshold '
-              '(klipper_tmc_autotune?)')
+        print(unexpected_stealth('the extruder'))
         return driver.spreadcycle_switch
     return configured
 

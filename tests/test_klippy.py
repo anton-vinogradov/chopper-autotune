@@ -4,7 +4,8 @@ import threading
 
 import pytest
 
-from chopper_autotune.klippy import Klippy, KlippyError, find_socket
+import fake_klipper
+from chopper_autotune.klippy import Klippy, KlippyError, fence_markers, find_socket
 
 
 def make_pair():
@@ -111,31 +112,73 @@ def test_find_socket(tmp_path):
         find_socket(str(tmp_path / 'missing.sock'))
 
 
+def serve_scripts(server, respond, foreign=()):
+    """Answer requests like Klipper (tests/fake_klipper.py); `foreign` console lines
+    from other clients land ahead of each script's own output."""
+    def serve():
+        buffer = b''
+        while True:
+            chunk = server.recv(4096)
+            if not chunk:
+                return
+            buffer += chunk
+            while b'\x03' in buffer:
+                raw, buffer = buffer.split(b'\x03', 1)
+                request = json.loads(raw)
+                if request['method'] == 'gcode/script':
+                    for text in foreign:
+                        send(server, {'key': 'gcode_output', 'params': {'response': text}})
+                    fake_klipper.run_script(server, request, respond)
+                else:
+                    send(server, {'id': request['id'], 'result': {}})
+    threading.Thread(target=serve, daemon=True).start()
+
+
 def test_gcode_output_returns_only_the_fenced_lines():
+    kl, server = make_pair()
+    serve_scripts(server, lambda line: ['// GCONF:      0000000e en_pwm_mode=1'],
+                  foreign=['// someone else'])
+    lines = kl.gcode_output('DUMP_TMC STEPPER=stepper_x REGISTER=GCONF')
+    assert lines == ['// GCONF:      0000000e en_pwm_mode=1']
+    kl.close()
+
+
+def test_fence_markers_are_well_formed_extended_commands():
+    # Klipper parses ECHO arguments as KEY=VALUE: the pre-fix bare-word marker aborted
+    # every fenced script with "Malformed command" on real printers
+    begin, end = fence_markers('CHOPPER-4242-7')
+    assert not fake_klipper.malformed(begin) and not fake_klipper.malformed(end)
+    assert fake_klipper.malformed('ECHO CHOPPER-7-BEGIN')
+
+
+def test_gcode_output_raises_when_the_fence_is_lost():
+    # a server that swallows the markers (an ECHO-less fork, a buffer overflow):
+    # an explicit error, not an empty capture that reads as "no GCONF line"
     kl, server = make_pair()
 
     def serve():
         buffer = b''
-        seen = 0
-        while seen < 2:
-            buffer += server.recv(4096)
+        while True:
+            chunk = server.recv(4096)
+            if not chunk:
+                return
+            buffer += chunk
             while b'\x03' in buffer:
                 raw, buffer = buffer.split(b'\x03', 1)
                 request = json.loads(raw)
-                seen += 1
                 if request['method'] == 'gcode/script':
-                    # a foreign console line first, then the script's own output: Klipper
-                    # prefixes every line with '// ' and the ECHO markers come back as such
-                    send(server, {'key': 'gcode_output', 'params': {'response': '// someone else'}})
-                    for line in request['params']['script'].split('\n'):
-                        if line.startswith('ECHO '):
-                            send(server, {'key': 'gcode_output', 'params': {'response': '// ' + line}})
-                        else:
-                            send(server, {'key': 'gcode_output',
-                                          'params': {'response': '// GCONF:      0000000e en_pwm_mode=1'}})
+                    send(server, {'key': 'gcode_output',
+                                  'params': {'response': '// GCONF:      00000000'}})
                 send(server, {'id': request['id'], 'result': {}})
-
     threading.Thread(target=serve, daemon=True).start()
-    lines = kl.gcode_output('DUMP_TMC STEPPER=stepper_x REGISTER=GCONF')
-    assert lines == ['// GCONF:      0000000e en_pwm_mode=1']
+    with pytest.raises(KlippyError, match='BEGIN not seen'):
+        kl.gcode_output('DUMP_TMC STEPPER=stepper_x REGISTER=GCONF')
+    kl.close()
+
+
+def test_gcode_output_surfaces_klipper_errors():
+    kl, server = make_pair()
+    serve_scripts(server, lambda line: [])
+    with pytest.raises(KlippyError, match='Malformed command'):
+        kl.gcode_output('DUMP_TMC stepper_x')
     kl.close()
