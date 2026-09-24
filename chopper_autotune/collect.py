@@ -679,7 +679,7 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
     stats = {'ok': 0, 'failed': 0}
     budget = descent_budget(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd)
     stock = tmc.stock_chopper(hw.driver, tpfd is not None)
-    history = dataset_history(ds)
+    history = dataset_history(ds, hw.driver)
     clicks = dataset_transients(ds)
 
     def score_of(combo: tmc.Chopper) -> float:

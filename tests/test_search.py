@@ -233,3 +233,15 @@ def test_every_candidate_shares_the_start_tpfd_spelling():
     # sweep: no candidate may fall back to None (= the same registers under a second key)
     swept = run(tmc.DRIVERS['2240'], Range(0, 15), tmc.Chopper(2, 3, 5, 2, 4))
     assert swept and all(c.tpfd is not None for c in swept)
+
+
+def test_dataset_history_leaves_out_combos_the_driver_config_cannot_hold(tmp_path):
+    # a TMC2660 dataset measured before the hysteresis limit: resume/seed/simulate must
+    # not pick 7+9 (raw 16), Klipper refuses it at config load
+    ds = Dataset.create(tmp_path / 'ds', {})
+    for i, (hstrt, hend) in enumerate(((7, 9), (7, 8))):
+        ds.append({'id': 'c%d' % i, 'kind': 'move', 'status': 'ok',
+                   'tbl': 2, 'toff': 4, 'hstrt': hstrt, 'hend': hend,
+                   'score': {'median_magnitude': 100.0}})
+    assert len(dataset_history(ds)) == 2
+    assert list(dataset_history(ds, tmc.DRIVERS['2660'])) == [tmc.Chopper(2, 4, 7, 8)]

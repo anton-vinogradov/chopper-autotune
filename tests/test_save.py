@@ -346,3 +346,39 @@ def test_tuned_tmc_sections_sees_a_tpfd_only_tuning():
     from chopper_autotune.analyze import tuned_tmc_sections
     assert tuned_tmc_sections({'printer.cfg': CONFIG_2240_TUNED}) \
         == ['tmc2240 stepper_x', 'tmc2240 stepper_y']
+
+
+def test_rank_never_recommends_a_combo_klipper_would_not_load():
+    from chopper_autotune.analyze import rank
+    rows = [{'chopper': tmc.Chopper(2, 4, 7, 9), 'magnitude': 10.0, 'n': 2},    # raw 16
+            {'chopper': tmc.Chopper(2, 4, 7, 8), 'magnitude': 50.0, 'n': 2}]
+    assert [r['chopper'] for r in rank(rows, tmc.DRIVERS['2660'], 0.25)] == [tmc.Chopper(2, 4, 7, 8)]
+    assert len(rank(rows, tmc.DRIVERS['2209'], 0.25)) == 2
+
+
+def test_run_save_latest_skips_a_stale_extruder_winner(monkeypatch, capsys):
+    import argparse
+
+    from chopper_autotune import analyze
+    stale = {'driver': '2660', 'fields': {'tbl': 2, 'toff': 4, 'hstrt': 7, 'hend': 10}}
+    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: [])
+    monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: stale)
+    with pytest.raises(SystemExit, match='no tuning datasets'):
+        analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
+    assert 'NOT saving the stored winner' in capsys.readouterr().out
+
+
+def test_extruder_save_last_refuses_a_winner_klipper_would_not_load(monkeypatch, tmp_path):
+    import json
+    from types import SimpleNamespace
+
+    from chopper_autotune import extruder
+    state_file = tmp_path / 'extruder.json'
+    state_file.write_text(json.dumps({'driver': '2660',
+                                      'fields': {'tbl': 2, 'toff': 4, 'hstrt': 7, 'hend': 10}}))
+    monkeypatch.setattr(extruder, 'STATE', str(state_file))
+    mk = FakeMoonraker({'printer.cfg': CFG.replace('tmc2209 stepper_x', 'tmc2660 extruder')})
+    monkeypatch.setattr('chopper_autotune.moonraker.Moonraker', lambda url: mk)
+    with pytest.raises(SystemExit, match='Klipper refuses'):
+        extruder.extruder_tune(None, SimpleNamespace(save_last=True, url='http://x'))
+    assert mk.uploads == [] and mk.scripts == []
