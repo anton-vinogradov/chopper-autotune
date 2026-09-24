@@ -14,6 +14,7 @@ import re
 import select
 import shutil
 import socket
+import struct
 import sys
 import tempfile
 import threading
@@ -26,7 +27,7 @@ import fake_klipper
 from klipper_config import CFG, named, read_like_klipper, selfcheck, settings_of
 from chopper_autotune import collect, tmc
 from chopper_autotune.belts import CAPTURE, sweep_chip, sweep_command
-from chopper_autotune.collect import ACCEL_SECTIONS, live_stealth, resolve_accel_chip
+from chopper_autotune.collect import ACCEL_SECTIONS, accel_command_chip, live_stealth, resolve_accel_chip
 from chopper_autotune.klippy import Klippy, KlippyError, fence_markers
 
 # old Klipper releases carry regex strings Python warns about while compiling them
@@ -739,3 +740,169 @@ def test_the_old_sweep_shut_v0_11_and_v0_12_down(source, monkeypatch):
     old = source in ('klipper-v0.11.0', 'klipper-v0.12.0')
     assert printer.shutdowns == (['Internal error on command:"TEST_RESONANCES"'] if old else [])
     assert isinstance(error, configparser.Error) is old
+
+
+# what a Beacon RevH reports in klippy.log (firmware 2.1.0): scales in mg per count,
+# enumerated by the MCU with 16g, the default, as id 0
+BEACON_CONSTANTS = {'BEACON_ACCEL_BITS': 12, 'BEACON_ACCEL_SCALE_16G': '7.81',
+                    'BEACON_ACCEL_SCALE_8G': '3.91', 'BEACON_ACCEL_SCALE_4G': '1.95',
+                    'BEACON_ACCEL_SCALE_2G': '0.98'}
+BEACON_SCALES = {'16g': 0, '8g': 1, '4g': 2, '2g': 3}
+BEACON_CLOCK = 32e6
+BEACON_TICKS = 9608                 # clock ticks per sample: ~3.33 kHz
+
+
+def load_beacon(klipper: str, monkeypatch):
+    """beacon.py as Klipper loads it from klippy/extras, beside the release's own
+    adxl345.py (the ACCELEROMETER_* commands); the klippy modules only its probe side
+    uses are stubs."""
+    source = fetched('beacon.py')[-1]
+    require(source)
+    package = types.ModuleType('contract_beacon_%s' % klipper.replace('.', '_').replace('-', '_'))
+    package.__path__ = []
+    monkeypatch.setitem(sys.modules, package.__name__, package)
+    for name in ('manual_probe', 'probe', 'bed_mesh', 'thermistor', 'homing', 'bus', 'bulk_sensor'):
+        stub = types.ModuleType(package.__name__ + '.' + name)
+        setattr(package, name, stub)
+        monkeypatch.setitem(sys.modules, stub.__name__, stub)
+    package.homing.HomingMove = object
+    for name, attributes in (('chelper', {}), ('pins', {'error': Exception}),
+                             ('msgproto', {'error': Exception}),
+                             ('mcu', {'MCU': object, 'MCU_trsync': object}),
+                             ('clocksync', {'SecondarySync': object}),
+                             ('configfile', {'error': Printer.config_error})):
+        monkeypatch.setitem(sys.modules, name, types.SimpleNamespace(**attributes))
+    for name, path in (('adxl345', os.path.join(SRC, klipper, 'adxl345.py')),
+                       ('beacon', os.path.join(SRC, source, 'beacon.py'))):
+        spec = importlib.util.spec_from_file_location(package.__name__ + '.' + name, path)
+        module = importlib.util.module_from_spec(spec)
+        monkeypatch.setitem(sys.modules, spec.name, module)
+        setattr(package, name, module)
+        spec.loader.exec_module(module)
+    return package.beacon
+
+
+class Options(dict):
+    """A config section holding just the options given."""
+    error = Printer.config_error
+
+    def getlist(self, option, default, count=None):
+        return self[option].split(',') if option in self else default
+
+
+class BeaconMcu:
+    def __init__(self):
+        self.sent = []
+
+    def lookup_command(self, msgformat, cq=None):
+        return types.SimpleNamespace(send=self.sent.append)
+
+    def get_enumerations(self):
+        return {'beacon_accel_scales': BEACON_SCALES}
+
+    def clock32_to_clock64(self, clock):
+        return clock
+
+    def clock_to_print_time(self, clock):
+        return clock / BEACON_CLOCK
+
+
+class Beacon:
+    """The parts of beacon.py's BeaconProbe its accelerometer helper uses, with the
+    probe's real clock conversion."""
+
+    def __init__(self, module, printer, tracker, name=None, **options):
+        self.printer, self.cmd_queue, self._mcu = printer, None, BeaconMcu()
+        self.id = module.BeaconId(name, tracker)
+        self.responses = {}
+        self._clock32_to_time = types.MethodType(module.BeaconProbe._clock32_to_time, self)
+        self.accel = module.BeaconAccelHelper(
+            self, module.BeaconAccelConfig(Options(options), self.id), BEACON_CONSTANTS)
+
+    def compat_mcu_register_response(self, callback, msgformat, oid=None):
+        self.responses[msgformat.split()[0]] = callback
+
+    def report(self, clock: int, counts: 'list[tuple[int, int, int]]'):
+        """One beacon_accel_data message: raw x/y/z counts, little-endian."""
+        self.responses['beacon_accel_data']({
+            'start_clock': clock, 'delta_clock': BEACON_TICKS * (len(counts) - 1),
+            'data': b''.join(struct.pack('<hhh', *xyz) for xyz in counts)})
+
+
+@pytest.mark.parametrize('source', [source for source in fetched('webhooks.py') if source is None
+                                    or not (source.endswith('v0.10.0') or source.startswith('kalico'))])
+def test_beacon_streams_through_the_real_api_server(source, monkeypatch, capsys):
+    """Beacon's own endpoint and batch shape (a bare sample list) through the real
+    beacon.py and each release's API server: [beacon] is the probe without a sensor
+    name, [beacon sensor tool] the one named 'tool'. Beacon registers its
+    ACCELEROMETER_* commands through adxl345.py, taken from Klipper master here."""
+    require(source)
+    helpers = [name for name in fetched('adxl345.py') if name and name.startswith('klipper')]
+    require(helpers[0] if helpers else None)
+    gcode_module = load_gcode(source)
+    webhooks = load_webhooks(source, gcode_module)
+    printer, _, _ = ready_dispatch(gcode_module, GCONF_STEALTH)
+    printer.objects['webhooks'] = webhooks.WebHooks(printer)
+    module = load_beacon(helpers[0], monkeypatch)
+    tracker = module.BeaconTracker(None, printer)
+    # at rest on the default 16g scale: 1 g is 128 counts of 7.81 mg
+    probes = [('beacon', Beacon(module, printer, tracker), (1, -2, 128)),
+              ('beacon sensor tool', Beacon(module, printer, tracker, 'tool'), (3, 0, -128))]
+    clients = []
+    try:
+        for chip, probe, _ in probes:
+            clients.append(api_client(printer, webhooks))
+            clients[-1][0].subscribe_accel(chip)
+            assert probe.accel.is_measuring()
+        clock = 1000 * BEACON_TICKS
+        for _, probe, counts in probes:
+            probe.report(clock, [counts] * 8)
+        printer.reactor.fire_timers()
+        times = [(clock + i * BEACON_TICKS) / BEACON_CLOCK for i in range(8)]
+        for (kl, _), (_, _, counts) in zip(clients, probes):
+            kl.wait_for_sample(times[-1] - 1e-6, timeout=2.0)
+            samples = kl.samples_between(0.0, times[-1] + 1.0)
+            assert [sample[0] for sample in samples] == pytest.approx(times)
+            assert samples[-1][1:] == pytest.approx([count * 7.81 * 9.80655 for count in counts])
+            assert abs(samples[-1][3]) == pytest.approx(9806.65, rel=0.01)      # mm/s^2
+            assert kl.overflows == 0
+        # a sensor name for the plain [beacon] is refused: that is why none is sent
+        with pytest.raises(KlippyError, match="sensor 'beacon' not found"):
+            clients[0][0].request('beacon/dump_accel',
+                                  {'sensor': 'beacon', 'response_template': {'key': 'other'}})
+        assert 'malformed' not in capsys.readouterr().out
+    finally:
+        for kl, connection in clients:
+            kl.close()
+            connection.close()
+
+
+BEACON_CHIPS = [
+    # accel_chip, the probe's sensor name and options, its settings as Klipper reports them
+    ('beacon', None, {}, {}),
+    ('beacon', None, {'accel_name': 'probe'}, {'beacon': {'accel_name': 'probe'}}),
+    ('beacon sensor tool', 'tool', {}, {'beacon sensor tool': {'accel_name': 'beacon_tool'}}),
+]
+
+
+@pytest.mark.parametrize('source', fetched('adxl345.py'))
+@pytest.mark.parametrize('chip, name, options, settings', BEACON_CHIPS)
+def test_beacon_measures_under_the_chip_name_we_send(source, chip, name, options, settings,
+                                                     monkeypatch):
+    """--csv runs ACCELEROMETER_MEASURE CHIP=...: Beacon registers it through the
+    release's own adxl345.py by accel_name, not by the section's last word."""
+    require(source)
+    gcode_module = load_gcode(source)
+    printer, dispatch, _ = ready_dispatch(gcode_module, GCONF_STEALTH)
+    printer.objects['webhooks'] = types.SimpleNamespace(register_endpoint=lambda path, callback: None)
+    printer.objects['toolhead'] = types.SimpleNamespace(get_last_move_time=lambda: 0.0)
+    module = load_beacon(source, monkeypatch)
+    Beacon(module, printer, module.BeaconTracker(None, printer), name, **options)
+    console = []
+    dispatch.register_output_handler(console.append)
+    dispatch.run_script('ACCELEROMETER_MEASURE CHIP=%s NAME=x' % accel_command_chip(settings, chip))
+    assert console == ['// accelerometer measurements started']
+    last_word = chip.split()[-1]
+    if last_word != accel_command_chip(settings, chip):
+        with pytest.raises(gcode_module.CommandError, match='not valid for CHIP'):
+            dispatch.run_script('ACCELEROMETER_MEASURE CHIP=%s NAME=y' % last_word)

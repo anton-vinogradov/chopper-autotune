@@ -1,12 +1,14 @@
 #!/bin/bash
 # Fetch the real Klipper/Kalico G-code parser, config reader, API server, resonance
-# tester and accelerometer modules for tests/test_klipper_contract.py. The GPL sources
-# are downloaded, never committed; pinned revisions keep the contract reproducible.
+# tester and accelerometer modules, and Beacon's probe module, for
+# tests/test_klipper_contract.py. The GPL sources are downloaded, never committed;
+# pinned revisions keep the contract reproducible.
 set -euo pipefail
 
 dest=${1:-"$(dirname "$0")/.klipper-src"}
 klipper_master=ce7002bedf37e938bb483572949f3703ac6476cb
 kalico_main=84a4105726e22c5c15943e791b5cdb3beff52e77
+beacon_master=3eb0134607664734ccf5cd94cb51840e1c8b27b3
 
 fetch() {
     mkdir -p "$(dirname "$2")"
@@ -41,4 +43,7 @@ for file in adxl345.py lis2dw.py lis3dh.py mpu9250.py icm20948.py bulk_sensor.py
     fetch "https://raw.githubusercontent.com/KalicoCrew/kalico/$kalico_main/klippy/extras/$file" \
           "$dest/kalico-$kalico_main/$file"
 done
-echo "Klipper/Kalico sources in $dest"
+# the accelerometer built into a Beacon probe: its own stream endpoint and format
+fetch "https://raw.githubusercontent.com/beacon3d/beacon_klipper/$beacon_master/beacon.py" \
+      "$dest/beacon-$beacon_master/beacon.py"
+echo "Klipper/Kalico/Beacon sources in $dest"

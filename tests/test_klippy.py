@@ -6,7 +6,7 @@ import time
 import pytest
 
 import fake_klipper
-from chopper_autotune.klippy import Klippy, KlippyError, fence_markers, find_socket
+from chopper_autotune.klippy import Klippy, KlippyError, accel_batch, fence_markers, find_socket
 
 
 def make_pair():
@@ -141,16 +141,51 @@ def test_the_buffer_holds_the_chip_subscribed_last():
     kl.close()
 
 
+def test_beacon_batches_are_bare_sample_lists():
+    # Beacon sends a header line ahead of the response, then no 'data'/'overflows' dict
+    kl, server_sock = make_pair()
+    requests = []
+
+    def serve():
+        request = json.loads(server_sock.recv(4096).split(b'\x03')[0])
+        requests.append(request)
+        template = request['params']['response_template']
+        send(server_sock, {'header': ['time', 'x', 'y', 'z']})
+        send(server_sock, {'id': request['id'], 'result': {}})
+        send(server_sock, dict(template, params=[[1.0, 1, 2, 3], [1.5, 4, 5, 6]]))
+        send(server_sock, dict(template, params=[[2.0, 7, 8, 9], None, [2.5, 1, 1, 1]]))
+    threading.Thread(target=serve, daemon=True).start()
+    kl.subscribe_accel('beacon')
+    kl.wait_for_sample(2.5, timeout=2.0)
+
+    assert 'sensor' not in requests[0]['params']        # Beacon refuses 'beacon'
+    assert [s[0] for s in kl.samples_between(1.2, 2.2)] == [1.5, 2.0]
+    assert kl.overflows == 1                 # the sample Beacon could not decode
+    kl.close()
+
+
+@pytest.mark.parametrize('params, batch', [
+    ({'data': [[1.0, 1, 2, 3]], 'overflows': 2}, ([[1.0, 1, 2, 3]], 2)),
+    ({'data': []}, ([], 0)),
+    ([[1.0, 1, 2, 3], None], ([[1.0, 1, 2, 3]], 1)),
+    ([], ([], 0)),
+])
+def test_accel_batch_reads_both_shapes(params, batch):
+    assert accel_batch(params) == batch
+
+
 @pytest.mark.parametrize('section, endpoint, sensor', [
     ('adxl345', 'adxl345/dump_adxl345', 'adxl345'),
     ('adxl345 head', 'adxl345/dump_adxl345', 'head'),
     ('lis3dh', 'lis2dw/dump_lis2dw', 'lis3dh'),              # lis2dw.py serves [lis3dh]
     ('bmi160 toolhead', 'bmi160/dump_bmi160', 'toolhead'),
+    ('beacon', 'beacon/dump_accel', None),                   # Beacon refuses 'beacon'
+    ('beacon sensor tool', 'beacon/dump_accel', 'tool'),
 ])
 def test_the_accelerometer_stream_endpoint(section, endpoint, sensor):
     kl = Klippy('<test>')
     calls = []
-    kl.request = lambda method, params: calls.append((method, params['sensor']))
+    kl.request = lambda method, params: calls.append((method, params.get('sensor')))
     kl.subscribe_accel(section)
     assert calls == [(endpoint, sensor)]
 
