@@ -67,6 +67,7 @@ class Hardware:
     baseline: 'dict[str, int]'
     stealth: 'Optional[tuple[str, int, int]]' = None
     display: bool = False
+    measure_chip: str = ''          # the chip's CHIP= in ACCELEROMETER_MEASURE (--csv)
 
     @property
     def motor(self) -> str:
@@ -101,6 +102,19 @@ def resolve_accel_chip(settings: dict, axis: str) -> str:
     raise SystemExit('cannot pick the accelerometer: %s — set [resonance_tester] accel_chip'
                      % ('no accelerometer section in the config' if not found
                         else 'several sections (%s)' % ', '.join(found)))
+
+
+def accel_command_chip(settings: dict, accel_chip: str) -> str:
+    """The CHIP= that ACCELEROMETER_MEASURE knows the chip by: the section's last word
+    ('hotend' for [adxl345 hotend]). Beacon registers its accelerometer by accel_name,
+    by default 'beacon' for [beacon] and 'beacon_tool' for [beacon sensor tool]."""
+    parts = accel_chip.split()
+    if parts[0] != 'beacon':
+        return parts[-1]
+    name = (settings.get(accel_chip) or {}).get('accel_name')
+    if name:
+        return name.split()[-1]
+    return 'beacon' if len(parts) == 1 else 'beacon_' + parts[-1]
 
 
 def gear_factor(ratio) -> float:
@@ -410,12 +424,13 @@ def detect_hardware(kl: Klippy, axis: str, accel: bool = True) -> Hardware:
     if driver.spreadcycle_switch and float(section.get('stealthchop_threshold') or 0) > 0:
         stealth = driver.spreadcycle_switch
 
+    # the endstop-referee tools never stream: no demanding a chip they won't use
+    chip = resolve_accel_chip(settings, axis) if accel else ''
     return Hardware(
         kl=kl,
         stepper=stepper,
         driver=driver,
-        # the endstop-referee tools never stream: no demanding a chip they won't use
-        accel_chip=resolve_accel_chip(settings, axis) if accel else '',
+        accel_chip=chip,
         kinematics=kinematics,
         axis_span=span,
         center=(centers['x'], centers['y']),
@@ -425,6 +440,7 @@ def detect_hardware(kl: Klippy, axis: str, accel: bool = True) -> Hardware:
         # display_status is usually an implicit runtime object (auto-loaded on
         # Mainsail/Fluidd setups), not a config section — check the live objects
         display='display_status' in kl.object_list(),
+        measure_chip=accel_command_chip(settings, chip) if chip else '',
     )
 
 
@@ -656,8 +672,7 @@ def capture_stream(hw: Hardware, script: str, duration: float) -> 'tuple[float, 
 
 def capture_csv(hw: Hardware, name: str, script: str, min_span_sec: float = 0.0) -> np.ndarray:
     drop_stale_csv(name)
-    # the CHIP argument is the section's name word ('hotend' for [adxl345 hotend])
-    measure = 'ACCELEROMETER_MEASURE CHIP=%s NAME=%s' % (hw.accel_chip.split()[-1], name)
+    measure = 'ACCELEROMETER_MEASURE CHIP=%s NAME=%s' % (hw.measure_chip, name)
     try:
         hw.kl.gcode('\n'.join(['M400', measure, script, 'M400', measure]))
     except KlippyError:

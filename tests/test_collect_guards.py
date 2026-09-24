@@ -165,6 +165,27 @@ def test_resolve_accel_chip_reads_kalicos_accel_chips():
     assert resolve_accel_chip(several, 'y') == 'adxl345 bed'
 
 
+def test_a_beacon_accelerometer_is_named_not_guessed():
+    from chopper_autotune.collect import resolve_accel_chip
+    assert resolve_accel_chip({'resonance_tester': {'accel_chip': 'beacon'}}, 'x') == 'beacon'
+    # only a Beacon RevH has one: a [beacon] section alone is not an accelerometer
+    with pytest.raises(SystemExit, match='no accelerometer'):
+        resolve_accel_chip({'beacon': {}, 'beacon model default': {}, 'printer': {}}, 'x')
+
+
+@pytest.mark.parametrize('chip, settings, command_chip', [
+    ('adxl345', {}, 'adxl345'),
+    ('adxl345 hotend', {}, 'hotend'),
+    ('beacon', {'beacon': {'home_z_hop': 5.0}}, 'beacon'),
+    ('beacon', {'beacon': {'accel_name': 'probe'}}, 'probe'),
+    ('beacon sensor tool', {'beacon sensor tool': {'accel_name': 'beacon_tool'}}, 'beacon_tool'),
+    ('beacon sensor tool', {}, 'beacon_tool'),
+])
+def test_the_chip_name_accelerometer_measure_takes(chip, settings, command_chip):
+    from chopper_autotune.collect import accel_command_chip
+    assert accel_command_chip(settings, chip) == command_chip
+
+
 def test_kalicos_limited_corexy_is_coupled():
     from chopper_autotune.collect import coupled_xy
     assert coupled_xy('limited_corexy') and coupled_xy('corexy')
@@ -185,20 +206,38 @@ def test_full_steps_per_mm_honours_gearing():
     assert full_steps_per_mm({'rotation_distance': 8, 'full_steps_per_rotation': 400}) == 50.0
 
 
-def test_capture_csv_names_the_chip_by_its_section_word(tmp_path, monkeypatch):
-    from types import SimpleNamespace
-
+@pytest.mark.parametrize('section, options, command_chip', [
+    ('adxl345 hotend', {}, 'hotend'),                     # the name word, not the section
+    ('beacon', {'accel_name': 'probe'}, 'probe'),         # Beacon's name for its chip
+])
+def test_capture_csv_names_the_chip_as_klipper_registered_it(tmp_path, monkeypatch, section,
+                                                             options, command_chip):
     import chopper_autotune.collect as collect
-    csv = tmp_path / 'hotend-v060.csv'
+
+    class FakeKl:
+        def __init__(self):
+            self.scripts = []
+
+        def settings(self):
+            return {'printer': {'kinematics': 'corexy', 'max_accel': 10000},
+                    'stepper_x': {'position_min': 0, 'position_max': 260},
+                    'stepper_y': {'position_min': 0, 'position_max': 260},
+                    'tmc2209 stepper_x': {}, 'resonance_tester': {'accel_chip': section},
+                    section: options}
+
+        def object_list(self):
+            return []
+
+        def gcode(self, script):
+            self.scripts.append(script)
+
+    csv = tmp_path / 'chip-v060.csv'
     csv.write_text('#time,x,y,z\n' + ''.join('%.4f,0,0,0\n' % (t / 100) for t in range(50)))
     monkeypatch.setattr(collect, 'drop_stale_csv', lambda name: None)
     monkeypatch.setattr(collect, 'wait_for_csv', lambda name, span: str(csv))
-    scripts = []
-    hw = SimpleNamespace(kl=SimpleNamespace(gcode=scripts.append), accel_chip='adxl345 hotend')
-    collect.capture_csv(hw, 'v060', 'G4 P100')
-    # ACCELEROMETER_MEASURE CHIP= takes the name word of [adxl345 hotend], not the section
-    assert 'ACCELEROMETER_MEASURE CHIP=hotend NAME=v060' in scripts[0]
-    assert 'CHIP=adxl345 hotend' not in scripts[0]
+    kl = FakeKl()
+    collect.capture_csv(collect.detect_hardware(kl, 'x'), 'v060', 'G4 P100')
+    assert 'ACCELEROMETER_MEASURE CHIP=%s NAME=v060\n' % command_chip in kl.scripts[0]
 
 
 def test_report_winner_finds_the_stock_reference_when_tpfd_is_not_swept(tmp_path, monkeypatch):

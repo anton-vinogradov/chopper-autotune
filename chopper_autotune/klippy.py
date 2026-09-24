@@ -11,9 +11,9 @@ from collections import deque
 SOCKET_CANDIDATES = ('~/printer_data/comms/klippy.sock', '/tmp/klippy_uds')
 SEPARATOR = b'\x03'
 ACCEL_KEY = 'accel'
-# the module that streams a section's samples, where it is not the section type:
-# [lis3dh] is a chip variant served by lis2dw.py (Klipper and Kalico)
-ACCEL_ENDPOINTS = {'lis3dh': 'lis2dw'}
+# where a section streams its samples, when not at '<type>/dump_<type>': [lis3dh] is a
+# chip variant served by lis2dw.py (Klipper and Kalico), Beacon has its own endpoint
+ACCEL_ENDPOINTS = {'lis3dh': 'lis2dw/dump_lis2dw', 'beacon': 'beacon/dump_accel'}
 OUTPUT_KEY = 'gcode_output'
 STATUS_KEY = 'chopper_status'
 OUTPUT_MAX = 256           # the console subscription is broadcast and permanent: keep a tail
@@ -29,6 +29,16 @@ def fence_markers(token: str) -> 'tuple[str, str]':
     'Malformed command' that aborts the whole script. The token must not contain
     spaces, quotes or '#', ';', '*' (comment and checksum characters)."""
     return 'ECHO %s=BEGIN' % token, 'ECHO %s=END' % token
+
+
+def accel_batch(params) -> 'tuple[list, int]':
+    """One streamed batch as (samples, samples lost). Klipper's chips send
+    {'data': [[t, x, y, z], ...], 'overflows': n}; Beacon sends the bare sample list,
+    with None in place of a sample it could not decode."""
+    if isinstance(params, dict):
+        return params.get('data') or [], params.get('overflows', 0)
+    samples = [sample for sample in params if sample is not None]
+    return samples, len(params) - len(samples)
 
 
 def find_socket(explicit: 'str | None' = None) -> str:
@@ -109,9 +119,9 @@ class Klippy:
 
     def _dispatch(self, message: dict):
         if message.get('key') == ACCEL_KEY:
-            data = message['params'].get('data')
+            data, lost = accel_batch(message['params'])
             with self._wakeup:
-                self.overflows += message['params'].get('overflows', 0)
+                self.overflows += lost
                 if data:
                     self._samples.extend(data)
                     horizon = self._samples[-1][0] - self.buffer_sec
@@ -239,11 +249,14 @@ class Klippy:
 
     def subscribe_accel(self, accel_chip: str):
         """Chip section like 'adxl345', 'adxl345 head' or 'lis3dh' -> '<module>/dump_<module>'
-        endpoint, with the section's last word as the sensor name."""
+        endpoint, with the section's last word as the sensor name. Beacon names only its
+        extra probes ('beacon sensor tool' is 'tool'): the plain 'beacon' is the one
+        without a sensor name, and any name given for it is refused."""
         parts = accel_chip.split()
-        chip, sensor = ACCEL_ENDPOINTS.get(parts[0], parts[0]), parts[-1]
-        self.request('%s/dump_%s' % (chip, chip),
-                     {'sensor': sensor, 'response_template': {'key': ACCEL_KEY}})
+        params = {'response_template': {'key': ACCEL_KEY}}
+        if parts[0] != 'beacon' or len(parts) > 1:
+            params['sensor'] = parts[-1]
+        self.request(ACCEL_ENDPOINTS.get(parts[0], '%s/dump_%s' % (parts[0], parts[0])), params)
 
     def samples_between(self, start: float, end: float) -> 'list[list[float]]':
         """Walk from the tail: the window of interest is always recent, the buffer is sorted."""
