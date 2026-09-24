@@ -97,19 +97,20 @@ def test_envelope_note_names_the_twins_of_the_measured_motors():
     assert '"' not in awd_note(AWD, ['x', 'y'])              # travels inside RESPOND MSG="..."
 
 
-def test_belt_jog_releases_the_twins(monkeypatch):
+def test_belt_jog_releases_the_gantry(monkeypatch):
     from types import SimpleNamespace
 
     from chopper_autotune.belts import identify_belt
     kl = RecordingKl(AWD)
     hw = SimpleNamespace(center=(60.0, 60.0), kinematics='corexy', axis_span=120.0)
     identify_belt(kl, hw, 'x', SimpleNamespace(update=lambda *args, **kwargs: None), cycles=1)
-    assert 'SET_STEPPER_ENABLE STEPPER=stepper_x1 ENABLE=0' in kl.scripts[-1]
-    assert 'SET_STEPPER_ENABLE STEPPER=stepper_y1 ENABLE=0' in kl.scripts[-1]
+    assert kl.scripts[-1].startswith('M18\n')
 
 
-def test_release_gantry_switches_off_the_twins_too():
-    kl = RecordingKl(AWD)
+def test_release_gantry_forgets_the_homing_and_keeps_z_holding():
+    # hands move the head next: M18 is the one motor-off that clears the homing in every
+    # Klipper version; Z (all of its motors) goes straight back on
+    kl = RecordingKl(dict(AWD, stepper_z1={}))
     release_gantry(kl)
-    assert kl.scripts == ['\n'.join('SET_STEPPER_ENABLE STEPPER=%s ENABLE=0' % name for name in
-                                    ('stepper_x', 'stepper_x1', 'stepper_y', 'stepper_y1'))]
+    assert kl.scripts == ['M18\nSET_STEPPER_ENABLE STEPPER=stepper_z ENABLE=1\n'
+                          'SET_STEPPER_ENABLE STEPPER=stepper_z1 ENABLE=1']

@@ -192,7 +192,7 @@ def identify_belt(kl: Klippy, hw, motor: str, screen: Screen, cycles: int = 4):
         moves += ['G1 X%.1f Y%.1f F4800' % (cx + span * vec[0], cy + span * vec[1]),
                   'G1 X%.1f Y%.1f F4800' % (cx - span * vec[0], cy - span * vec[1])]
     moves.append('G1 X%.1f Y%.1f F6000' % (cx, cy))
-    # release the gantry motors (not Z) so the loosened belt is easy to reach and tension
+    # release the gantry (Z keeps holding) so the loosened belt is easy to reach and tension
     kl.gcode('\n'.join(moves) + '\nM400')
     release_gantry(kl)
 
@@ -589,8 +589,8 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
             fundamentals[label] = measure_belt(label)
     finally:
         # hand the gantry over on every exit — verdict, failed plucks or Stop — the
-        # user's next move is a tensioner screw; no parting G28: releasing forgets the
-        # position anyway and every next job homes first
+        # user's next move is a tensioner screw; no parting G28: the release forgets the
+        # homing (hands move the head) and every next job homes first
         run_restore(lambda: release_gantry(kl))
 
     pair = resolve_pair(fundamentals['A'], fundamentals['B'])

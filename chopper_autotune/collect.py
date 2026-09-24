@@ -177,10 +177,15 @@ def refuse_multi_motor(settings: dict, axes: str = 'xy'):
 
 
 def release_gantry(kl: Klippy):
-    """Switch off every X/Y motor, twins included (Z stays on)."""
+    """Hand the gantry to the user's hands: every X/Y motor off, twins included, and the
+    homing forgotten, since hands move the head next. M18 is the one command that forgets
+    it in every Klipper and Kalico version (SET_STEPPER_ENABLE keeps the axes homed at a
+    stale position; SET_KINEMATIC_POSITION CLEAR_HOMED is missing in v0.12, where it
+    marks every axis homed instead). Z goes straight back on so a bed or gantry does not
+    sink; it stays unhomed, and every next job homes first."""
     settings = kl.settings()
-    steppers = [name for axis in ('x', 'y') for name in ['stepper_' + axis] + rail_twins(settings, axis)]
-    kl.gcode('\n'.join('SET_STEPPER_ENABLE STEPPER=%s ENABLE=0' % name for name in steppers))
+    z = [name for name in ['stepper_z'] + rail_twins(settings, 'z') if name in settings]
+    kl.gcode('\n'.join(['M18'] + ['SET_STEPPER_ENABLE STEPPER=%s ENABLE=1' % name for name in z]))
 
 
 class DriverTooHot(SystemExit):
