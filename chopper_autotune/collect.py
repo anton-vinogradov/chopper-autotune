@@ -203,6 +203,7 @@ class ThermalGuard:
     def __init__(self, kl: Klippy, settings: dict):
         self.kl = kl
         self.sections = xy_driver_sections(settings)
+        self.subscribed = False
         # Klipper leaves a TMC2240 at slope_control 0, the slowest switching edges (the
         # most heat); klipper_tmc_autotune sets 3 "to cool down 2240s"
         self.slow = [name for name in self.sections if name.startswith('tmc2240 ')
@@ -216,8 +217,12 @@ class ThermalGuard:
     def check(self):
         if not self.sections:
             return
-        query = {section: ['drv_status', 'temperature'] for section in self.sections}
-        status = self.kl.request('objects/query', {'objects': query})['status']
+        if not self.subscribed:
+            # a live copy: checking before every move costs no round trip to Klipper
+            self.kl.subscribe_status({section: ['drv_status', 'temperature']
+                                      for section in self.sections})
+            self.subscribed = True
+        status = self.kl.status()
         for section in self.sections:
             values = status.get(section) or {}
             flags = [flag for flag in THERMAL_FLAGS if (values.get('drv_status') or {}).get(flag)]

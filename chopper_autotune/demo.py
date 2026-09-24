@@ -98,8 +98,10 @@ def showcase_together(kl, args) -> int:
     playing = {'default': '>> DEFAULTS', 'tuned': '>> TUNED'}
     results = {name: [] for name, _ in configs}
     guard = ThermalGuard(kl, kl.settings())
+    # outside the try: after its M18 the finally would write toff into the switched-off
+    # drivers, which re-energizes a hot one on a stepper without an enable pin
+    guard.preflight()
     try:
-        guard.preflight()
         # home and hold at center with the motors ENABLED (park disables them) for G1 moves
         kl.gcode('G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, *board.center))
         for axis in MOTORS:

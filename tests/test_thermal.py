@@ -23,18 +23,21 @@ def no_poll_wait(monkeypatch):
 
 
 class StatusKl:
-    """Answers objects/query with the given per-section status, records G-code."""
+    """Keeps the pushed driver status (status_map) and records G-code."""
     path = '<sock>'
 
     def __init__(self, status=None, settings=SETTINGS):
-        self.status = status or {}
+        self.status_map = status or {}
         self._settings = settings
         self.queries = []
         self.scripts = []
 
-    def request(self, method, params):
-        self.queries.append(params['objects'])
-        return {'status': {name: self.status.get(name, {}) for name in params['objects']}}
+    def subscribe_status(self, objects):
+        self.queries.append(objects)
+
+    def status(self):
+        # the live copy Klipper keeps pushing: whatever the driver reports right now
+        return {name: dict(self.status_map.get(name, {})) for name in self.queries[-1]}
 
     def settings(self):
         return self._settings
@@ -159,7 +162,7 @@ def test_current_checks_inside_a_rung_and_ends_with_the_motors_off(monkeypatch):
         if script.count('\nG1 ') == 1 and script.startswith('G1 '):
             strokes.append(script)
             if len(strokes) == 3:                # the driver warns in the middle of the rung
-                kl.status = HOT_X
+                kl.status_map = HOT_X
     kl.gcode = gcode
     with pytest.raises(DriverTooHot):
         cur.current_tune(kl, build_parser().parse_args(['current', '--motor', 'a', '--yes']))
@@ -174,7 +177,7 @@ def test_find_speed_ends_with_the_motors_off_after_a_thermal_stop(tmp_path, monk
     monkeypatch.setattr(fs, 'measure_baseline', lambda hw_, ds, args, done: None)
 
     def move(hw_, ds, args, record, speed, cruise, travel, direction, accel, before):
-        kl.status = HOT_X                        # the driver heats up during the scan
+        kl.status_map = HOT_X                        # the driver heats up during the scan
         before(direction, travel)
     monkeypatch.setattr(fs, 'measure_move', move)
     args = build_parser().parse_args(['find-speed', '--motor', 'a', '--yes', '--min-speed', '58',
