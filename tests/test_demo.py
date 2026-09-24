@@ -367,6 +367,26 @@ def test_the_show_puts_back_autotunes_registers_read_live(monkeypatch):
     assert kl.sent.index('G28 X Y') > kl.sent.index(writes[-1])      # restored, then re-homed
 
 
+def test_a_print_on_one_motor_stops_the_whole_report(monkeypatch):
+    # a running or paused print refuses every motor: one refusal, announced, no 'skipped'
+    from argparse import Namespace
+
+    from chopper_autotune.collect import PrinterBusy, refuse_if_printing
+    tried = []
+
+    def demo(kl, args):
+        tried.append(args.axis)
+        refuse_if_printing(kl)
+    monkeypatch.setattr(demo_module, 'demo', demo)
+    monkeypatch.setattr(demo_module, 'Klippy', lambda path: type('K', (), {
+        'connect': lambda self: self, 'close': lambda self: None, 'is_printing': lambda self: True,
+        'settings': lambda self: {'stepper_x': {}, 'stepper_y': {}}})())
+    monkeypatch.setattr(demo_module, 'find_socket', lambda explicit=None: '<sock>')
+    with pytest.raises(PrinterBusy, match='busy printing'):
+        demo_module.run_demo(Namespace(axis='xy', report=True, socket=None))
+    assert tried == ['x']
+
+
 def test_a_shutdown_on_one_motor_stops_the_whole_report(monkeypatch):
     # a Klipper in shutdown fails the next motor too: not a per-motor skip
     from argparse import Namespace

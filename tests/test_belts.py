@@ -501,6 +501,30 @@ def test_every_second_of_the_pluck_session_is_checked(monkeypatch):
         assert events[i - 1] == 'check' and int(events[i].split()[1][1:]) <= 1000
 
 
+def test_a_hot_driver_before_the_calibration_stops_before_the_shuttles(monkeypatch):
+    import pytest
+
+    from chopper_autotune.collect import DriverTooHot
+    # checks: 2 settle, 3 quiet, then the one before the calibration shuttles
+    events, _, run = pluck_session(monkeypatch, hot_at=6)
+    with pytest.raises(DriverTooHot):
+        run()
+    assert 'shuttles' not in events and events[-1] == 'release'
+
+
+def test_a_stop_during_the_pluck_preflight_hands_the_motors_over(monkeypatch):
+    import pytest
+    events, _, run = pluck_session(monkeypatch)
+
+    def stopped(self):
+        events.append('preflight')
+        raise SystemExit(143)                        # CHOPPER_STOP while the drivers poll
+    monkeypatch.setattr(belts_mod.ThermalGuard, 'preflight', stopped)
+    with pytest.raises(SystemExit):
+        run()
+    assert events == ['preflight', 'release']
+
+
 def test_a_hot_driver_in_a_pluck_window_stops_and_hands_the_motors_over(monkeypatch):
     import pytest
 
@@ -574,28 +598,33 @@ def test_show_on_a_hot_driver_hands_the_motors_over(monkeypatch):
     assert events == ['release']
 
 
-def test_a_hot_driver_between_the_diagonals_stops_the_sweep_without_a_re_home(monkeypatch, tmp_path):
-    # each diagonal holds the motors ~1.5 min: the guard checks before each, and the
-    # closing step releases the gantry instead of a G28 on the hot driver
-    import chopper_autotune.collect as collect_mod
+@pytest.mark.parametrize('hot_at, sweeps', [(2, 'A'), (3, 'AB')])
+def test_a_hot_driver_after_a_diagonal_stops_the_sweep_without_a_re_home(monkeypatch, tmp_path,
+                                                                        hot_at, sweeps):
+    # each diagonal holds the motors ~1.5 min: the guard checks before each and after the
+    # last, and the closing step releases the gantry instead of a G28 on the hot driver
     from chopper_autotune.collect import DriverTooHot
-    checks = []
+    events = []
 
     class Guard:
         def __init__(self, kl, settings):
             pass
 
         def preflight(self):
-            checks.append('preflight')
+            events.append('preflight')
 
         def check(self):
-            checks.append('check')
-            if checks.count('check') == 2:
+            events.append('check')
+            if events.count('check') == hot_at:
                 raise DriverTooHot('tmc2240 stepper_y overheating (104 C)')
     closing = []
+    sweep_command = belts_mod.sweep_command
     monkeypatch.setattr(belts_mod, 'ThermalGuard', Guard)
+    monkeypatch.setattr(belts_mod, 'sweep_command', lambda axis, label, *a: (
+        events.append('sweep ' + label), sweep_command(axis, label, *a))[1])
     monkeypatch.setattr(belts_mod, 'rehome_unless_hot', lambda kl: closing.append(
         isinstance(__import__('sys').exc_info()[1], DriverTooHot)))
     with pytest.raises(DriverTooHot):
         sweep_run(monkeypatch, tmp_path, BY_NAME, {'accel_chip': 'adxl345'})
-    assert checks == ['preflight', 'check', 'check'] and closing == [True]
+    assert events == ['preflight'] + [e for label in sweeps for e in ('check', 'sweep ' + label)] \
+        + ['check'] and closing == [True]

@@ -297,7 +297,7 @@ def test_a_dwell_capture_checks_the_guard_every_second():
 
 def test_a_run_stops_at_the_first_move_after_klipper_shut_down():
     # #133: the old run retried 95 moves against a Klipper in shutdown
-    from chopper_autotune.collect import measure_move
+    from chopper_autotune.collect import KlipperShutdown, measure_move
     from chopper_autotune.klippy import KlippyError
     attempts = []
     shutdown = KlippyError("gcode/script failed: TMC 'stepper_x' reports error: GSTAT:      "
@@ -310,7 +310,45 @@ def test_a_run_stops_at_the_first_move_after_klipper_shut_down():
     hw = SimpleNamespace(stepper='stepper_x', kl=None)
     args = SimpleNamespace(csv=False, trim=0.1, no_raw=True)
     ds = SimpleNamespace(append=lambda record: pytest.fail('no record after a shutdown'))
-    with pytest.raises(SystemExit, match=r"Klipper shut down \(TMC 'stepper_x' reports error: "
-                                         r"GSTAT: 00000002 drv_err=1\(ErrorShutdown!\)\)"):
+    with pytest.raises(KlipperShutdown, match=r"Klipper shut down \(TMC 'stepper_x' reports error: "
+                                              r"GSTAT: 00000002 drv_err=1\(ErrorShutdown!\)\)"):
         measure_move(hw, ds, args, {'id': 'v026_i0_rev'}, 26.0, 1.0, 50.0, -1, 1000.0, before_move)
     assert attempts == [-1]                                  # no second attempt
+
+
+def test_a_capture_that_stalls_in_a_shutdown_names_the_cause():
+    # a shutdown lets the running M400 return, then the stream just stops
+    from chopper_autotune.collect import KlipperShutdown, capture_stream
+    from chopper_autotune.klippy import KlippyError
+
+    def stalled(t):
+        raise KlippyError('accelerometer stream stalled, no samples past %.3f' % t)
+    state = {'state': 'shutdown', 'state_message': "TMC 'stepper_x' reports error: GSTAT: "
+             "00000002 drv_err=1(ErrorShutdown!)\nOnce the underlying issue is corrected, use "
+             "the \"FIRMWARE_RESTART\" command to reset the firmware"}
+    kl = SimpleNamespace(gcode=lambda script: None, print_time=lambda: 10.0,
+                         wait_for_sample=stalled, info=lambda: state)
+    with pytest.raises(KlipperShutdown, match=r"\(TMC 'stepper_x' reports error: GSTAT: 00000002 "
+                                              r"drv_err=1\(ErrorShutdown!\)\)"):
+        capture_stream(SimpleNamespace(kl=kl), 'G4 P2000', 1.8, lambda: None)
+    # a stall on a ready Klipper stays what it is
+    state = {'state': 'ready', 'state_message': 'Printer is ready'}
+    with pytest.raises(KlippyError, match='stream stalled'):
+        capture_stream(SimpleNamespace(kl=kl), 'G4 P2000', 1.8, lambda: None)
+
+
+def test_the_demo_show_stops_at_the_first_stroke_after_klipper_shut_down(monkeypatch):
+    import chopper_autotune.demo as demo_mod
+    from chopper_autotune.collect import KlipperShutdown
+    from chopper_autotune.klippy import KlippyError
+    strokes = []
+
+    def capture(board, move, duration):
+        strokes.append(move)
+        raise KlippyError("gcode/script failed: TMC 'stepper_x' reports error: GSTAT: 00000002 "
+                          "drv_err=1(ErrorShutdown!)\nPrinter is shutdown")
+    monkeypatch.setattr(demo_mod, 'capture_stream', capture)
+    board = SimpleNamespace(kinematics='corexy', center=(130.0, 130.0), kl=StatusKl())
+    with pytest.raises(KlipperShutdown):
+        demo_mod._sweep(board, {'x': 58, 'y': 34}, 1000, 100.0, SimpleNamespace(repeats=2))
+    assert len(strokes) == 1

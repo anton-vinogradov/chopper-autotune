@@ -461,6 +461,10 @@ class ZNotHomed(RunStopped):
     """A G28 X/Y would lift an unhomed Z blindly (see home_xy)."""
 
 
+class PrinterBusy(RunStopped):
+    """A print runs or is paused: no motor of the run may move."""
+
+
 def homing_z_hop(settings: dict) -> float:
     """How far this printer's G28 lifts an UNHOMED Z on every X/Y homing, leaving it
     unhomed: [safe_z_home] z_hop, RatOS [ratos_homing] z_hop, [beacon] home_z_hop (its
@@ -569,7 +573,7 @@ class ThermalGuard:
     def preflight(self):
         """A driver still hot from an earlier stop must not get a fresh run. Off motors
         publish no status, so enable them (no motion), let Klipper poll, then check. Too
-        hot: the gantry goes off again, Z keeps holding and its homing (release_gantry)."""
+        hot: the gantry goes off again and Z keeps holding (release_gantry)."""
         if not self.sections:
             return
         self.kl.gcode('\n'.join('SET_STEPPER_ENABLE STEPPER=%s ENABLE=1' % name.split(' ', 1)[1]
@@ -586,8 +590,8 @@ def rehome_unless_hot(kl: Klippy):
     """The closing re-home of a run. After a thermal stop G28 would put the hot driver
     straight back under current: the gantry is released instead — X/Y off and their
     homing forgotten (FORCE_MOVE has left the head away from where Klipper thinks), Z
-    keeps holding and its homing, so the next run needs no full G28. The on-off cycle:
-    a register restore may have re-energized a driver Klipper counts as off. With Z
+    keeps holding (and its homing where release_gantry can clear X/Y alone). The on-off
+    cycle: a register restore may have re-energized a driver Klipper counts as off. With Z
     unhomed by then (a failed homing), the gantry is released instead of lifting Z."""
     if isinstance(sys.exc_info()[1], DriverTooHot):
         release_gantry(kl, cycle=True)
@@ -790,7 +794,7 @@ def refuse_if_printing(kl: Klippy):
     except KlippyError:
         return
     if printing:
-        raise SystemExit('printer is busy printing — not moving anything')
+        raise PrinterBusy('printer is busy printing — not moving anything')
 
 
 def run_restore(*steps):
@@ -910,7 +914,17 @@ def capture_stream(hw: Hardware, script: str, duration: float,
     else:
         hw.kl.gcode(script + '\nM400')
     t_end = hw.kl.print_time()
-    hw.kl.wait_for_sample(t_end)
+    try:
+        hw.kl.wait_for_sample(t_end)
+    except KlippyError:
+        # a shutdown lets the running M400 return and the stream just stops: name the cause
+        try:
+            info = hw.kl.info()
+        except (KlippyError, OSError):
+            info = {}
+        if info.get('state') == 'shutdown':
+            refuse_after_shutdown(KlippyError(info.get('state_message') or 'Printer is shutdown'))
+        raise
     samples = hw.kl.samples_between(t_end - duration, t_end)
     if len(samples) < MIN_STEADY_SAMPLES:
         raise ValueError('only %d samples streamed for a %.2fs window' % (len(samples), duration))

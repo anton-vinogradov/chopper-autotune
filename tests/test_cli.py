@@ -147,3 +147,9 @@ def test_a_failure_reaches_the_console_even_when_the_display_is_refused(monkeypa
     monkeypatch.setattr(klippy_mod, 'find_socket', lambda explicit=None: '<sock>')
     announce_failure(type('A', (), {'socket': None})(), 'tune FAILED: Klipper shut down')
     assert sent == ['M118 tune FAILED: Klipper shut down', 'M117 tune FAILED: Klipper shut down']
+    # the display keeps 120 characters, the console the whole line: the action comes last
+    sent.clear()
+    message = ("collect FAILED: Klipper shut down (TMC 'stepper_x' reports error: GSTAT: 00000002 "
+               "drv_err=1(ErrorShutdown!)): the run stops here; fix the cause, then FIRMWARE_RESTART")
+    announce_failure(type('A', (), {'socket': None})(), message)
+    assert sent == ['M118 ' + message, 'M117 ' + message[:120]]

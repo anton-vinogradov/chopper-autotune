@@ -345,6 +345,7 @@ def belts(kl: Klippy, args) -> int:
             edge = '  (near the sweep edge — raise MAX_FREQ)' if peak >= band[1] - 2 * binwidth else ''
             print('   belt %s: resonance %.1f Hz (peaks: %s)%s'
                   % (label, peak, ', '.join('%.0f' % f for f in top_peaks(freqs, psd, band)), edge))
+        guard.check()                               # the last sweep heats too: before the G28
     finally:
         # after a thermal stop the motors go off instead: a G28 would re-energize them
         run_restore(lambda: rehome_unless_hot(kl))
