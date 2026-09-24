@@ -41,6 +41,9 @@ class SafeZHomeKl:
     def homed_axes(self):
         return ''.join(axis for axis in 'xyz' if axis in self.homed)
 
+    def stepper_states(self):
+        return {'stepper_x': True, 'stepper_y': True, 'stepper_z': True, 'extruder': True}
+
     def info(self):
         return {'klipper_path': self.klipper_path}
 
@@ -84,7 +87,7 @@ def run_a_job(kl, moves=PARK_INTERVAL_MOVES * 2 + 1):
 def test_a_job_on_an_unhomed_z_is_refused_before_any_motion(override):
     # homing Z here would lower the nozzle onto whatever stands on the bed
     kl = SafeZHomeKl(homed='', override=override)
-    with pytest.raises(ZNotHomed, match='clear the bed, home all axes'):
+    with pytest.raises(ZNotHomed, match='clear the bed, run G28'):
         run_a_job(kl)
     assert kl.scripts == [] and kl.blind_lifts == 0
 
@@ -134,7 +137,10 @@ def test_a_failed_mid_run_homing_stops_instead_of_climbing():
         finally:
             run_restore(lambda: rehome_unless_hot(kl))
     assert kl.blind_lifts == 0
-    assert kl.scripts[-1].startswith('SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=0')
+    # Klipper's motor_off counts the motors as off, the restore may have re-energized them:
+    # each is enabled, then disabled, so Klipper really writes toff=0
+    assert kl.scripts[-1].startswith('SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=1\n'
+                                     'SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=0')
 
 
 def test_the_extruder_tools_never_switch_z_off():
@@ -155,3 +161,21 @@ def test_the_referee_marks_only_its_own_axis_homed(tmp_path, supported, tail):
     settings = {'stepper_x': {'endstop_pin': 'PA1', 'position_endstop': 0, 'position_max': 300}}
     Referee(kl, 'x', settings, 150.0).slipped()
     assert 'SET_KINEMATIC_POSITION X=28.000%s' % tail in kl.scripts
+
+
+def test_the_refusal_keeps_its_instruction_on_the_display():
+    # announce_failure shows '<command> FAILED: <message>' cut at 120 characters
+    kl = SafeZHomeKl(homed='xy')
+    with pytest.raises(ZNotHomed) as refused:
+        refuse_blind_z_hop(kl, kl.settings())
+    assert 'run G28, then retry' in ('find-speed FAILED: %s' % refused.value.code)[:120]
+
+
+def test_the_xy_homing_is_cleared_only_with_every_axis_homed(tmp_path):
+    # code older than the file on disk (updated, not restarted) marks ALL axes homed with
+    # that command: harmless only when all three already are
+    (tmp_path / 'klippy' / 'extras').mkdir(parents=True)
+    (tmp_path / 'klippy' / 'extras' / 'force_move.py').write_text("CLEAR_HOMED")
+    kl = SafeZHomeKl(homed='xy', klipper_path=str(tmp_path))
+    release_gantry(kl)
+    assert 'SET_KINEMATIC_POSITION' not in kl.scripts[-1]

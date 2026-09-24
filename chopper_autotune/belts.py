@@ -249,11 +249,15 @@ def belts(kl: Klippy, args) -> int:
         return 1
 
     refuse_if_printing(kl)
+    if 'z' not in kl.homed_axes():
+        # TEST_RESONANCES moves Z to the probe point; homing Z here would lower the
+        # nozzle onto whatever stands on the bed
+        raise SystemExit('Z not homed: clear the bed, run G28, then retry (TEST_RESONANCES moves Z)')
     screen = Screen(kl, hw.display)
     peaks = {}
     try:
-        print('Homing all axes (TEST_RESONANCES moves to the probe point)')
-        kl.gcode('G28\nM400')
+        print('Homing X/Y (TEST_RESONANCES moves to the probe point)')
+        home_xy(kl, 'G28 X Y\nM400')
         for motor in ('x', 'y'):
             label = motor_label(motor)
             vec = stress_vector(hw.kinematics, motor)

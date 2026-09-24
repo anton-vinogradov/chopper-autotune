@@ -42,6 +42,12 @@ class StatusKl:
     def settings(self):
         return self._settings
 
+    def stepper_states(self):
+        return {'stepper_x': True, 'stepper_y': True, 'stepper_z': True, 'extruder': False}
+
+    def homed_axes(self):
+        return 'xyz'
+
     def gcode(self, script):
         self.scripts.append(script)
 

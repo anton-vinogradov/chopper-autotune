@@ -22,6 +22,9 @@ def test_scan_sweeps_on_stock_registers_and_restores(tmp_path, monkeypatch):
         def settings(self):
             return {}
 
+        def stepper_states(self):
+            return {'stepper_x': True, 'stepper_y': True, 'stepper_z': True}
+
         def gcode(self, script):
             self.scripts.append(script)
 

@@ -27,6 +27,13 @@ class RecordingKl:
     def info(self):
         return {}
 
+    def stepper_states(self):
+        return dict({name: True for name in self._settings if name.startswith('stepper_')},
+                    extruder=True)
+
+    def homed_axes(self):
+        return 'xyz'
+
     def connect(self, sock=None):
         return self
 
@@ -111,7 +118,7 @@ def test_belt_jog_releases_the_gantry(monkeypatch):
 
 
 XY_OFF = '\n'.join('SET_STEPPER_ENABLE STEPPER=%s ENABLE=0' % name
-                   for name in ('stepper_x', 'stepper_x1', 'stepper_y', 'stepper_y1'))
+                   for name in ('stepper_x', 'stepper_x1', 'stepper_y', 'stepper_y1', 'extruder'))
 
 
 @pytest.mark.parametrize('force_move, clears', [
