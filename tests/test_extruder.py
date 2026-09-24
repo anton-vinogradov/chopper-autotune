@@ -134,6 +134,9 @@ def test_extruder_stealth_resolved_live_before_the_force():
         def gcode_output(self, script):
             assert script == 'DUMP_TMC STEPPER=extruder REGISTER=GCONF'
             return ['// GCONF:      0000000e en_pwm_mode=1']
+
+        def settings(self):
+            return {}
     driver = tmc.DRIVERS['2240']
     # no stealthchop_threshold line, yet en_pwm_mode=1 = stealthChop (autotune's doing)
     assert resolve_extruder_stealth(LiveKl(), driver, None) == ('en_pwm_mode', 0, 1)

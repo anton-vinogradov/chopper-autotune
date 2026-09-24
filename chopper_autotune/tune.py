@@ -119,10 +119,13 @@ def run_tune(args) -> int:
                                compact_label(combo), improvement_note(manifest),
                                ' (autotune)' if manifest.get('autotune') else '')
                 for manifest, combo in winners)
-            savable = [manifest for manifest, _ in winners if not manifest.get('autotune')]
-            screen.final('Tune done: %s%s' % (labels, ' — saving' if args.save
-                                              else ' — tap Save to persist' if savable
-                                              else ' — autotune resets these at start'))
+            free = [motor_label(manifest['stepper'].rsplit('_', 1)[-1])
+                    for manifest, _ in winners if not manifest.get('autotune')]
+            tail = (' — saving' if args.save
+                    else ' — autotune resets these at start' if not free
+                    else ' — CHOPPER_SAVE to persist' if len(free) == len(winners)
+                    else ' — CHOPPER_SAVE to persist %s' % ''.join(free))
+            screen.final('Tune done: %s%s' % (labels, tail))
     finally:
         kl.close()
 
@@ -131,20 +134,24 @@ def run_tune(args) -> int:
 
     print('\n=== Summary ===')
     for manifest, combo in winners:
+        if manifest.get('autotune'):
+            # no snippet: pasting it would change nothing, autotune writes its own at start
+            print('%s: %s\n' % (manifest['stepper'],
+                                autotune_advice(settings, manifest['driver'], manifest['stepper'])))
+            continue
         print(tmc.cfg_snippet(tmc.DRIVERS[manifest['driver']], manifest['stepper'], combo))
         if manifest.get('improvement'):
             print('# %.1fx less vibration than Klipper defaults\n'
                   % manifest['improvement'])
         print()
+    free = [manifest for manifest, _ in winners if not manifest.get('autotune')]
     if args.save:
         from .analyze import run_save
         run_save(Moonraker(args.url), winners)
-    else:
-        # pasting these lines would change nothing where autotune writes its own at start
-        for manifest, _ in winners:
-            if manifest.get('autotune'):
-                print('%s: %s' % (manifest['stepper'],
-                                  autotune_advice(settings, manifest['driver'], manifest['stepper'])))
-        if any(not manifest.get('autotune') for manifest, _ in winners):
-            print('Re-run with SAVE=1 to write this into the config, or paste it manually')
+    elif free:
+        # CHOPPER_SAVE takes these very datasets: no second twenty-minute run
+        print('CHOPPER_SAVE writes %s into the config%s, or paste it manually'
+              % ('this' if len(free) == len(winners) else
+                 ' and '.join(manifest['stepper'] for manifest in free),
+                 '' if len(free) == len(winners) else ' (it skips the motors autotune manages)'))
     return worst

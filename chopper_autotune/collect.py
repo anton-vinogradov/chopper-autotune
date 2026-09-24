@@ -68,6 +68,7 @@ class Hardware:
     stealth: 'Optional[tuple[str, int, int]]' = None
     display: bool = False
     autotune: 'str | None' = None                  # the klipper_tmc_autotune goal, if any
+    settled: bool = False                          # mode and registers to put back are known
 
     @property
     def motor(self) -> str:
@@ -201,16 +202,16 @@ def resolve_stealth(kl: Klippy, hw: Hardware):
     if not hw.driver.spreadcycle_switch:
         return
     live = live_stealth(kl, hw.stepper, hw.driver)
-    by_autotune = autotune_stealth(kl.settings(), hw.stepper) if not live else None
-    if live is None and by_autotune is not None:
+    if hw.autotune is not None and live is not None:
+        # autotune sets the mode at every start, whatever stealthchop_threshold says: the
+        # live read is what to put back, not a mode a killed run left behind
+        hw.stealth = hw.driver.spreadcycle_switch if live else None
+        return
+    by_autotune = autotune_stealth(kl.settings(), hw.stepper) if live is None else None
+    if by_autotune is not None:
         print('%s: klipper_tmc_autotune runs it in %s' % (hw.stepper, 'stealthChop' if by_autotune
                                                           else 'spreadCycle'))
         hw.stealth = hw.driver.spreadcycle_switch if by_autotune else None
-    elif live is False and by_autotune is False and hw.stealth:
-        # autotune's goal keeps spreadCycle whatever stealthchop_threshold says: that is
-        # its doing, not a spreadCycle a killed run left behind
-        print('%s: klipper_tmc_autotune keeps it in spreadCycle' % hw.stepper)
-        hw.stealth = None
     elif live is None:
         print('trusting the config for the %s driver mode' % hw.stepper)
     elif live and not hw.stealth:
@@ -241,33 +242,43 @@ def autotune_carry_over(settings: dict, driver_name: str, stepper: str) -> 'list
     """The values klipper_tmc_autotune writes at every start that the [tmc...] section
     needs once its section goes: the StallGuard thresholds sensorless homing stops on
     (Klipper's own defaults, sgthrs 0 or sgt 0, home wrong or not at all) and the
-    TMC2240's fast slope. Only a starting point for the thresholds: autotune tuned them
-    under its CoolStep, TCOOLTHRS and PWM settings, which go with the section. Its
+    TMC2240's fast slope. Only a starting point for the thresholds: they ran under
+    autotune's CoolStep, TCOOLTHRS and PWM settings, which go with the section. Its
     values come from the settings, where Klipper records defaults too."""
     section = settings.get('autotune_tmc ' + stepper) or {}
     lines = []
     if driver_name == '2209':
         lines.append('driver_SGTHRS: %s' % section.get('sg4_thrs', 40))
-    elif driver_name != '2208':                     # 2130, 2240, 2660, 5160: SGT
+    elif driver_name != '2208':                     # 2130, 2240, 2660, 5160: SGT; 2208: none
         lines.append('driver_SGT: %s' % section.get('sgt', 1))
     if driver_name == '2240':
-        if int(section.get('sg4_thrs') or 0):
-            lines.append('driver_SG4_THRS: %s' % section['sg4_thrs'])
+        # 0 too: it replaces an old line, and Klipper homes on SG4 when it is not 0
+        lines.append('driver_SG4_THRS: %s' % int(section.get('sg4_thrs') or 0))
         lines.append('driver_SLOPE_CONTROL: 3')
     return lines
+
+
+def autotune_tag(driver_name: str, autotune: 'str | None') -> 'str | None':
+    """The goal a result records as 'measured under klipper_tmc_autotune': its CoolStep
+    lowered the current. A TMC2208 has no CoolStep, so nothing to record there."""
+    return None if driver_name == '2208' else autotune
 
 
 def autotune_advice(settings: dict, driver_name: str, stepper: str) -> str:
     carry = autotune_carry_over(settings, driver_name, stepper)
     return ('klipper_tmc_autotune ([autotune_tmc %s]) writes its own tbl, toff, tpfd, hstrt and '
             'hend over driver_* at every Klipper start. Keep it, or switch it off for this '
-            'motor: 1) in [tmc%s %s] set %s (autotune sets these; replace any such line already '
-            'there); 2) remove [autotune_tmc %s] and restart Klipper; 3) if this motor homes '
-            'sensorless, re-tune the homing before anything else: autotune tuned the StallGuard '
-            'threshold under its CoolStep and PWM settings, which go with it, so the value is '
-            'only a starting point; 4) tune again: a run under autotune measured with its '
-            'CoolStep current. README: With klipper_tmc_autotune'
-            % (stepper, driver_name, stepper, ', '.join(carry) or 'nothing more', stepper))
+            'motor: 1) %s; 2) remove [autotune_tmc %s] and restart Klipper; 3) if this motor homes '
+            'sensorless, re-tune the StallGuard threshold it homes on before anything else: the '
+            'value comes from the autotune section (or its default) and ran under autotune\'s '
+            'CoolStep and PWM, which go with the section, so it is only a starting point; 4) '
+            'tune again%s. README: With klipper_tmc_autotune'
+            % (stepper,
+               'in [tmc%s %s] set %s (autotune sets these; replace any such line already there)'
+               % (driver_name, stepper, ', '.join(carry)) if carry else 'nothing to carry over',
+               stepper,
+               '' if driver_name == '2208' else ': a run under autotune measured with its '
+                                                 'CoolStep current'))
 
 
 def autotune_refusal(driver_name: str, stepper: str, settings: 'dict | None' = None) -> str:
@@ -767,13 +778,29 @@ def enter_spreadcycle(kl: Klippy, hw: Hardware):
     wake_stepper(kl, hw.stepper)
     resolve_stealth(kl, hw)
     resolve_autotune_baseline(kl, hw)
+    hw.settled = True
     if hw.stealth:
         field, force, _ = hw.stealth
         print('stealthChop is active: forcing spreadCycle for the test')
         kl.gcode(tmc.set_fields_script(hw.stepper, {field: force}))
 
 
+def untouched_autotune(hw: Hardware) -> bool:
+    """A run stopped before enter_spreadcycle has written nothing: on autotune's motor
+    the config's registers and mode would replace its own, so leave the driver alone.
+    Other motors keep the repair of what a killed run left behind."""
+    return hw.autotune is not None and not hw.settled
+
+
+def restore_chopper(kl: Klippy, hw: Hardware):
+    """Put back the registers the driver ran before the run (see resolve_autotune_baseline)."""
+    if not untouched_autotune(hw):
+        kl.gcode(tmc.set_fields_script(hw.stepper, hw.baseline or hw.driver.default.fields()))
+
+
 def exit_spreadcycle(kl: Klippy, hw: Hardware):
+    if untouched_autotune(hw):
+        return
     if hw.stealth:
         field, _, restore = hw.stealth
         kl.gcode(tmc.set_fields_script(hw.stepper, {field: restore}))
@@ -970,7 +997,10 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
         pct = round((1 - 1 / quieter) * 100)
         if pct >= 1:                                # a statistical tie is not a win
             finale += ' — %d%% less vibration' % pct
-    print('\nRecommended for printer.cfg:\n')
+    if autotune_tag(hw.driver.name, hw.autotune):
+        print('\nBest measured (not for saving: %s):\n' % AUTOTUNE_MEASURED)
+    else:
+        print('\nRecommended for printer.cfg:\n')
     print(tmc.cfg_snippet(hw.driver, hw.stepper, winner['chopper']))
     screen.final(finale)
     return winner
@@ -1122,9 +1152,11 @@ def check_resume(manifest: dict, speeds: 'list[int]', accel: float, measure_time
                                      ('accel', manifest.get('accel'), accel),
                                      ('measure_time', manifest.get('measure_time'), measure_time))
         if stored is not None and stored != current]
-    if 'autotune' in manifest and manifest['autotune'] != autotune:
-        mismatched.append('klipper_tmc_autotune: dataset %s vs current %s'
-                          % (manifest['autotune'], autotune))
+    stored = manifest.get('autotune', autotune)
+    if stored != autotune:
+        # the action first: the display keeps 120 characters
+        raise SystemExit('refusing to resume: klipper_tmc_autotune was %s, now %s; start a new '
+                         'dataset (no DATASET=)' % (stored or 'off', autotune or 'off'))
     if mismatched:
         raise SystemExit('refusing to resume with different measurement conditions (%s); '
                          'pass the original values or start a new dataset'
@@ -1217,7 +1249,7 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
         'accel_chip': hw.accel_chip,
         'kinematics': hw.kinematics,
         'baseline_registers': hw.baseline,
-        'autotune': hw.autotune,
+        'autotune': autotune_tag(hw.driver.name, hw.autotune),
         'forced_spreadcycle': bool(hw.stealth),
         'skip_audible': args.skip_audible,
         'ranges': {'tbl': [args.tbl.lo, args.tbl.hi], 'toff': [args.toff.lo, args.toff.hi],
@@ -1235,7 +1267,10 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
         'total_moves': n_moves,
     })
     if resuming:
-        check_resume(ds.manifest(), speeds, accel, args.measure_time, hw.autotune)
+        check_resume(ds.manifest(), speeds, accel, args.measure_time, autotune_tag(hw.driver.name, hw.autotune))
+        if 'autotune' not in ds.manifest():
+            # a dataset from before the tool recorded it: the rest is measured now
+            ds.update_manifest(autotune=autotune_tag(hw.driver.name, hw.autotune))
     done = ds.done_ids()
     if done:
         print('Resuming %s: %d measurements already present' % (root, len(done)))
@@ -1265,8 +1300,7 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
     finally:
         print('Restoring baseline registers, homing')
         run_restore(
-            lambda: kl.gcode(tmc.set_fields_script(
-                hw.stepper, hw.baseline or hw.driver.default.fields())),
+            lambda: restore_chopper(kl, hw),
             lambda: exit_spreadcycle(kl, hw),
             lambda: rehome_unless_hot(kl),
             ds.flush_raw)

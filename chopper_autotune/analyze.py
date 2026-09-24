@@ -659,14 +659,16 @@ def run_analyze(args) -> int:
                   % (validated.label(), best['chopper'].label()))
             best = next((a for a in ranked if a['chopper'] == validated),
                         {'chopper': validated})
-    print('\nRecommended for printer.cfg:\n')
-    print(tmc.cfg_snippet(driver, manifest['stepper'], best['chopper']))
     if manifest.get('autotune'):
         from .collect import AUTOTUNE_MEASURED
-        print('\nNot for saving: %s' % AUTOTUNE_MEASURED)
+        print('\nBest measured (not for saving: %s):\n' % AUTOTUNE_MEASURED)
+    else:
+        print('\nRecommended for printer.cfg:\n')
+    print(tmc.cfg_snippet(driver, manifest['stepper'], best['chopper']))
     if args.apply and not args.save:
         run_apply(Moonraker(args.url), manifest['stepper'], best['chopper'])
-        print('\nApplied via SET_TMC_FIELD (runtime only, use SAVE=1 to persist)')
+        print('\nApplied via SET_TMC_FIELD (runtime only%s)'
+              % ('' if manifest.get('autotune') else ', use SAVE=1 to persist'))
     if args.save:
         run_save(Moonraker(args.url), [(manifest, best['chopper'])])
     return 0

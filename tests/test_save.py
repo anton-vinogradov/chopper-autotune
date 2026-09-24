@@ -479,7 +479,8 @@ def test_the_autotune_refusal_points_the_display_at_the_log(command, driver, ste
 
 @pytest.mark.parametrize('driver, section, lines', [
     ('2209', {'sg4_thrs': 80}, ['driver_SGTHRS: 80']),
-    ('2240', {'sgt': 2, 'sg4_thrs': 0}, ['driver_SGT: 2', 'driver_SLOPE_CONTROL: 3']),
+    # SG4_THRS 0 too: it replaces an old line, and Klipper homes on SG4 when it is not 0
+    ('2240', {'sgt': 2, 'sg4_thrs': 0}, ['driver_SGT: 2', 'driver_SG4_THRS: 0', 'driver_SLOPE_CONTROL: 3']),
     ('2240', {'sgt': 1, 'sg4_thrs': 60}, ['driver_SGT: 1', 'driver_SG4_THRS: 60', 'driver_SLOPE_CONTROL: 3']),
     ('5160', {'sgt': -4}, ['driver_SGT: -4']),
     ('2208', {}, []),

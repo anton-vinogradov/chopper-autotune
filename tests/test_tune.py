@@ -56,7 +56,7 @@ def test_tune_runs_both_axes_and_seeds_second(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert '[tmc2209 stepper_x]' in out and 'driver_TOFF: 8' in out
     assert '[tmc2209 stepper_y]' in out and 'driver_TOFF: 6' in out
-    assert 'SAVE=1' in out
+    assert 'CHOPPER_SAVE writes this into the config, or paste it manually' in out
 
 
 def test_tune_single_axis_with_explicit_speed(tmp_path, monkeypatch):
@@ -134,7 +134,7 @@ def test_tune_reports_the_outcome_on_screen(tmp_path, monkeypatch):
     monkeypatch.setattr(tune, 'Screen', FakeScreen)
     assert tune.run_tune(tune_args()) == 0
     assert finals and finals[-1].startswith('Tune done: A 0/8/7/5 · B 0/2/7/5')
-    assert 'tap Save to persist' in finals[-1]
+    assert 'CHOPPER_SAVE to persist' in finals[-1]
 
     # a failure must speak too — via the global CLI announcer now (any tool, any error)
     finals.clear()
@@ -236,6 +236,7 @@ def test_autotune_on_one_motor_marks_only_that_one(tmp_path, monkeypatch, capsys
     out = capsys.readouterr().out
     assert 'stepper_x: klipper_tmc_autotune' in out and 'driver_SGTHRS: 80' in out
     assert 'stepper_y: klipper_tmc_autotune' not in out
-    assert 'Re-run with SAVE=1' in out
+    assert 'CHOPPER_SAVE writes stepper_y into the config (it skips the motors autotune manages)' in out
+    assert out.count('driver_TOFF: 8') == 1          # a snippet for B only, advice for A
     assert '(autotune)' in finals[-1] and finals[-1].count('(autotune)') == 1
-    assert finals[-1].endswith('tap Save to persist')
+    assert finals[-1].endswith('CHOPPER_SAVE to persist B')

@@ -11,8 +11,8 @@ from . import __version__, tmc
 from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen, ThermalGuard,
                       default_dataset_root, detect_hardware, enter_spreadcycle, exit_spreadcycle,
                       make_parker, measure_baseline, measure_move, now, park, refuse_blind_z_hop,
-                      refuse_if_printing, refuse_multi_motor, rehome_unless_hot, run_restore,
-                      travel_for)
+                      refuse_if_printing, refuse_multi_motor, rehome_unless_hot, restore_chopper,
+                      run_restore, travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, find_socket
 
@@ -268,8 +268,7 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
     finally:
         print('Restoring registers, homing')
         run_restore(
-            lambda: kl.gcode(tmc.set_fields_script(
-                hw.stepper, hw.baseline or hw.driver.default.fields())),
+            lambda: restore_chopper(kl, hw),
             lambda: exit_spreadcycle(kl, hw),
             lambda: rehome_unless_hot(kl),
             ds.flush_raw)

@@ -254,6 +254,6 @@ def test_an_unreadable_mode_falls_back_to_the_autotune_goal():
             (None, 'stepper_x', None, None)):
         settings = {'autotune_tmc ' + stepper: {'tuning_goal': goal}} if goal else {}
         kl = SimpleNamespace(gcode_output=lambda script: ['// ok'], settings=lambda: settings)
-        hw = SimpleNamespace(driver=driver, stepper=stepper, stealth=configured)
+        hw = SimpleNamespace(driver=driver, stepper=stepper, stealth=configured, autotune=goal)
         resolve_stealth(kl, hw)
         assert hw.stealth == expected, (goal, stepper)

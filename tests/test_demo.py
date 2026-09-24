@@ -304,3 +304,61 @@ def test_write_state_keeps_the_tpfd_register(tmp_path, monkeypatch):
     state = json.loads((tmp_path / 'state.json').read_text())
     # the panel matches these against the config's registers, tpfd included on 2240/5160
     assert state['x']['regs'] == '2/3/5/2/4' and state['y']['regs'] == '0/2/7/11'
+
+
+def test_the_show_puts_back_autotunes_registers_read_live(monkeypatch):
+    # autotune on X: its driver_* lines (none here) are not what the motor runs; the show
+    # plays and puts back the registers read live, the other motor its config ones
+    import argparse
+
+    import chopper_autotune.demo as demo_module
+    from chopper_autotune import tmc
+    from chopper_autotune.collect import Hardware
+    chopconf = {'stepper_x': '// CHOPCONF:   14410153 toff=4 hstrt=3 hend=6 tbl=1',
+                'stepper_y': '// CHOPCONF:   14410153 toff=3 hstrt=4 hend=14 tbl=2'}
+
+    class Kl:
+        def __init__(self):
+            self.sent = []
+
+        def settings(self):
+            return {'autotune_tmc stepper_x': {'tuning_goal': 'performance'}}
+
+        def gcode(self, script):
+            self.sent.append(script)
+
+        def gcode_output(self, script):
+            self.sent.append(script)
+            if 'CHOPCONF' in script:
+                return [chopconf[script.split('STEPPER=')[1].split()[0]]]
+            return ['// GCONF: 00000004 en_spreadcycle=1']
+
+        def subscribe_accel(self, chip):
+            pass
+
+    kl = Kl()
+
+    def hardware(kl_, axis):
+        return Hardware(kl=kl, stepper='stepper_' + axis, driver=tmc.DRIVERS['2209'],
+                        accel_chip='adxl345', kinematics='corexy', axis_span=260,
+                        center=(130, 130), max_accel=10000,
+                        baseline={} if axis == 'x' else {'tbl': 2, 'toff': 3, 'hstrt': 4, 'hend': 14},
+                        autotune='performance' if axis == 'x' else None)
+    monkeypatch.setattr(demo_module, 'detect_hardware', hardware)
+    monkeypatch.setattr(demo_module, 'known_speed', lambda axis: 58)
+    monkeypatch.setattr(demo_module, 'home_xy', lambda kl, script: None)
+    monkeypatch.setattr(demo_module, 'rehome_unless_hot', lambda kl: kl.gcode('G28 X Y'))
+    monkeypatch.setattr(demo_module, 'refuse_blind_z_hop', lambda kl, settings: None)
+    monkeypatch.setattr(demo_module, 'refuse_if_printing', lambda kl: None)
+    monkeypatch.setattr(demo_module, 'ThermalGuard', lambda kl, settings: type(
+        'G', (), {'preflight': lambda self: None, 'check': lambda self: None})())
+    monkeypatch.setattr(demo_module, '_sweep', lambda *args, **kwargs: [1.0])
+    monkeypatch.setattr(demo_module, 'write_state', lambda *args: None)
+    demo_module.showcase_together(kl, argparse.Namespace(default=None, speed=None, accel=None,
+                                                         rounds=1, repeats=1, dry_run=False))
+    writes = [s for s in kl.sent if s.startswith('SET_TMC_FIELD STEPPER=stepper_x FIELD=t')
+              or s.startswith('SET_TMC_FIELD STEPPER=stepper_x FIELD=h')]
+    last_x = {line.split('FIELD=')[1].split()[0]: int(line.split('VALUE=')[1])
+              for script in writes[-1:] for line in script.split('\n')}
+    assert last_x == {'tbl': 1, 'toff': 4, 'hstrt': 3, 'hend': 6}
+    assert kl.sent.index('G28 X Y') > kl.sent.index(writes[-1])      # restored, then re-homed

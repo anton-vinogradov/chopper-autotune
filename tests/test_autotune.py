@@ -76,11 +76,15 @@ def test_a_live_spreadcycle_is_autotunes_doing_not_a_killed_run():
 def test_a_dataset_resumes_only_under_the_same_autotune_state():
     manifest = {'speeds': [58], 'accel': 1000.0, 'measure_time': 1.25, 'autotune': 'performance'}
     check_resume(manifest, [58], 1000.0, 1.25, 'performance')
-    with pytest.raises(SystemExit, match='klipper_tmc_autotune: dataset performance vs current None'):
+    # the action first, within the display's 120 characters; 'off' instead of None
+    with pytest.raises(SystemExit) as refused:
         check_resume(manifest, [58], 1000.0, 1.25, None)
-    with pytest.raises(SystemExit, match='dataset None vs current auto'):
+    shown = ('collect FAILED: %s' % refused.value.code)[:120]
+    assert shown.startswith('collect FAILED: refusing to resume: klipper_tmc_autotune was '
+                            'performance, now off; start a new dataset')
+    with pytest.raises(SystemExit, match='was off, now auto'):
         check_resume(dict(manifest, autotune=None), [58], 1000.0, 1.25, 'auto')
-    # a manifest from before the key existed is not compared
+    # a manifest from before the key existed is not compared (collect stamps it then)
     del manifest['autotune']
     check_resume(manifest, [58], 1000.0, 1.25, 'auto')
 
@@ -102,4 +106,36 @@ def test_the_collect_manifest_carries_the_autotune_goal():
     import inspect
 
     from chopper_autotune import collect
-    assert "'autotune': hw.autotune" in inspect.getsource(collect.collect)
+    source = inspect.getsource(collect.collect)
+    assert "'autotune': autotune_tag(hw.driver.name, hw.autotune)" in source
+    # a resumed dataset from before the key gets it: the rest is measured now
+    assert "ds.update_manifest(autotune=autotune_tag(hw.driver.name, hw.autotune))" in source
+
+
+def test_a_tmc2208_records_no_autotune_measurement():
+    # no CoolStep on a TMC2208: nothing lowered the current, the result stays savable
+    from chopper_autotune.collect import autotune_tag
+    assert autotune_tag('2208', 'auto') is None
+    assert autotune_tag('2209', 'auto') == 'auto' and autotune_tag('2240', None) is None
+
+
+def test_a_run_stopped_before_the_read_leaves_autotunes_motor_alone():
+    # nothing was written yet: the config's registers and mode would replace autotune's
+    from chopper_autotune.collect import exit_spreadcycle, restore_chopper
+    scripts = []
+    kl = SimpleNamespace(gcode=scripts.append)
+    hw = hardware('performance', baseline={'tbl': 1, 'toff': 8, 'hstrt': 7, 'hend': 5})
+    hw.settled, hw.stealth = False, tmc.DRIVERS['2240'].spreadcycle_switch
+    restore_chopper(kl, hw)
+    exit_spreadcycle(kl, hw)
+    assert scripts == []
+    # after the read the run puts back what it read
+    hw.settled = True
+    restore_chopper(kl, hw)
+    assert scripts and 'VALUE=8' in scripts[0]
+    # a motor without autotune keeps repairing what a killed run left behind
+    scripts.clear()
+    plain = hardware(None, baseline={'tbl': 1, 'toff': 8, 'hstrt': 7, 'hend': 5})
+    plain.settled = False
+    restore_chopper(kl, plain)
+    assert scripts
