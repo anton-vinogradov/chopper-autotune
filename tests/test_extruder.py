@@ -134,12 +134,102 @@ def test_extruder_stealth_resolved_live_before_the_force():
         def gcode_output(self, script):
             assert script == 'DUMP_TMC STEPPER=extruder REGISTER=GCONF'
             return ['// GCONF:      0000000e en_pwm_mode=1']
+
+        def settings(self):
+            return {}
     driver = tmc.DRIVERS['2240']
     # no stealthchop_threshold line, yet en_pwm_mode=1 = stealthChop (autotune's doing)
     assert resolve_extruder_stealth(LiveKl(), driver, None) == ('en_pwm_mode', 0, 1)
 
     class DeafKl:
+        def __init__(self, settings=None):
+            self.config = settings or {}
+
         def gcode_output(self, script):
             return ['// ok']
+
+        def settings(self):
+            return self.config
     assert resolve_extruder_stealth(DeafKl(), driver, None) is None
     assert resolve_extruder_stealth(DeafKl(), driver, driver.spreadcycle_switch) == driver.spreadcycle_switch
+    # unreadable: klipper_tmc_autotune's silent and autoswitch goals clear en_spreadcycle
+    switch = driver.spreadcycle_switch
+    for goal, configured, stealth in (('silent', None, switch), ('autoswitch', None, switch),
+                                      ('performance', switch, None),
+                                      ('auto', switch, switch)):     # the extruder: torque decides
+        deaf = DeafKl({'autotune_tmc extruder': {'tuning_goal': goal}})
+        assert resolve_extruder_stealth(deaf, driver, configured) == stealth, goal
+
+
+def test_save_on_an_autotune_extruder_is_refused_before_the_heat_up(monkeypatch):
+    from types import SimpleNamespace
+
+    import pytest
+
+    import chopper_autotune.extruder as extruder_mod
+    scripts = []
+    kl = SimpleNamespace(settings=lambda: {'tmc2209 extruder': {}, 'autotune_tmc extruder': {'motor': 'x'},
+                                           'extruder': {}},
+                         gcode=scripts.append)
+    with pytest.raises(SystemExit, match=r'not saving \[tmc2209 extruder\]'):
+        extruder_mod.extruder_tune(kl, SimpleNamespace(save_last=False, save=True, temp=200.0))
+    assert scripts == []                                 # no M104: nothing heated
+    # SAVE_LAST=1 persists nothing either
+    state = {'driver': '2209', 'fields': {'tbl': 1, 'toff': 3, 'hstrt': 5, 'hend': 2}}
+    monkeypatch.setattr(extruder_mod, 'load_winner_state', lambda: state)
+    with pytest.raises(SystemExit, match=r'not saving \[tmc2209 extruder\]'):
+        extruder_mod.extruder_tune(kl, SimpleNamespace(save_last=True, save=False, url='http://x'))
+    # autotune gone since: a winner measured under it is still not saved
+    state['autotune'] = 'silent'
+    kl.settings = lambda: {'tmc2209 extruder': {}, 'extruder': {}}
+    with pytest.raises(SystemExit, match='measured under autotune; the log says what to do'):
+        extruder_mod.extruder_tune(kl, SimpleNamespace(save_last=True, save=False, url='http://x'))
+
+
+def test_autotunes_extruder_is_read_live_and_its_spreadcycle_kept():
+    from types import SimpleNamespace
+
+    from chopper_autotune import tmc
+    from chopper_autotune.extruder import autotune_extruder_baseline, resolve_extruder_stealth
+    driver = tmc.DRIVERS['2240']
+    answers = {'GCONF': '// GCONF: 00000000', 'CHOPCONF': '// CHOPCONF: 14410153 toff=3 hstrt=5 hend=2 tbl=2 tpfd=4'}
+    kl = SimpleNamespace(settings=lambda: {'autotune_tmc extruder': {'tuning_goal': 'performance'}},
+                         gcode_output=lambda script: [answers[script.rsplit('=', 1)[1]]])
+    # en_pwm_mode clear = spreadCycle, autotune's doing: no stealthChop at the end
+    assert resolve_extruder_stealth(kl, driver, driver.spreadcycle_switch) is None
+    assert autotune_extruder_baseline(kl, driver, {'tbl': 1}) == {
+        'tbl': 2, 'toff': 3, 'hstrt': 5, 'hend': 2, 'tpfd': 4}
+    plain = SimpleNamespace(settings=lambda: {}, gcode_output=lambda script: [answers['GCONF']])
+    assert resolve_extruder_stealth(plain, driver, driver.spreadcycle_switch) == driver.spreadcycle_switch
+    assert autotune_extruder_baseline(plain, driver, {'tbl': 1}) == {'tbl': 1}
+
+
+def test_an_early_stop_enables_the_extruder_before_putting_registers_back(monkeypatch):
+    # M104 above max_temp fails before wake_stepper: without the enable first, the register
+    # write energizes a driver without an enable pin that Klipper counts as off
+    from types import SimpleNamespace
+
+    import pytest
+
+    import chopper_autotune.extruder as extruder_mod
+    from chopper_autotune.klippy import KlippyError
+    sent = []
+
+    def gcode(script):
+        sent.append(script)
+        if script.startswith('M104 S260'):
+            raise KlippyError("gcode/script failed: Requested temperature (260.0) out of range")
+    kl = SimpleNamespace(settings=lambda: {'tmc2209 extruder': {'driver_toff': 3}, 'extruder': {}},
+                         gcode=gcode, subscribe_accel=lambda chip: None)
+    monkeypatch.setattr(extruder_mod, 'detect_hardware', lambda kl, axis: SimpleNamespace(
+        accel_chip='adxl345', display=False))
+    monkeypatch.setattr(extruder_mod, 'refuse_if_printing', lambda kl: None)
+    monkeypatch.setattr(extruder_mod, 'Screen', lambda kl, display: SimpleNamespace(
+        update=lambda *a, **k: None, final=lambda *a: None))
+    args = SimpleNamespace(save_last=False, save=False, temp=260.0, demo=False, min_speed=3,
+                           max_speed=8, speed=None, dry_run=False, yes=True)
+    with pytest.raises(KlippyError):
+        extruder_mod.extruder_tune(kl, args)
+    enable = sent.index('SET_STEPPER_ENABLE STEPPER=extruder ENABLE=1')
+    first_write = next(i for i, s in enumerate(sent) if s.startswith('SET_TMC_FIELD'))
+    assert enable < first_write < sent.index('SET_STEPPER_ENABLE STEPPER=extruder ENABLE=0')
