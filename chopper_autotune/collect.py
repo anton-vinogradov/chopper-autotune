@@ -32,6 +32,7 @@ OVERHEAD_STREAM_SEC = 0.3
 OVERHEAD_CSV_SEC = 3.0
 VALIDATE_EXTRA_ITERATIONS = 2
 MAX_VALIDATE_ROUNDS = 4
+KLIPPY_DIR = os.path.expanduser('~/klipper/klippy')
 THERMAL_FLAGS = ('otpw', 'ot', 't120', 't143', 't150', 't157')
 # TMC2240 die sensor: otpw fires at 120 C by default, shutdown near 165 C; the ADC reads
 # the chip average while the output stages run hotter (datasheet), so stop earlier
@@ -176,16 +177,42 @@ def refuse_multi_motor(settings: dict, axes: str = 'xy'):
                          % ', '.join(twins))
 
 
+def xy_motors_off(settings: dict) -> str:
+    """Switch off every X/Y motor, twins included. Z keeps holding and keeps its homing:
+    M18 would unhome Z, and [safe_z_home] then lifts it by z_hop on every G28 X Y."""
+    steppers = [name for axis in ('x', 'y') for name in ['stepper_' + axis] + rail_twins(settings, axis)]
+    return '\n'.join('SET_STEPPER_ENABLE STEPPER=%s ENABLE=0' % name for name in steppers)
+
+
+def can_clear_homing() -> bool:
+    """SET_KINEMATIC_POSITION CLEAR_HOMED= exists since Klipper v0.13 (and in Kalico);
+    older Klipper marks EVERY axis homed with that same command. Read the installed code."""
+    try:
+        with open(os.path.join(KLIPPY_DIR, 'extras', 'force_move.py')) as source:
+            return 'CLEAR_HOMED' in source.read()
+    except OSError:
+        return False
+
+
 def release_gantry(kl: Klippy):
-    """Hand the gantry to the user's hands: every X/Y motor off, twins included, and the
-    homing forgotten, since hands move the head next. M18 is the one command that forgets
-    it in every Klipper and Kalico version (SET_STEPPER_ENABLE keeps the axes homed at a
-    stale position; SET_KINEMATIC_POSITION CLEAR_HOMED is missing in v0.12, where it
-    marks every axis homed instead). Z goes straight back on so a bed or gantry does not
-    sink; it stays unhomed, and every next job homes first."""
-    settings = kl.settings()
-    z = [name for name in ['stepper_z'] + rail_twins(settings, 'z') if name in settings]
-    kl.gcode('\n'.join(['M18'] + ['SET_STEPPER_ENABLE STEPPER=%s ENABLE=1' % name for name in z]))
+    """Hand the gantry to the user's hands: every X/Y motor off, and the X/Y homing
+    forgotten where Klipper can do that (hands move the head next; SET_STEPPER_ENABLE
+    alone keeps the axes homed at a stale position). Z keeps holding and its homing."""
+    lines = [xy_motors_off(kl.settings())]
+    if can_clear_homing():
+        lines.append('SET_KINEMATIC_POSITION SET_HOMED= CLEAR_HOMED=XY')
+    kl.gcode('\n'.join(lines))
+
+
+def ensure_z_homed(kl: Klippy, settings: dict):
+    """[safe_z_home] lifts an UNHOMED Z by z_hop on every G28 X Y and leaves it unhomed,
+    so a job re-homing X/Y again and again would climb the gantry into the frame. On
+    such a printer a job starting with Z unhomed homes all axes once, as a print start
+    does; the tools never unhome Z themselves afterwards (no M18 but a thermal stop)."""
+    z_hop = float((settings.get('safe_z_home') or {}).get('z_hop') or 0)
+    if z_hop and 'z' not in kl.homed_axes():
+        print('Z is not homed and [safe_z_home] would lift it on every XY homing: homing all axes')
+        kl.gcode('G28\nM400')
 
 
 class DriverTooHot(SystemExit):
@@ -440,7 +467,8 @@ def park(kl: Klippy, hw: Hardware, release: bool = True):
     # a mid-run re-home keeps the motors energized: on a stepper without a dedicated
     # enable pin every disable->enable resets toff (Klipper restores its config copy,
     # klipper_tmc_autotune re-applies its value), replacing the candidate's
-    kl.gcode('G28 X Y\nG0 X%.1f Y%.1f F6000\nM400' % hw.center + ('\nM18' if release else ''))
+    kl.gcode('G28 X Y\nG0 X%.1f Y%.1f F6000\nM400' % hw.center
+             + ('\n' + xy_motors_off(kl.settings()) if release else ''))
 
 
 def refuse_if_printing(kl: Klippy):
@@ -994,6 +1022,7 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
     print('Preparing: home XY, park at center, disable motors')
     guard = ThermalGuard(kl, kl.settings())
     guard.preflight()                           # before the first move: not on a hot driver
+    ensure_z_homed(kl, kl.settings())
     park(kl, hw)
     started = time.time()
     before_move = make_parker(kl, hw, guard)

@@ -12,8 +12,8 @@ from __future__ import annotations
 import math
 import os
 
-from .collect import (Screen, ThermalGuard, coupled_xy, detect_hardware, refuse_if_printing,
-                      refuse_multi_motor, rehome_unless_hot, run_restore)
+from .collect import (Screen, ThermalGuard, coupled_xy, detect_hardware, ensure_z_homed,
+                      refuse_if_printing, refuse_multi_motor, rehome_unless_hot, run_restore)
 from .dataset import save_json
 from .klippy import Klippy, find_socket
 
@@ -198,6 +198,7 @@ def current_tune(kl: Klippy, args) -> int:
     recommended, thresholds = {}, {}
     try:
         guard.preflight()
+        ensure_z_homed(kl, settings)
         kl.gcode('G28 X Y\nG90')
         for m in motors:
             label = motor_label(m)

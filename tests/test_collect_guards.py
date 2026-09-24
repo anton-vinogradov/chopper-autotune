@@ -245,8 +245,9 @@ def test_mid_run_rehome_keeps_the_motors_energized():
     scripts = []
     kl = SimpleNamespace(gcode=scripts.append, settings=lambda: {})
     hw = SimpleNamespace(center=(130.0, 130.0), axis_span=260.0)
-    park(kl, hw)                                   # the start: motors released for the noise floor
-    assert scripts[-1].endswith('M18')
+    park(kl, hw)                                   # the start: X/Y released for the noise floor
+    assert scripts[-1].endswith('SET_STEPPER_ENABLE STEPPER=stepper_y ENABLE=0')
+    assert 'M18' not in scripts[-1]                # Z keeps its homing (safe_z_home z_hop)
     before_move = make_parker(kl, hw)
     for _ in range(PARK_INTERVAL_MOVES + 1):
         before_move(1, 1.0)

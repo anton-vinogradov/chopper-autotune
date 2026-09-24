@@ -32,7 +32,7 @@ import os
 import numpy as np
 
 from .collect import (Screen, await_flushed, capture_span, coupled_xy, detect_hardware,
-                      motor_label, refuse_if_printing, release_gantry, run_restore)
+                      ensure_z_homed, motor_label, refuse_if_printing, release_gantry, run_restore)
 from .current import stress_vector
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
@@ -222,6 +222,7 @@ def belts(kl: Klippy, args) -> int:
             return 0
         screen = Screen(kl, hw.display)
         refuse_if_printing(kl)
+        ensure_z_homed(kl, kl.settings())
         kl.gcode('G28 X Y\nM400')
         identify_belt(kl, hw, motor, screen)
         screen.final('Motors off — belt %s is the one that moved' % motor_label(motor))
@@ -529,6 +530,7 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
     # A-vs-B comparison stays honest; the front span is unchanged for big machines.
     cx, _ = hw.center
     rear_y = float(kl.settings()['stepper_y']['position_max']) - 3.0
+    ensure_z_homed(kl, kl.settings())
     kl.gcode('G28 X Y\nG90\nG1 X%.1f Y%.1f F6000\nM400' % (cx, rear_y))
 
 
