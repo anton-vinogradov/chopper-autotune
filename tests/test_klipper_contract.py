@@ -21,8 +21,10 @@ from chopper_autotune import tmc
 from chopper_autotune.collect import live_stealth
 from chopper_autotune.klippy import Klippy, KlippyError, fence_markers
 
-# old Klipper releases carry regex strings Python 3.12+ warns about while compiling
-pytestmark = pytest.mark.filterwarnings('ignore::SyntaxWarning')
+# old Klipper releases carry regex strings Python warns about while compiling them
+# (DeprecationWarning up to 3.11, SyntaxWarning from 3.12)
+pytestmark = [pytest.mark.filterwarnings('ignore:invalid escape sequence:DeprecationWarning'),
+              pytest.mark.filterwarnings('ignore:invalid escape sequence:SyntaxWarning')]
 
 SRC = os.environ.get('KLIPPER_SRC_DIR') or os.path.join(os.path.dirname(__file__), '.klipper-src')
 # GCONF as a TMC2209 prints it after Klipper's own init (spreadCycle bit clear = stealthChop)
