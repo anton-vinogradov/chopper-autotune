@@ -16,8 +16,27 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
+      - run: shellcheck *.sh tests/*.sh
       - run: pip install -e . pytest
       - run: bash tests/fetch_klipper_sources.sh
       - run: pytest -q tests
         env:
           CHOPPER_CONTRACT: '1'
+
+  install:
+    # install.sh in clean Debian containers: a package that disappears from a release
+    # (libatlas-base-dev in trixie, #130) must fail here, not on users' printers
+    runs-on: ${{ matrix.runner }}
+    container: debian:${{ matrix.debian }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {debian: bullseye, runner: ubuntu-latest}
+          - {debian: bookworm, runner: ubuntu-latest}
+          - {debian: trixie, runner: ubuntu-latest}
+          - {debian: trixie, runner: ubuntu-24.04-arm}
+    steps:
+      - run: apt-get update && apt-get install -y --no-install-recommends git ca-certificates
+      - uses: actions/checkout@v4
+      - run: bash tests/install_smoke.sh
