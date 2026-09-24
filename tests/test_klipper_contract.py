@@ -3,6 +3,7 @@ other tests only repeat our own assumptions: a bare-word ECHO fence passed them 
 was a 'Malformed command' on every printer. The GPL sources are fetched, never
 committed (tests/fetch_klipper_sources.sh); CI sets CHOPPER_CONTRACT=1 so a missing
 download fails instead of skipping."""
+import configparser
 import importlib.util
 import json
 import math
@@ -17,6 +18,7 @@ import types
 import pytest
 
 import fake_klipper
+from klipper_config import CFG, named, read_like_klipper, selfcheck, settings_of
 from chopper_autotune import tmc
 from chopper_autotune.collect import live_stealth
 from chopper_autotune.klippy import Klippy, KlippyError, fence_markers
@@ -53,26 +55,35 @@ def safe_float(value):
     return number
 
 
-def load_gcode(source: str):
-    path = os.path.join(SRC, source, 'gcode.py')
+def load_klippy(source: str, filename: str):
+    path = os.path.join(SRC, source, filename + '.py')
     tag = source.replace('.', '_').replace('-', '_')
-    name = 'contract_%s_gcode' % tag
+    name = 'contract_%s_%s' % (tag, filename)
     if source.startswith('kalico'):
-        # Kalico's gcode.py is a package module ('from . import mathutil'); the real
-        # mathutil pulls in its logging machinery, the parser only needs safe_float
+        # Kalico's klippy files are package modules ('from . import mathutil'); the real
+        # mathutil pulls in its logging machinery, the parser only needs safe_float, and
+        # reading a config never asks the danger options the config reader imports
         package = types.ModuleType('contract_%s' % tag)
         package.__path__ = [os.path.dirname(path)]
         mathutil = types.ModuleType(package.__name__ + '.mathutil')
         mathutil.safe_float = safe_float
-        package.mathutil = mathutil
-        sys.modules[package.__name__] = package
-        sys.modules[mathutil.__name__] = mathutil
-        name = package.__name__ + '.gcode'
+        extras = types.ModuleType(package.__name__ + '.extras')
+        extras.__path__ = []
+        danger_options = types.ModuleType(extras.__name__ + '.danger_options')
+        danger_options.get_danger_options = None
+        package.mathutil, package.extras, extras.danger_options = mathutil, extras, danger_options
+        for stub in (package, mathutil, extras, danger_options):
+            sys.modules[stub.__name__] = stub
+        name = package.__name__ + '.' + filename
     spec = importlib.util.spec_from_file_location(name, path)
     module = importlib.util.module_from_spec(spec)
     sys.modules[name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def load_gcode(source: str):
+    return load_klippy(source, 'gcode')
 
 
 def load_webhooks(source: str, gcode_module):
@@ -311,3 +322,56 @@ def test_the_fake_refuses_exactly_what_klipper_refuses(source):
         except module.CommandError:
             refused = True
         assert refused == fake_klipper.malformed(line), (source, line)
+
+
+def read_main_config(source: str, path: str, monkeypatch):
+    """The config as this release's own reader builds it from printer.cfg, includes and all."""
+    # v0.11/v0.12 call readfp, gone since Python 3.12 (their printers run 3.9 to 3.11)
+    monkeypatch.setattr(configparser.RawConfigParser, 'readfp',
+                        configparser.RawConfigParser.read_file, raising=False)
+    module = load_klippy(source, 'configfile')
+    with open(path) as main:
+        data = main.read()
+    if hasattr(module, 'ConfigFileReader'):                 # v0.13 and later
+        return module.ConfigFileReader().build_fileconfig_with_includes(data, path)
+    config = module.PrinterConfig.__new__(module.PrinterConfig)
+    config.printer = None
+    return config._build_config_wrapper(data, path).fileconfig
+
+
+def printer_cfg(tmp_path, body: str) -> str:
+    """printer.cfg as install.sh leaves it: our include on the first line."""
+    (tmp_path / 'chopper_autotune.cfg').symlink_to(CFG)
+    (tmp_path / 'printer.cfg').write_text('[include chopper_autotune.cfg]\n' + body)
+    return str(tmp_path / 'printer.cfg')
+
+
+@pytest.mark.parametrize('source', fetched('configfile.py'))
+def test_a_macro_defined_again_later_replaces_ours_without_an_error(source, tmp_path, monkeypatch):
+    # #132: another tuner's installer also puts its include on the first line of
+    # printer.cfg, so a tuner installed before ours ends up below it and wins
+    require(source)
+    (tmp_path / 'chopper_tune.cfg').write_text('[gcode_macro CHOPPER_TUNE]\ngcode:\n    _chop_workflow\n')
+    fileconfig = read_main_config(source, printer_cfg(tmp_path, '[include chopper_tune.cfg]\n'), monkeypatch)
+    assert fileconfig.get('gcode_macro CHOPPER_TUNE', 'gcode').strip() == '_chop_workflow'
+    assert named(selfcheck(settings_of(fileconfig))) == ['CHOPPER_TUNE']
+
+
+@pytest.mark.parametrize('source', fetched('configfile.py'))
+@pytest.mark.parametrize('yours, enabled', [('', 'True'),
+                                            ('enable_force_move: False\n', 'False'),
+                                            ('enable_force_move: True\n', 'True')])
+def test_a_force_move_of_your_own_merges_with_ours(source, tmp_path, monkeypatch, yours, enabled):
+    require(source)
+    fileconfig = read_main_config(source, printer_cfg(tmp_path, '[force_move]\n' + yours), monkeypatch)
+    assert fileconfig.get('force_move', 'enable_force_move') == enabled
+    assert selfcheck(settings_of(fileconfig)) is None
+
+
+@pytest.mark.parametrize('source', fetched('gcode.py'))
+def test_klipper_accepts_our_macro_names(source):
+    require(source)
+    _, dispatch, _ = ready_dispatch(load_gcode(source), GCONF_STEALTH)
+    for section in read_like_klipper(CFG).sections():
+        if section.startswith('gcode_macro '):
+            dispatch.register_command(section.split()[1].upper(), lambda gcmd: None)

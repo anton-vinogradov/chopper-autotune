@@ -102,6 +102,7 @@ class Panel(ScreenPanel):
         no_referee = self.sensorless()
         grid = Gtk.Grid(column_homogeneous=True, row_homogeneous=True, vexpand=False)
         self.buttons = {}
+        self.commands = {}
         for index, (icon, label, style, command, confirm) in enumerate(actions):
             if no_referee and label in referee_tools:
                 button = self._gtk.Button(icon, label + " \u2717", style)
@@ -110,6 +111,7 @@ class Panel(ScreenPanel):
                 button = self._gtk.Button(icon, label, style)
                 button.connect("clicked", self.run, command, confirm)
                 self.buttons[label] = button
+                self.commands[label] = command
             grid.attach(button, index % 4, index // 4, 1, 1)
         # local buttons (no printer action): Results shows everything measured so far
         restore = self._gtk.Button("refresh", _("Restore"), "color2")
@@ -167,11 +169,34 @@ class Panel(ScreenPanel):
         self.mark_done_steps()
         self.show_status(self.printer.get_stat("display_status", "message"))
 
+    def replaced(self, command):
+        """A config file read after ours that defines this macro name again replaces
+        our macro without a word (Klipper keeps the last definition), and the button
+        would run another tool (#132). Each of our macros calls CMD=<its own name>."""
+        name = command.split()[0]
+        section = self.printer.get_config_section("gcode_macro " + name) or {}
+        return "gcode" in section and "CMD=" + name.lower() not in section["gcode"]
+
+    def refuse_replaced(self, command):
+        if not self.replaced(command):
+            return False
+        self.status.set_markup("<span size='large'>" + GLib.markup_escape_text(_(
+            "%s here runs another tool's macro: a config file read after "
+            "chopper_autotune.cfg defines the same name, and Klipper keeps the last "
+            "one. Nothing was sent. Keep one of the two tools: see 'Macro name "
+            "conflicts' in the chopper-autotune README."
+        ) % command.split()[0]) + "</span>")
+        return True
+
     def run(self, widget, command, confirm):
+        if self.refuse_replaced(command):
+            return
         self._screen._confirm_send_action(widget, confirm, "printer.gcode.script",
                                           {"script": command})
 
     def stop(self, widget):
+        if self.refuse_replaced("CHOPPER_STOP"):
+            return
         self._screen._ws.klippy.gcode_script("CHOPPER_STOP")
         # the tool restores registers and re-homes before exiting (~10 s), so give
         # immediate feedback that the tap registered
@@ -213,10 +238,12 @@ class Panel(ScreenPanel):
         return False
 
     def mark_done_steps(self):
-        for label, done in self.step_states().items():
-            button = self.buttons.get(label)
-            if button:
-                self.relabel(button, ("\u2713 " + label) if done else label)
+        done = self.step_states()
+        for label, button in self.buttons.items():
+            if self.replaced(self.commands[label]):
+                self.relabel(button, "\u26a0 " + label)
+            else:
+                self.relabel(button, ("\u2713 " + label) if done.get(label) else label)
 
     def show_status(self, message):
         self.mark_done_steps()                      # a finished run may have advanced the plan
