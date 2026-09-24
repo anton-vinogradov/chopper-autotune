@@ -112,10 +112,10 @@ Long commands run in the background and write their full output to `~/printer_da
 
 ### Macro name conflicts
 
-Klipper keeps one macro per name. When two config files define the same macro, Klipper merges them without a warning, and the file it reads last wins. All our macro names start with `CHOPPER_`. Other tools use some of them too: [chopper-resonance-tuner](https://github.com/MRX8024/chopper-resonance-tuner) and [Chopper-tuning-guide](https://github.com/altzbox/Chopper-tuning-guide) define `CHOPPER_TUNE`, and the [gschpoozi](https://github.com/gm-tc-collaborators/gschpoozi) config generator defines `CHOPPER_ANALYZE`.
+Klipper keeps one macro per name. When two config files define the same section, Klipper merges them without a warning: for each option, the file it reads last wins. So a macro or a shell command of our name in a file read after `chopper_autotune.cfg` replaces ours. All our macro names start with `CHOPPER_`. Other tools use some of them too: [chopper-resonance-tuner](https://github.com/MRX8024/chopper-resonance-tuner) and [Chopper-tuning-guide](https://github.com/altzbox/Chopper-tuning-guide) define `CHOPPER_TUNE`, and the [gschpoozi](https://github.com/gm-tc-collaborators/gschpoozi) config generator defines `CHOPPER_ANALYZE` with a `chopper_analyze` shell command.
 
-- `install.sh` lists the other config files that define one of our names.
-- At every start, Klipper runs our self-check. If a file read after `chopper_autotune.cfg` replaced one of our macros, the console shows an error that names it. That name then runs the other tool, not ours.
+- `install.sh` lists the other config files that define one of our macro or shell command names.
+- Ten seconds after every Klipper start, our self-check names each replaced macro on the display and in the console. That name then runs the other tool, not ours.
 - The KlipperScreen panel marks such a button with ⚠. Tapping it explains the conflict and sends nothing.
 
 To fix a conflict, keep one of the two tools. In `printer.cfg`, comment out the `[include ...]` line of the other tool, or ours, then run `RESTART`.

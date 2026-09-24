@@ -56,24 +56,29 @@ fi
 ln -srf "$repo_path/$cfg_name" "$config_dir/"
 
 # Older installs generated [force_move] in a file of its own: chopper_autotune.cfg
-# declares it now (Klipper merges a section declared in several files).
+# declares it now (Klipper merges a section declared in several files). The file stays
+# while any other config still includes it: a missing include stops Klipper.
 force_cfg_name=chopper_force_move.cfg
-rm -f "$config_dir/$force_cfg_name"
-if [ -f "$printer_cfg" ]; then
+if [ -f "$printer_cfg" ] && grep -q "^\[include $force_cfg_name\]$" "$printer_cfg"; then
     sed -i "/^\[include $force_cfg_name\]$/d" "$printer_cfg"
 fi
+if ! grep -RqsE --include='*.cfg' "^\[include[[:space:]]+([^]]*/)?${force_cfg_name}[[:space:]]*\]" "$config_dir"; then
+    rm -f "$config_dir/$force_cfg_name"
+fi
 
-# Klipper keeps the definition of a macro it reads last, without a word: another tool
-# that defines one of our names replaces our macro, or ours replaces its one (#132).
-# -R follows the symlinks tools put into the config folder; any letter case, since a
-# name in another case stops Klipper from starting instead.
+# Klipper keeps the definition it reads last, without a word: another tool that
+# defines one of our macro or shell command names replaces ours, or ours replaces its
+# one (#132). -R follows the symlinks tools put into the config folder; backups are
+# skipped, Klipper does not read them; any letter case counts, since a macro name in
+# another case stops Klipper from starting instead.
 names=$(sed -n 's/^\[gcode_macro \(CHOPPER_[A-Z_]*\)\]$/\1/p' "$repo_path/$cfg_name" | paste -sd'|' -)
 conflicts=$(grep -RniE --include='*.cfg' --exclude="$cfg_name" \
-    "^\[gcode_macro[[:space:]]+($names)[[:space:]]*\]" "$config_dir" 2>/dev/null || true)
+    --exclude='printer-[0-9]*.cfg' --exclude='*.chopper-backup.cfg' \
+    "^\[(gcode_macro|gcode_shell_command)[[:space:]]+($names)[[:space:]]*\]" "$config_dir" 2>/dev/null || true)
 if [ -n "$conflicts" ]; then
-    echo "WARNING: other config files define chopper-autotune macro names:"
+    echo "WARNING: other config files define chopper-autotune macro or shell command names:"
     echo "$conflicts"
-    echo "If Klipper reads both, it keeps one macro per name, and one of the two tools will not run."
+    echo "If Klipper reads both, it keeps one definition per name, and one of the two tools will not run."
     echo "Keep one tool: see 'Macro name conflicts' in the README."
 fi
 

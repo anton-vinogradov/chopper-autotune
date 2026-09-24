@@ -113,10 +113,10 @@ cd ~ && git clone https://github.com/anton-vinogradov/chopper-autotune && bash .
 
 ### Конфликт имён макросов (Macro name conflicts)
 
-Klipper держит один макрос на имя. Если два файла конфига определяют один и тот же макрос, Klipper молча сливает их, и побеждает файл, который он прочитал последним. Все наши макросы начинаются с `CHOPPER_`. Часть этих имён есть и в других инструментах: [chopper-resonance-tuner](https://github.com/MRX8024/chopper-resonance-tuner) и [Chopper-tuning-guide](https://github.com/altzbox/Chopper-tuning-guide) определяют `CHOPPER_TUNE`, а генератор конфигов [gschpoozi](https://github.com/gm-tc-collaborators/gschpoozi) определяет `CHOPPER_ANALYZE`.
+Klipper держит один макрос на имя. Если два файла конфига определяют одну и ту же секцию, Klipper молча сливает их: по каждой опции побеждает файл, который он прочитал последним. Поэтому макрос или shell-команда с нашим именем в файле, прочитанном после `chopper_autotune.cfg`, заменяет нашу. Все наши макросы начинаются с `CHOPPER_`. Часть этих имён есть и в других инструментах: [chopper-resonance-tuner](https://github.com/MRX8024/chopper-resonance-tuner) и [Chopper-tuning-guide](https://github.com/altzbox/Chopper-tuning-guide) определяют `CHOPPER_TUNE`, а генератор конфигов [gschpoozi](https://github.com/gm-tc-collaborators/gschpoozi) определяет `CHOPPER_ANALYZE` вместе с shell-командой `chopper_analyze`.
 
-- `install.sh` перечисляет другие файлы конфига, где определено одно из наших имён.
-- При каждом старте Klipper запускает нашу самопроверку. Если файл, прочитанный после `chopper_autotune.cfg`, заменил наш макрос, в консоли появляется ошибка с его именем. Такое имя запускает чужой инструмент, а не наш.
+- `install.sh` перечисляет другие файлы конфига, где определено одно из наших имён макросов или shell-команд.
+- Через десять секунд после каждого старта Klipper наша самопроверка называет каждый заменённый макрос на дисплее и в консоли. Такое имя запускает чужой инструмент, а не наш.
 - Панель KlipperScreen помечает такую кнопку знаком ⚠. По нажатию она объясняет конфликт и ничего не отправляет.
 
 Как исправить: оставьте один из двух инструментов. В `printer.cfg` закомментируйте строку `[include ...]` другого инструмента или нашу, затем выполните `RESTART`.

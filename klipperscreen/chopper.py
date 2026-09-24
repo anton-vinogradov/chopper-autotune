@@ -122,6 +122,9 @@ class Panel(ScreenPanel):
         grid.attach(results, (len(actions) + 1) % 4, (len(actions) + 1) // 4, 1, 1)
         stop = self._gtk.Button("stop", _("Stop"), "color4")
         stop.connect("clicked", self.stop)
+        # listed for the replaced-macro mark only: their taps open a menu / stop
+        self.buttons[_("Restore")], self.commands[_("Restore")] = restore, "CHOPPER_RESTORE"
+        self.buttons[_("Stop")], self.commands[_("Stop")] = stop, "CHOPPER_STOP"
         # 4 columns keep the buttons to three rows, leaving the status area its height
         grid.attach(stop, (len(actions) + 2) % 4, (len(actions) + 2) // 4, 1, 1)
 
@@ -170,18 +173,23 @@ class Panel(ScreenPanel):
         self.show_status(self.printer.get_stat("display_status", "message"))
 
     def replaced(self, command):
-        """A config file read after ours that defines this macro name again replaces
-        our macro without a word (Klipper keeps the last definition), and the button
-        would run another tool (#132). Each of our macros calls CMD=<its own name>."""
+        """A config file read after ours that defines this macro or shell command name
+        again replaces ours without a word (Klipper keeps the last definition), and the
+        button would run another tool (#132). Each of our macros calls CMD=<its own
+        name>, and each such command runs a script of ours."""
         name = command.split()[0]
-        section = self.printer.get_config_section("gcode_macro " + name) or {}
-        return "gcode" in section and "CMD=" + name.lower() not in section["gcode"]
+        macro = self.printer.get_config_section("gcode_macro " + name) or {}
+        shell = self.printer.get_config_section("gcode_shell_command " + name.lower()) or {}
+        if "gcode" not in macro:
+            return False                            # Klipper answers an unknown name itself
+        return ("CMD=" + name.lower() not in macro["gcode"]
+                or "chopper-autotune/" not in shell.get("command", ""))
 
     def refuse_replaced(self, command):
         if not self.replaced(command):
             return False
         self.status.set_markup("<span size='large'>" + GLib.markup_escape_text(_(
-            "%s here runs another tool's macro: a config file read after "
+            "%s here runs another tool: a config file read after "
             "chopper_autotune.cfg defines the same name, and Klipper keeps the last "
             "one. Nothing was sent. Keep one of the two tools: see 'Macro name "
             "conflicts' in the chopper-autotune README."

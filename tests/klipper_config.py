@@ -41,8 +41,10 @@ class RaisedError(Exception):
     pass
 
 
-def selfcheck(settings: dict) -> 'str | None':
-    """The error _CHOPPER_SELFCHECK raises, or None."""
+def run_selfcheck(settings: dict, display_status: bool = True) -> 'tuple[str | None, str | None]':
+    """What the start-up self-check leaves: (the display message, the console error).
+    Runs the script _CHOPPER_SELFCHECK renders line by line, as Klipper does; M117
+    exists only with [display_status] loaded (Mainsail's and Fluidd's configs have it)."""
     try:
         import jinja2
     except ImportError:
@@ -53,12 +55,30 @@ def selfcheck(settings: dict) -> 'str | None':
     def raise_error(message):
         raise RaisedError(message)
 
-    script = settings['gcode_macro _chopper_selfcheck']['gcode']
-    template = jinja2.Environment('{%', '%}', '{', '}').from_string(script)
-    try:
-        template.render({'printer': {'configfile': {'settings': settings}},
-                         'action_raise_error': raise_error,
-                         'action_respond_info': lambda message: ''})
-    except RaisedError as raised:
-        return str(raised)
-    return None
+    def render(macro, params=None):
+        script = settings['gcode_macro ' + macro]['gcode']
+        printer = dict({'configfile': {'settings': settings}},
+                       **({'display_status': {'message': None}} if display_status else {}))
+        return jinja2.Environment('{%', '%}', '{', '}').from_string(script).render(
+            {'printer': printer, 'params': params or {},
+             'action_raise_error': raise_error, 'action_respond_info': lambda message: ''})
+
+    display = None
+    for line in (line.strip() for line in render('_chopper_selfcheck').split('\n')):
+        if line.startswith('M117 '):
+            assert display_status, 'M117 without [display_status] is an unknown command'
+            display = line[len('M117 '):]
+        elif line.startswith('_CHOPPER_REPLACED '):
+            params = dict(word.split('=', 1) for word in line.split()[1:])
+            try:
+                render('_chopper_replaced', params)
+            except RaisedError as raised:
+                return display, str(raised)
+        else:
+            assert not line, 'unexpected G-code from the self-check: %r' % line
+    return display, None
+
+
+def selfcheck(settings: dict) -> 'str | None':
+    """The console error of the start-up self-check, or None."""
+    return run_selfcheck(settings)[1]

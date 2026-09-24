@@ -57,7 +57,7 @@ sed -i '1i\[include chopper_force_move.cfg]' "$config/printer.cfg"
 chown -R pi:pi "$home"
 install_out=$(as_pi bash "$repo/install.sh" 2>&1) || { echo "$install_out"; echo "FAIL: install.sh failed"; exit 1; }
 echo "$install_out" | tail -n 8
-grep -q "^WARNING: other config files define chopper-autotune macro names" <<< "$install_out" \
+grep -q "^WARNING: other config files define chopper-autotune macro or shell command names" <<< "$install_out" \
     || { echo "FAIL: no warning about the other tuner's CHOPPER_TUNE"; exit 1; }
 grep -q "chopper_tune.cfg:1:\[gcode_macro CHOPPER_TUNE\]" <<< "$install_out" \
     || { echo "FAIL: the warning does not name the other tuner's file"; exit 1; }
@@ -75,8 +75,13 @@ status_out=$(as_pi bash "$repo/status.sh" 2>&1 || true)
 grep -q 'no datasets found' <<< "$status_out" \
     || { echo "FAIL: status did not run the installed program: $status_out"; exit 1; }
 
-echo "=== 3. a second run changes nothing"
+echo "=== 3. a second run changes nothing, and keeps an old [force_move] file still included"
+# the old installer told a user without printer.cfg to include it in their main file
+printf '[force_move]\nenable_force_move: True\n' > "$config/chopper_force_move.cfg"
+printf '[include chopper_force_move.cfg]\n' > "$config/main.cfg"
+chown pi:pi "$config/chopper_force_move.cfg" "$config/main.cfg"
 as_pi bash "$repo/install.sh"
+[ -e "$config/chopper_force_move.cfg" ] || { echo "FAIL: removed a [force_move] file main.cfg includes"; exit 1; }
 [ "$(grep -cx '\[include chopper_autotune.cfg\]' "$config/printer.cfg")" = 1 ]
 [ "$(grep -cx '\[update_manager chopper-autotune\]' "$config/moonraker.conf")" = 1 ]
 echo "install smoke test passed: $(grep ^PRETTY_NAME= /etc/os-release) $(uname -m)"

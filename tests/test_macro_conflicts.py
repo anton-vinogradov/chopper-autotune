@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from klipper_config import CFG, named, our_macros, read_like_klipper, selfcheck, settings_of
+from klipper_config import CFG, named, our_macros, read_like_klipper, run_selfcheck, selfcheck, settings_of
 
 PANEL = os.path.join(os.path.dirname(CFG), 'klipperscreen', 'chopper.py')
 
@@ -23,22 +23,58 @@ def another_tool(tmp_path, name='CHOPPER_TUNE'):
     return str(path)
 
 
+def gschpoozi(tmp_path):
+    """Its CHOPPER_ANALYZE calls a shell command of our name, which runs its own script."""
+    path = tmp_path / 'chopper-tuning.cfg'
+    path.write_text('[gcode_shell_command chopper_analyze]\n'
+                    'command: python3 ~/gschpoozi/scripts/tools/chopper_analyze.py\n'
+                    '[gcode_macro CHOPPER_ANALYZE]\n'
+                    'gcode:\n    RUN_SHELL_COMMAND CMD=chopper_analyze PARAMS="{rawparams}"\n')
+    return str(path)
+
+
+def wrapper(tmp_path):
+    """A macro of your own around ours: it still runs our tool."""
+    path = tmp_path / 'my_macros.cfg'
+    path.write_text('[gcode_macro CHOPPER_TUNE]\ngcode:\n    G28\n'
+                    "    RUN_SHELL_COMMAND CMD=chopper_tune PARAMS='{rawparams}'\n")
+    return str(path)
+
+
 def test_our_file_alone_passes_the_self_check():
-    assert selfcheck(settings_of(read_like_klipper(CFG))) is None
+    assert run_selfcheck(settings_of(read_like_klipper(CFG))) == (None, None)
 
 
 @pytest.mark.parametrize('name', our_macros())
 def test_a_macro_replaced_by_a_file_read_later_is_named(tmp_path, name):
-    error = selfcheck(settings_of(read_like_klipper(CFG, another_tool(tmp_path, name))))
-    assert error.startswith("chopper-autotune: %s runs another tool's macro." % name)
+    display, error = run_selfcheck(settings_of(read_like_klipper(CFG, another_tool(tmp_path, name))))
+    assert error.startswith('chopper-autotune: %s runs another tool.' % name)
     assert named(error) == [name]
     assert "Keep one of the two tools: see 'Macro name conflicts'" in error
+    # the display keeps it when a frontend still starting up misses the console line
+    assert display == 'chopper-autotune: %s runs another tool. README: Macro name conflicts' % name
 
 
 def test_every_replaced_macro_is_named_in_one_error(tmp_path):
     error = selfcheck(settings_of(read_like_klipper(
         CFG, another_tool(tmp_path, 'CHOPPER_TUNE'), another_tool(tmp_path, 'CHOPPER_ANALYZE'))))
-    assert error.startswith("chopper-autotune: CHOPPER_TUNE, CHOPPER_ANALYZE run another tool's macro.")
+    assert error.startswith('chopper-autotune: CHOPPER_TUNE, CHOPPER_ANALYZE run another tool.')
+
+
+def test_without_a_display_status_the_console_error_still_comes(tmp_path):
+    # M117 is an unknown command there, and it would abort the check before the error
+    settings = settings_of(read_like_klipper(CFG, another_tool(tmp_path)))
+    display, error = run_selfcheck(settings, display_status=False)
+    assert display is None and named(error) == ['CHOPPER_TUNE']
+
+
+def test_a_shell_command_of_our_name_running_another_script_is_named(tmp_path):
+    # gschpoozi's CHOPPER_ANALYZE passes the macro check: CMD=chopper_analyze
+    assert named(selfcheck(settings_of(read_like_klipper(CFG, gschpoozi(tmp_path))))) == ['CHOPPER_ANALYZE']
+
+
+def test_a_wrapper_of_your_own_that_runs_our_tool_is_not_named(tmp_path):
+    assert run_selfcheck(settings_of(read_like_klipper(CFG, wrapper(tmp_path)))) == (None, None)
 
 
 def test_a_tool_read_before_ours_loses_quietly(tmp_path):
@@ -54,7 +90,7 @@ def test_every_macro_calls_the_shell_command_of_its_own_name():
     assert len(our_macros()) == 14
     for name in our_macros():
         assert 'RUN_SHELL_COMMAND CMD=%s' % name.lower() in fileconfig.get('gcode_macro ' + name, 'gcode')
-        assert fileconfig.has_section('gcode_shell_command ' + name.lower())
+        assert 'chopper-autotune/' in fileconfig.get('gcode_shell_command ' + name.lower(), 'command')
 
 
 def test_the_self_check_runs_at_every_start():
@@ -113,7 +149,19 @@ def test_the_panel_sends_nothing_to_a_replaced_macro(tmp_path, panel_module):
     panel = panel_on(panel_module, CFG, another_tool(tmp_path))
     panel.run(None, 'CHOPPER_TUNE MOTOR=AB SAVE=1', 'Tune?')
     assert panel.sent == []
-    assert "CHOPPER_TUNE here runs another tool's macro" in panel.shown[-1]
+    assert 'CHOPPER_TUNE here runs another tool' in panel.shown[-1]
+
+
+def test_the_panel_sends_nothing_to_our_name_running_another_script(tmp_path, panel_module):
+    panel = panel_on(panel_module, CFG, gschpoozi(tmp_path))
+    panel.run(None, 'CHOPPER_ANALYZE', 'Analyze?')
+    assert panel.sent == []
+
+
+def test_the_panel_sends_a_wrapper_of_your_own(tmp_path, panel_module):
+    panel = panel_on(panel_module, CFG, wrapper(tmp_path))
+    panel.run(None, 'CHOPPER_TUNE MOTOR=AB SAVE=1', 'Tune?')
+    assert panel.sent == ['CHOPPER_TUNE MOTOR=AB SAVE=1']
 
 
 def test_the_panel_checks_stop_too(tmp_path, panel_module):
@@ -131,11 +179,11 @@ def test_the_panel_sends_our_macros_and_leaves_an_unknown_one_to_klipper(panel_m
 
 
 def test_the_panel_marks_a_replaced_button(tmp_path, panel_module):
-    panel = panel_on(panel_module, CFG, another_tool(tmp_path))
-    panel.buttons = {'1 Belts': Label(), '2,4 Tune': Label(), 'Map': Label()}
+    panel = panel_on(panel_module, CFG, another_tool(tmp_path), another_tool(tmp_path, 'CHOPPER_STOP'))
+    panel.buttons = {'1 Belts': Label(), '2,4 Tune': Label(), 'Map': Label(), 'Stop': Label()}
     panel.commands = {'1 Belts': 'CHOPPER_BELTS', '2,4 Tune': 'CHOPPER_TUNE MOTOR=AB SAVE=1',
-                      'Map': 'CHOPPER_MAP'}
+                      'Map': 'CHOPPER_MAP', 'Stop': 'CHOPPER_STOP'}
     panel.step_states = lambda: {'1 Belts': True, '2,4 Tune': True}
     panel.mark_done_steps()
     assert {label: button.text for label, button in panel.buttons.items()} == {
-        '1 Belts': '✓ 1 Belts', '2,4 Tune': '⚠ 2,4 Tune', 'Map': 'Map'}
+        '1 Belts': '✓ 1 Belts', '2,4 Tune': '⚠ 2,4 Tune', 'Map': 'Map', 'Stop': '⚠ Stop'}

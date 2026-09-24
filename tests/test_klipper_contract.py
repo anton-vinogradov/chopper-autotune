@@ -346,15 +346,30 @@ def printer_cfg(tmp_path, body: str) -> str:
     return str(tmp_path / 'printer.cfg')
 
 
+OTHER_TOOLS = {
+    # chopper-resonance-tuner: its own macro of our name
+    'CHOPPER_TUNE': ('[gcode_macro CHOPPER_TUNE]\ngcode:\n    _chop_workflow\n',
+                     ('gcode_macro CHOPPER_TUNE', 'gcode', '_chop_workflow')),
+    # gschpoozi: a macro that looks like ours, and a shell command of our name
+    'CHOPPER_ANALYZE': ('[gcode_shell_command chopper_analyze]\n'
+                        'command: python3 ~/gschpoozi/scripts/tools/chopper_analyze.py\n'
+                        '[gcode_macro CHOPPER_ANALYZE]\n'
+                        'gcode:\n    RUN_SHELL_COMMAND CMD=chopper_analyze PARAMS="{rawparams}"\n',
+                        ('gcode_shell_command chopper_analyze', 'command', 'gschpoozi')),
+}
+
+
 @pytest.mark.parametrize('source', fetched('configfile.py'))
-def test_a_macro_defined_again_later_replaces_ours_without_an_error(source, tmp_path, monkeypatch):
+@pytest.mark.parametrize('name', sorted(OTHER_TOOLS))
+def test_a_name_defined_again_later_replaces_ours_without_an_error(source, name, tmp_path, monkeypatch):
     # #132: another tuner's installer also puts its include on the first line of
     # printer.cfg, so a tuner installed before ours ends up below it and wins
     require(source)
-    (tmp_path / 'chopper_tune.cfg').write_text('[gcode_macro CHOPPER_TUNE]\ngcode:\n    _chop_workflow\n')
-    fileconfig = read_main_config(source, printer_cfg(tmp_path, '[include chopper_tune.cfg]\n'), monkeypatch)
-    assert fileconfig.get('gcode_macro CHOPPER_TUNE', 'gcode').strip() == '_chop_workflow'
-    assert named(selfcheck(settings_of(fileconfig))) == ['CHOPPER_TUNE']
+    text, (section, option, theirs) = OTHER_TOOLS[name]
+    (tmp_path / 'other.cfg').write_text(text)
+    fileconfig = read_main_config(source, printer_cfg(tmp_path, '[include other.cfg]\n'), monkeypatch)
+    assert theirs in fileconfig.get(section, option)
+    assert named(selfcheck(settings_of(fileconfig))) == [name]
 
 
 @pytest.mark.parametrize('source', fetched('configfile.py'))
