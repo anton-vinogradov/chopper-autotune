@@ -58,6 +58,8 @@ class Klippy:
         self._wakeup = threading.Condition(self._lock)
         self._responses = {}
         self._samples = deque()
+        self._accel_chip = None
+        self._accel_chips = set()
         self._output = deque(maxlen=OUTPUT_MAX)
         self._output_subscribed = False
         self._status = {}
@@ -111,6 +113,8 @@ class Klippy:
         if message.get('key') == ACCEL_KEY:
             data = message['params'].get('data')
             with self._wakeup:
+                if message.get('chip') != self._accel_chip:
+                    return              # a chip subscribed earlier: it streams until we close
                 self.overflows += message['params'].get('overflows', 0)
                 if data:
                     self._samples.extend(data)
@@ -239,11 +243,26 @@ class Klippy:
 
     def subscribe_accel(self, accel_chip: str):
         """Chip section like 'adxl345', 'adxl345 head' or 'lis3dh' -> '<module>/dump_<module>'
-        endpoint, with the section's last word as the sensor name."""
+        endpoint, with the section's last word as the sensor name. From here on the
+        sample buffer holds this chip only.
+
+        Once per chip and connection: Klipper streams until the connection closes, and
+        since v0.12.0-53 (bulk_sensor.py, Kalico too) it sends each batch once per
+        subscribe request — tune subscribed in the scan and again in the descent, and
+        every sample arrived twice (four times for motor B of AXIS=xy). A chip subscribed
+        earlier keeps streaming; the chip name in the response template tells its
+        batches apart."""
+        with self._wakeup:
+            if accel_chip != self._accel_chip:
+                self._accel_chip = accel_chip
+                self._samples.clear()
+        if accel_chip in self._accel_chips:
+            return
         parts = accel_chip.split()
         chip, sensor = ACCEL_ENDPOINTS.get(parts[0], parts[0]), parts[-1]
         self.request('%s/dump_%s' % (chip, chip),
-                     {'sensor': sensor, 'response_template': {'key': ACCEL_KEY}})
+                     {'sensor': sensor, 'response_template': {'key': ACCEL_KEY, 'chip': accel_chip}})
+        self._accel_chips.add(accel_chip)
 
     def samples_between(self, start: float, end: float) -> 'list[list[float]]':
         """Walk from the tail: the window of interest is always recent, the buffer is sorted."""
