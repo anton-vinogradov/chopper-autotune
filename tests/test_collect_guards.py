@@ -143,6 +143,32 @@ def test_resolve_accel_chip_never_guesses_a_name():
         resolve_accel_chip({'printer': {}}, 'x')
     with pytest.raises(SystemExit, match='several'):
         resolve_accel_chip({'adxl345': {}, 'lis2dw bed': {}}, 'x')
+    assert resolve_accel_chip({'bmi160': {}, 'printer': {}}, 'x') == 'bmi160'
+
+
+def test_resolve_accel_chip_reads_kalicos_accel_chips():
+    import pytest
+
+    from chopper_autotune.collect import resolve_accel_chip
+    # Kalico reads accel_chips before accel_chip_x/y and accel_chip
+    one = {'resonance_tester': {'accel_chips': ' lis2dw ', 'accel_chip': 'adxl345'}}
+    assert resolve_accel_chip(one, 'x') == 'lis2dw'
+    # several measure together: the per-axis names say which one each motor moves
+    several = {'resonance_tester': {'accel_chips': 'adxl345 head, adxl345 bed'}}
+    with pytest.raises(SystemExit, match=r'several \(adxl345 head, adxl345 bed\).*accel_chip_x'):
+        resolve_accel_chip(several, 'x')
+    # Kalico reads accel_chip beside several accel_chips without using it: a leftover
+    several['resonance_tester']['accel_chip'] = 'adxl345'
+    with pytest.raises(SystemExit, match='several'):
+        resolve_accel_chip(several, 'x')
+    several['resonance_tester'].update(accel_chip_x='adxl345 head', accel_chip_y='adxl345 bed')
+    assert resolve_accel_chip(several, 'y') == 'adxl345 bed'
+
+
+def test_kalicos_limited_corexy_is_coupled():
+    from chopper_autotune.collect import coupled_xy
+    assert coupled_xy('limited_corexy') and coupled_xy('corexy')
+    assert not coupled_xy('limited_cartesian') and not coupled_xy('cartesian')
 
 
 def test_full_steps_per_mm_honours_gearing():

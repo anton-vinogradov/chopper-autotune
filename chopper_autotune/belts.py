@@ -266,9 +266,11 @@ def belts(kl: Klippy, args) -> int:
                 os.remove(stale)
             screen.update('Chopper belts: exciting %s' % label, force=True)
             print(' exciting belt %s (head diagonal %s)...' % (label, axis))
-            kl.gcode('TEST_RESONANCES AXIS=%s OUTPUT=raw_data NAME=belt%s '
+            # CHIPS: with several chips each writes its own file, and the newest one
+            # could be another chip's (Klipper v0.11+ and Kalico; v0.10 ignores it)
+            kl.gcode('TEST_RESONANCES AXIS=%s OUTPUT=raw_data NAME=belt%s CHIPS="%s" '
                      'FREQ_START=%g FREQ_END=%g HZ_PER_SEC=%g\nM400'
-                     % (axis, label, band[0], band[1], hz_per_sec))
+                     % (axis, label, hw.accel_chip, band[0], band[1], hz_per_sec))
             path = wait_for_capture('/tmp/raw_data_*belt%s*.csv' % label,
                                     min_span_sec=(band[1] - band[0]) / hz_per_sec)
             freqs, psd = welch_psd(path)

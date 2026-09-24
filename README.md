@@ -283,13 +283,13 @@ Python 3.9+ on the printer host. The klippy API socket for orchestration and sam
 
 ## Prerequisites
 
-- Klipper + Moonraker (Mainsail, Fluidd or any other frontend).
+- Klipper + Moonraker (Mainsail, Fluidd or any other frontend). [Kalico](https://github.com/KalicoCrew/kalico) works too, including `[resonance_tester] accel_chips` and the `limited_corexy` kinematics. `CHOPPER_ENVELOPE` does not support Kalico's `limited_*` kinematics yet: they cap each belt by `max_x_accel`/`max_y_accel`, whatever acceleration the test asks for.
 - A supported TMC driver on the motor being tuned (see the datasheet list below).
 - One motor per X/Y axis. AWD and two-motor X/Y setups (`stepper_x1`, `stepper_y1`) are not supported yet ([#129](https://github.com/anton-vinogradov/chopper-autotune/issues/129)): the tools that move or tune one motor refuse the affected axis, `CHOPPER_ENVELOPE` marks its verdict as approximate, and registers are never written to one driver of a pair (`CHOPPER_SAVE` skips that motor, `CHOPPER_RESTORE DEFAULTS=1` resets both). Several Z motors are fine: the tool does not tune Z. CoreXZ is not supported: its X motors carry Z too.
 - **An accelerometer on the toolhead** — the measuring instrument of the whole tool:
-  - any chip supported by Klipper's resonance stack works: ADXL345 (the classic), LIS2DW, the MPU-9250 family; USB sticks (KUSBA, FYSETC PIS) and CAN toolhead boards with an onboard chip (EBB36/42, SB2209, …) count too;
+  - these chips work: ADXL345 (the classic), LIS2DW, LIS3DH, the MPU-9250 family, ICM-20948, and BMI160 (Klipper master only). The accelerometer built into a Beacon probe streams in its own format and is not supported yet. USB sticks (KUSBA, FYSETC PIS) and CAN toolhead boards with an onboard chip (EBB36/42, SB2209, …) count too;
   - mount it **rigidly on the printhead** (screwed down, not taped) — exactly as for input-shaper calibration;
-  - wiring and configuration (`[adxl345]` + `[resonance_tester]`) are covered by Klipper's [Measuring Resonances](https://www.klipper3d.org/Measuring_Resonances.html) guide; config reference: [adxl345](https://www.klipper3d.org/Config_Reference.html#adxl345), [resonance_tester](https://www.klipper3d.org/Config_Reference.html#resonance_tester). The tool picks the chip from `[resonance_tester] accel_chip` automatically (or the single accelerometer section when that option is absent);
+  - wiring and configuration (`[adxl345]` + `[resonance_tester]`) are covered by Klipper's [Measuring Resonances](https://www.klipper3d.org/Measuring_Resonances.html) guide; config reference: [adxl345](https://www.klipper3d.org/Config_Reference.html#adxl345), [resonance_tester](https://www.klipper3d.org/Config_Reference.html#resonance_tester). The tool picks the chip [resonance_tester] names: `accel_chip`, the per-motor `accel_chip_x`/`accel_chip_y`, or a single Kalico `accel_chips` entry. Without them it takes the single accelerometer section. When Kalico's `accel_chips` lists several chips, add `accel_chip_x` and `accel_chip_y` to say which chip each motor moves;
   - sanity check before tuning: `ACCELEROMETER_QUERY` returns readings and `MEASURE_AXES_NOISE` stays around or below ~100;
   - unlike Klipper's own shaper tools, chopper-autotune does **not** need numpy inside klippy-env — samples are streamed out and processed in the tool's own venv.
 

@@ -11,6 +11,9 @@ from collections import deque
 SOCKET_CANDIDATES = ('~/printer_data/comms/klippy.sock', '/tmp/klippy_uds')
 SEPARATOR = b'\x03'
 ACCEL_KEY = 'accel'
+# the module that streams a section's samples, where it is not the section type:
+# [lis3dh] is a chip variant served by lis2dw.py (Klipper and Kalico)
+ACCEL_ENDPOINTS = {'lis3dh': 'lis2dw'}
 OUTPUT_KEY = 'gcode_output'
 STATUS_KEY = 'chopper_status'
 OUTPUT_MAX = 256           # the console subscription is broadcast and permanent: keep a tail
@@ -235,9 +238,10 @@ class Klippy:
         return state in ('printing', 'paused')
 
     def subscribe_accel(self, accel_chip: str):
-        """Chip section like 'adxl345', 'adxl345 head' or 'lis2dw' -> '<type>/dump_<type>' endpoint."""
+        """Chip section like 'adxl345', 'adxl345 head' or 'lis3dh' -> '<module>/dump_<module>'
+        endpoint, with the section's last word as the sensor name."""
         parts = accel_chip.split()
-        chip, sensor = parts[0], parts[-1]
+        chip, sensor = ACCEL_ENDPOINTS.get(parts[0], parts[0]), parts[-1]
         self.request('%s/dump_%s' % (chip, chip),
                      {'sensor': sensor, 'response_template': {'key': ACCEL_KEY}})
 

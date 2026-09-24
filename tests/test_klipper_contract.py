@@ -8,6 +8,7 @@ import importlib.util
 import json
 import math
 import os
+import re
 import select
 import socket
 import sys
@@ -20,7 +21,7 @@ import pytest
 import fake_klipper
 from klipper_config import CFG, named, read_like_klipper, selfcheck, settings_of
 from chopper_autotune import tmc
-from chopper_autotune.collect import live_stealth
+from chopper_autotune.collect import ACCEL_SECTIONS, live_stealth
 from chopper_autotune.klippy import Klippy, KlippyError, fence_markers
 
 # old Klipper releases carry regex strings Python warns about while compiling them
@@ -301,6 +302,7 @@ PARSER_CASES = [
     'FORCE_MOVE STEPPER=stepper_x DISTANCE=20.400 VELOCITY=20.000 ACCEL=1000.000',
     'M117 Chopper: 3/40 tbl2_toff3',
     'G28 X Y',
+    'TEST_RESONANCES AXIS=1,1 OUTPUT=raw_data NAME=beltA CHIPS="adxl345 hotend" FREQ_START=30',
 ]
 
 
@@ -311,7 +313,8 @@ def test_the_fake_refuses_exactly_what_klipper_refuses(source):
     require(source)
     module = load_gcode(source)
     printer, dispatch, _ = ready_dispatch(module, GCONF_STEALTH)
-    for name in ('RESPOND', 'SET_TMC_FIELD', 'FORCE_MOVE', 'M117', 'G28', 'SET_KINEMATIC_POSITION'):
+    for name in ('RESPOND', 'SET_TMC_FIELD', 'FORCE_MOVE', 'M117', 'G28', 'SET_KINEMATIC_POSITION',
+                 'TEST_RESONANCES'):
         dispatch.register_command(name, lambda gcmd: None)
     dispatch.register_mux_command('SET_STEPPER_ENABLE', 'STEPPER', 'extruder_stepper belted',
                                   lambda gcmd: None)
@@ -390,3 +393,31 @@ def test_klipper_accepts_our_macro_names(source):
     for section in read_like_klipper(CFG).sections():
         if section.startswith('gcode_macro '):
             dispatch.register_command(section.split()[1].upper(), lambda gcmd: None)
+
+
+@pytest.mark.parametrize('source', fetched('lis2dw.py'))
+def test_every_accelerometer_streams_where_we_subscribe(source):
+    """subscribe_accel builds the endpoint from the section type: hold it to the one the
+    real module registers (a [lis3dh] section is served by lis2dw.py)."""
+    require(source)
+    root = os.path.join(SRC, source)
+    checked = []
+    for section in ACCEL_SECTIONS:
+        path = os.path.join(root, section + '.py')
+        if not os.path.exists(path):
+            continue                                    # Kalico has no bmi160
+        with open(path) as module:
+            text = module.read()
+        delegate = re.search(r'from \. import (\w+)', text)
+        if 'add_mux_endpoint' not in text and delegate:
+            with open(os.path.join(root, delegate.group(1) + '.py')) as module:
+                text = module.read()
+        registered = re.findall(r'add_mux_endpoint\(\s*"(\w+/dump_\w+)",\s*"sensor"', text)
+        calls = []
+        kl = Klippy.__new__(Klippy)
+        kl.request = lambda method, params: calls.append(method)
+        kl.subscribe_accel(section)
+        assert calls == registered, (source, section)
+        checked.append(section)
+    assert {'adxl345', 'lis2dw', 'lis3dh', 'mpu9250', 'icm20948'} <= set(checked)
+    assert 'bmi160' in checked or source.startswith('kalico')      # Klipper master has it

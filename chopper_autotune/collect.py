@@ -48,9 +48,10 @@ def motor_label(axis: str) -> str:
 
 
 def coupled_xy(kinematics: str) -> bool:
-    """True when stepper_x/stepper_y jointly drive X and Y (CoreXY/H-Bot): a pure X
-    move splits the load between both motors, and per-motor speeds need a diagonal."""
-    return kinematics in ('corexy', 'hbot')
+    """True when stepper_x/stepper_y jointly drive X and Y (CoreXY/H-Bot, and Kalico's
+    limited_corexy, CoreXY with per-axis limits): a pure X move splits the load between
+    both motors, and per-motor speeds need a diagonal."""
+    return kinematics in ('corexy', 'hbot', 'limited_corexy')
 
 
 @dataclass
@@ -72,18 +73,28 @@ class Hardware:
         return motor_label(self.stepper.rsplit('_', 1)[-1])
 
 
-ACCEL_SECTIONS = ('adxl345', 'lis2dw', 'lis3dh', 'mpu9250', 'icm20948')
+ACCEL_SECTIONS = ('adxl345', 'lis2dw', 'lis3dh', 'mpu9250', 'icm20948', 'bmi160')
 
 
 def resolve_accel_chip(settings: dict, axis: str) -> str:
-    """[resonance_tester] accel_chip, else the per-axis chip of a two-chip setup, else
-    the single accelerometer section in the config — never a guessed name (a bare
-    'adxl345' on a config with only [adxl345 hotend] would stream nothing)."""
+    """The chip [resonance_tester] names, in Kalico's order: a single accel_chips entry,
+    the per-axis chip of a two-chip setup, accel_chip. Else the single accelerometer
+    section in the config — never a guessed name (a bare 'adxl345' on a config with
+    only [adxl345 hotend] would stream nothing). Several accel_chips entries measure
+    together in Kalico; which one moves with this motor is not written anywhere."""
     resonance = settings.get('resonance_tester') or {}
-    chip = (resonance.get('accel_chip') or resonance.get('accel_chip_' + axis)
-            or resonance.get('accel_chip_x'))
+    chips = [chip.strip() for chip in (resonance.get('accel_chips') or '').split(',') if chip.strip()]
+    if len(chips) == 1:
+        return chips[0]
+    # beside several accel_chips, Kalico reads accel_chip without using it: a leftover
+    per_axis = resonance.get('accel_chip_' + axis) or resonance.get('accel_chip_x')
+    chip = per_axis if chips else per_axis or resonance.get('accel_chip')
     if chip:
         return chip
+    if chips:
+        raise SystemExit('cannot pick the accelerometer: [resonance_tester] accel_chips lists '
+                         'several (%s) — add accel_chip_x and accel_chip_y there to name the '
+                         'chip each motor moves (Kalico keeps using accel_chips)' % ', '.join(chips))
     found = [name for name in settings if name.split()[0] in ACCEL_SECTIONS]
     if len(found) == 1:
         return found[0]

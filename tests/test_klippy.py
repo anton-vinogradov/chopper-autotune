@@ -70,6 +70,20 @@ def test_batches_and_sample_window():
     kl.close()
 
 
+@pytest.mark.parametrize('section, endpoint, sensor', [
+    ('adxl345', 'adxl345/dump_adxl345', 'adxl345'),
+    ('adxl345 head', 'adxl345/dump_adxl345', 'head'),
+    ('lis3dh', 'lis2dw/dump_lis2dw', 'lis3dh'),              # lis2dw.py serves [lis3dh]
+    ('bmi160 toolhead', 'bmi160/dump_bmi160', 'toolhead'),
+])
+def test_the_accelerometer_stream_endpoint(section, endpoint, sensor):
+    kl = Klippy.__new__(Klippy)
+    calls = []
+    kl.request = lambda method, params: calls.append((method, params['sensor']))
+    kl.subscribe_accel(section)
+    assert calls == [(endpoint, sensor)]
+
+
 def test_malformed_frame_does_not_kill_reader():
     kl, server_sock = make_pair()
 
