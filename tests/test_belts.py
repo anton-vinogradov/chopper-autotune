@@ -323,3 +323,28 @@ def test_resolver_frequency_window_rejects_cross_mode_pairs():
     fam_a, fam_b = pair
     assert fam_b['freq'] == 288.9                   # the near-frequency partner wins
     assert resolve_pair(fams_a, [fams_b[0]]) is None  # only the 91 Hz mode: refuse
+
+
+def test_the_sweep_measures_the_chip_the_tool_picked(monkeypatch, tmp_path):
+    # with several chips TEST_RESONANCES writes one file per chip, and the newest one
+    # could be another chip's: the sweep names its chip
+    from types import SimpleNamespace
+
+    import chopper_autotune.belts as belts_mod
+    hw = SimpleNamespace(kinematics='limited_corexy', accel_chip='adxl345 hotend', display=False)
+    scripts = []
+    kl = SimpleNamespace(settings=lambda: {'resonance_tester': {'probe_points': [[100, 100, 20]]}},
+                         homed_axes=lambda: 'xyz', gcode=scripts.append)
+    monkeypatch.setattr(belts_mod, 'detect_hardware', lambda kl, motor, accel: hw)
+    monkeypatch.setattr(belts_mod, 'refuse_if_printing', lambda kl: None)
+    monkeypatch.setattr(belts_mod, 'home_xy', lambda kl, script: None)
+    monkeypatch.setattr(belts_mod, 'wait_for_capture', lambda pattern, min_span_sec: 'capture.csv')
+    monkeypatch.setattr(belts_mod, 'welch_psd', lambda path: (None, None))
+    monkeypatch.setattr(belts_mod, 'dominant', lambda freqs, psd, band: (100.0, 1.0))
+    monkeypatch.setattr(belts_mod, 'top_peaks', lambda freqs, psd, band: [100.0])
+    monkeypatch.setattr(belts_mod, 'SWEEP_STATE', str(tmp_path / 'belts_sweep.json'))
+    args = SimpleNamespace(show=None, pluck=False, sweep=True, min_freq=30, max_freq=200,
+                           hz_per_sec=1.0, dry_run=False, yes=True, tolerance=3.0)
+    assert belts_mod.belts(kl, args) == 0
+    sweeps = [script for script in scripts if script.startswith('TEST_RESONANCES')]
+    assert len(sweeps) == 2 and all('CHIPS="adxl345 hotend"' in sweep for sweep in sweeps)

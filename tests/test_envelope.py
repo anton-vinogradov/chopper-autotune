@@ -111,3 +111,22 @@ def test_shaper_accels_absent_klipper_is_quiet(monkeypatch):
     from chopper_autotune import envelope as envelope_mod
     monkeypatch.setattr(envelope_mod, 'KLIPPY_DIR', '/nonexistent')
     assert envelope_mod.shaper_accels({'input_shaper': {'shaper_type_x': 'ei'}}) == {}
+
+
+def test_kalicos_limited_kinematics_are_refused_before_any_motion(monkeypatch):
+    # Kalico caps each belt by max_x_accel/max_y_accel whatever M204 says: the ladder
+    # above them would "hold" without being reached
+    from types import SimpleNamespace
+
+    import pytest
+
+    from chopper_autotune import envelope as envelope_mod
+    board = SimpleNamespace(kinematics='limited_corexy', max_accel=5000.0)
+    monkeypatch.setattr(envelope_mod, 'detect_hardware', lambda kl, motor, accel: board)
+    scripts = []
+    kl = SimpleNamespace(settings=lambda: {'printer': {'kinematics': 'limited_corexy'}},
+                         gcode=scripts.append)
+    args = SimpleNamespace(axis='xy', accel=None, min_speed=150, max_speed=350, step=50)
+    with pytest.raises(SystemExit, match='limited_corexy is not supported by the envelope'):
+        envelope_mod.envelope(kl, args)
+    assert scripts == []

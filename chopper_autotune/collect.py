@@ -86,8 +86,9 @@ def resolve_accel_chip(settings: dict, axis: str) -> str:
     chips = [chip.strip() for chip in (resonance.get('accel_chips') or '').split(',') if chip.strip()]
     if len(chips) == 1:
         return chips[0]
-    chip = (resonance.get('accel_chip_' + axis) or resonance.get('accel_chip')
-            or resonance.get('accel_chip_x'))
+    # beside several accel_chips, Kalico reads accel_chip without using it: a leftover
+    per_axis = resonance.get('accel_chip_' + axis) or resonance.get('accel_chip_x')
+    chip = per_axis if chips else per_axis or resonance.get('accel_chip')
     if chip:
         return chip
     if chips:

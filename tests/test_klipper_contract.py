@@ -302,6 +302,7 @@ PARSER_CASES = [
     'FORCE_MOVE STEPPER=stepper_x DISTANCE=20.400 VELOCITY=20.000 ACCEL=1000.000',
     'M117 Chopper: 3/40 tbl2_toff3',
     'G28 X Y',
+    'TEST_RESONANCES AXIS=1,1 OUTPUT=raw_data NAME=beltA CHIPS="adxl345 hotend" FREQ_START=30',
 ]
 
 
@@ -312,7 +313,8 @@ def test_the_fake_refuses_exactly_what_klipper_refuses(source):
     require(source)
     module = load_gcode(source)
     printer, dispatch, _ = ready_dispatch(module, GCONF_STEALTH)
-    for name in ('RESPOND', 'SET_TMC_FIELD', 'FORCE_MOVE', 'M117', 'G28', 'SET_KINEMATIC_POSITION'):
+    for name in ('RESPOND', 'SET_TMC_FIELD', 'FORCE_MOVE', 'M117', 'G28', 'SET_KINEMATIC_POSITION',
+                 'TEST_RESONANCES'):
         dispatch.register_command(name, lambda gcmd: None)
     dispatch.register_mux_command('SET_STEPPER_ENABLE', 'STEPPER', 'extruder_stepper belted',
                                   lambda gcmd: None)
@@ -418,3 +420,4 @@ def test_every_accelerometer_streams_where_we_subscribe(source):
         assert calls == registered, (source, section)
         checked.append(section)
     assert {'adxl345', 'lis2dw', 'lis3dh', 'mpu9250', 'icm20948'} <= set(checked)
+    assert 'bmi160' in checked or source.startswith('kalico')      # Klipper master has it

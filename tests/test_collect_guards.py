@@ -157,6 +157,10 @@ def test_resolve_accel_chip_reads_kalicos_accel_chips():
     several = {'resonance_tester': {'accel_chips': 'adxl345 head, adxl345 bed'}}
     with pytest.raises(SystemExit, match=r'several \(adxl345 head, adxl345 bed\).*accel_chip_x'):
         resolve_accel_chip(several, 'x')
+    # Kalico reads accel_chip beside several accel_chips without using it: a leftover
+    several['resonance_tester']['accel_chip'] = 'adxl345'
+    with pytest.raises(SystemExit, match='several'):
+        resolve_accel_chip(several, 'x')
     several['resonance_tester'].update(accel_chip_x='adxl345 head', accel_chip_y='adxl345 bed')
     assert resolve_accel_chip(several, 'y') == 'adxl345 bed'
 

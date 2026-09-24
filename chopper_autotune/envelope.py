@@ -181,6 +181,13 @@ def envelope(kl: Klippy, args) -> int:
     hw = {m: detect_hardware(kl, m, accel=False) for m in motors}
     board = hw[motors[0]]
     settings = kl.settings()
+    if board.kinematics.startswith('limited_'):
+        # Kalico caps each belt by max_x_accel/max_y_accel there, whatever M204 says, and
+        # max_velocity caps the belt instead of the head: the ladder and the advice below
+        # assume Klipper's own limits
+        raise SystemExit("%s is not supported by the envelope yet: Kalico caps each belt by "
+                         "max_x_accel/max_y_accel, so the acceleration ladder would not "
+                         "reach its rungs; nothing was moved" % board.kinematics)
     note = awd_note(settings, motors)
     if note:
         print('WARNING: ' + note)
