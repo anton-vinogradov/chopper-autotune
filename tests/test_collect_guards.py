@@ -243,10 +243,15 @@ def test_mid_run_rehome_keeps_the_motors_energized():
 
     from chopper_autotune.collect import PARK_INTERVAL_MOVES, make_parker, park
     scripts = []
-    kl = SimpleNamespace(gcode=scripts.append, settings=lambda: {})
+    kl = SimpleNamespace(gcode=scripts.append, settings=lambda: {},
+                         stepper_states=lambda: {'stepper_x': True, 'stepper_y': True,
+                                                 'stepper_z': True, 'extruder': True})
     hw = SimpleNamespace(center=(130.0, 130.0), axis_span=260.0)
-    park(kl, hw)                                   # the start: motors released for the noise floor
-    assert scripts[-1].endswith('M18')
+    park(kl, hw)                                   # the start: all but Z off for the noise floor
+    for name in ('stepper_x', 'stepper_y', 'extruder'):
+        assert 'SET_STEPPER_ENABLE STEPPER="%s" ENABLE=0' % name in scripts[-1]
+    assert 'stepper_z' not in scripts[-1]          # Z keeps its homing (safe_z_home z_hop)
+    assert 'M18' not in scripts[-1]
     before_move = make_parker(kl, hw)
     for _ in range(PARK_INTERVAL_MOVES + 1):
         before_move(1, 1.0)

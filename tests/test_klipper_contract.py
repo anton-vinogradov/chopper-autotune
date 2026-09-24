@@ -284,6 +284,9 @@ PARSER_CASES = [
     'DUMP_TMC stepper_x',
     'SET_TMC_FIELD STEPPER=stepper_x FIELD=toff VALUE=3',
     'SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=1',
+    'SET_STEPPER_ENABLE STEPPER="extruder_stepper belted" ENABLE=0',
+    'SET_STEPPER_ENABLE STEPPER=extruder_stepper belted ENABLE=0',
+    'SET_KINEMATIC_POSITION SET_HOMED= CLEAR_HOMED=XY',
     'FORCE_MOVE STEPPER=stepper_x DISTANCE=20.400 VELOCITY=20.000 ACCEL=1000.000',
     'M117 Chopper: 3/40 tbl2_toff3',
     'G28 X Y',
@@ -297,8 +300,10 @@ def test_the_fake_refuses_exactly_what_klipper_refuses(source):
     require(source)
     module = load_gcode(source)
     printer, dispatch, _ = ready_dispatch(module, GCONF_STEALTH)
-    for name in ('RESPOND', 'SET_TMC_FIELD', 'FORCE_MOVE', 'M117', 'G28'):
+    for name in ('RESPOND', 'SET_TMC_FIELD', 'FORCE_MOVE', 'M117', 'G28', 'SET_KINEMATIC_POSITION'):
         dispatch.register_command(name, lambda gcmd: None)
+    dispatch.register_mux_command('SET_STEPPER_ENABLE', 'STEPPER', 'extruder_stepper belted',
+                                  lambda gcmd: None)
     for line in PARSER_CASES:
         try:
             dispatch.run_script(line)

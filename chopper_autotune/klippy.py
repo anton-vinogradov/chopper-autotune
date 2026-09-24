@@ -218,6 +218,15 @@ class Klippy:
         result = self.request('objects/query', {'objects': {'toolhead': ['print_time']}})
         return float(result['status']['toolhead']['print_time'])
 
+    def stepper_states(self) -> 'dict[str, bool]':
+        """Every stepper Klipper can enable, with its state (stepper_enable status)."""
+        result = self.request('objects/query', {'objects': {'stepper_enable': ['steppers']}})
+        return result['status']['stepper_enable']['steppers']
+
+    def homed_axes(self) -> str:
+        result = self.request('objects/query', {'objects': {'toolhead': ['homed_axes']}})
+        return result['status']['toolhead']['homed_axes']
+
     def is_printing(self) -> bool:
         """True while a job is printing or paused (print_stats needs [virtual_sdcard];
         without it there is no job state to protect and False is returned)."""

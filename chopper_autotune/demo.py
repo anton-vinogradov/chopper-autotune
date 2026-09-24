@@ -11,11 +11,12 @@ import statistics
 from datetime import datetime
 
 from . import __version__, tmc
-from .collect import (MOVE_MARGIN, DriverTooHot, Screen, ThermalGuard, capture_stream, coupled_xy,
-                      default_dataset_root, detect_hardware, enter_spreadcycle, exit_spreadcycle,
-                      fit_measure_time, make_parker, measure_baseline, motor_label, now, park,
-                      refuse_if_printing, refuse_multi_motor, rehome_unless_hot, run_measurement,
-                      run_restore, travel_for)
+from .collect import (MOVE_MARGIN, DriverTooHot, Screen, ThermalGuard, ZNotHomed, capture_stream,
+                      coupled_xy, default_dataset_root, detect_hardware, enter_spreadcycle,
+                      exit_spreadcycle, fit_measure_time, home_xy, make_parker, measure_baseline,
+                      motor_label, now, park, refuse_blind_z_hop, refuse_if_printing,
+                      refuse_multi_motor, rehome_unless_hot, run_measurement, run_restore,
+                      travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, KlippyError, find_socket
 from .metrics import vibration_score
@@ -48,7 +49,7 @@ def run_demo(args) -> int:
             except SystemExit as skip:
                 # only a per-motor refusal (a string message) is skippable; an integer
                 # code is the SIGTERM handler — CHOPPER_STOP must stop the whole demo
-                if len(axes) == 1 or not isinstance(skip.code, str) or isinstance(skip, DriverTooHot):
+                if len(axes) == 1 or not isinstance(skip.code, str) or isinstance(skip, (DriverTooHot, ZNotHomed)):
                     raise
                 print('motor %s skipped: %s' % (motor_label(axis), skip))
                 worst = max(worst, 2)
@@ -100,10 +101,11 @@ def showcase_together(kl, args) -> int:
     guard = ThermalGuard(kl, kl.settings())
     # outside the try: after its M18 the finally would write toff into the switched-off
     # drivers, which re-energizes a hot one on a stepper without an enable pin
+    refuse_blind_z_hop(kl, kl.settings())
     guard.preflight()
     try:
         # home and hold at center with the motors ENABLED (park disables them) for G1 moves
-        kl.gcode('G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, *board.center))
+        home_xy(kl, 'G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, *board.center))
         for axis in MOTORS:
             enter_spreadcycle(kl, hw[axis])
         for r in range(1, args.rounds + 1):
@@ -236,8 +238,9 @@ def demo(kl: Klippy, args) -> int:
     ds = Dataset.create(root, {'version': __version__, 'created': now(), 'mode': 'demo',
                                'axis': args.axis, 'stepper': hw.stepper, 'driver': hw.driver.name,
                                'speed': speed, 'default': default.label(), 'tuned': tuned.label()})
-    print('Preparing: home XY, park at center, disable motors')
+    print('Preparing: home XY, park at center, switch the gantry and head motors off')
     guard = ThermalGuard(kl, kl.settings())
+    refuse_blind_z_hop(kl, kl.settings())
     guard.preflight()
     park(kl, hw)
     before_move = make_parker(kl, hw, guard)

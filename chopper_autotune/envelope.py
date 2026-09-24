@@ -10,9 +10,9 @@ from __future__ import annotations
 import math
 import os
 
-from .collect import (Screen, ThermalGuard, detect_hardware, enter_spreadcycle, exit_spreadcycle,
-                      full_steps_per_mm, rail_twins, refuse_if_printing, rehome_unless_hot,
-                      run_restore)
+from .collect import (KLIPPY_DIR, Screen, ThermalGuard, detect_hardware, enter_spreadcycle,
+                      exit_spreadcycle, full_steps_per_mm, home_xy, rail_twins, refuse_blind_z_hop,
+                      refuse_if_printing, rehome_unless_hot, run_restore)
 from .current import Referee, referee_axis, stress_vector
 from .dataset import save_json
 from .klippy import Klippy, find_socket
@@ -35,7 +35,6 @@ def save_state(results: 'dict[str, dict]'):
     save_json(STATE, results, merge=True)
 
 MARGIN = 1.3                                  # recommend ceiling / margin
-KLIPPY_DIR = os.path.expanduser('~/klipper/klippy')
 
 
 CRISP_SMOOTHING = 0.05      # Klipper docs' "less smoothing" band; their default target
@@ -225,9 +224,10 @@ def envelope(kl: Klippy, args) -> int:
         screen.update('WARNING: ' + note, force=True)
     achieved = {}
     speed_holds, accel_holds = {}, {}
+    refuse_blind_z_hop(kl, settings)
+    guard.preflight()
     try:
-        guard.preflight()
-        kl.gcode('G28 X Y\nG90')
+        home_xy(kl, 'G28 X Y\nG90')
         for m in motors:
             label = motor_label(m)
             span = min(25.0, hw[m].axis_span / 8)

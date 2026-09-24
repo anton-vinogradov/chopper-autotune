@@ -31,7 +31,7 @@ import os
 
 import numpy as np
 
-from .collect import (Screen, await_flushed, capture_span, coupled_xy, detect_hardware,
+from .collect import (Screen, await_flushed, capture_span, coupled_xy, detect_hardware, home_xy,
                       motor_label, refuse_if_printing, release_gantry, run_restore)
 from .current import stress_vector
 from .dataset import load_json, save_json
@@ -192,7 +192,7 @@ def identify_belt(kl: Klippy, hw, motor: str, screen: Screen, cycles: int = 4):
         moves += ['G1 X%.1f Y%.1f F4800' % (cx + span * vec[0], cy + span * vec[1]),
                   'G1 X%.1f Y%.1f F4800' % (cx - span * vec[0], cy - span * vec[1])]
     moves.append('G1 X%.1f Y%.1f F6000' % (cx, cy))
-    # release the gantry motors (not Z) so the loosened belt is easy to reach and tension
+    # release the gantry (Z keeps holding) so the loosened belt is easy to reach and tension
     kl.gcode('\n'.join(moves) + '\nM400')
     release_gantry(kl)
 
@@ -222,7 +222,7 @@ def belts(kl: Klippy, args) -> int:
             return 0
         screen = Screen(kl, hw.display)
         refuse_if_printing(kl)
-        kl.gcode('G28 X Y\nM400')
+        home_xy(kl, 'G28 X Y\nM400')
         identify_belt(kl, hw, motor, screen)
         screen.final('Motors off — belt %s is the one that moved' % motor_label(motor))
         return 0                                     # leaves the motors off on purpose
@@ -249,11 +249,15 @@ def belts(kl: Klippy, args) -> int:
         return 1
 
     refuse_if_printing(kl)
+    if 'z' not in kl.homed_axes():
+        # TEST_RESONANCES moves Z to the probe point; homing Z here would lower the
+        # nozzle onto whatever stands on the bed
+        raise SystemExit('Z not homed: clear the bed, run G28, then retry (TEST_RESONANCES moves Z)')
     screen = Screen(kl, hw.display)
     peaks = {}
     try:
-        print('Homing all axes (TEST_RESONANCES moves to the probe point)')
-        kl.gcode('G28\nM400')
+        print('Homing X/Y (TEST_RESONANCES moves to the probe point)')
+        home_xy(kl, 'G28 X Y\nM400')
         for motor in ('x', 'y'):
             label = motor_label(motor)
             vec = stress_vector(hw.kinematics, motor)
@@ -274,7 +278,7 @@ def belts(kl: Klippy, args) -> int:
             print('   belt %s: resonance %.1f Hz (peaks: %s)%s'
                   % (label, peak, ', '.join('%.0f' % f for f in top_peaks(freqs, psd, band)), edge))
     finally:
-        run_restore(lambda: kl.gcode('G28 X Y'))
+        run_restore(lambda: home_xy(kl, 'G28 X Y'))
 
     prev = load_state(SWEEP_STATE)                  # the previous run, to show what changed
     save_state(peaks['A'], peaks['B'], SWEEP_STATE)
@@ -529,7 +533,7 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
     # A-vs-B comparison stays honest; the front span is unchanged for big machines.
     cx, _ = hw.center
     rear_y = float(kl.settings()['stepper_y']['position_max']) - 3.0
-    kl.gcode('G28 X Y\nG90\nG1 X%.1f Y%.1f F6000\nM400' % (cx, rear_y))
+    home_xy(kl, 'G28 X Y\nG90\nG1 X%.1f Y%.1f F6000\nM400' % (cx, rear_y))
 
 
     def cue(text):
@@ -589,8 +593,8 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
             fundamentals[label] = measure_belt(label)
     finally:
         # hand the gantry over on every exit — verdict, failed plucks or Stop — the
-        # user's next move is a tensioner screw; no parting G28: releasing forgets the
-        # position anyway and every next job homes first
+        # user's next move is a tensioner screw; no parting G28: the release forgets the
+        # homing (hands move the head) and every next job homes first
         run_restore(lambda: release_gantry(kl))
 
     pair = resolve_pair(fundamentals['A'], fundamentals['B'])

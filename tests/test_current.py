@@ -65,6 +65,12 @@ class FakeKl:
             elif line.startswith('G28'):
                 self.phys = self.belief = ENDSTOP_POS
 
+    def settings(self):
+        return {}                   # no G28 override with a z_hop
+
+    def info(self):
+        return {}                   # Klipper path unknown: no SET_HOMED
+
     def request(self, method):
         assert method == 'query_endstops/status'
         triggered = self.phys is not None and self.phys >= ENDSTOP_POS - self.slip

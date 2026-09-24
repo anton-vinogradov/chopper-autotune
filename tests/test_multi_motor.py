@@ -24,6 +24,16 @@ class RecordingKl:
     def object_list(self):
         return []
 
+    def info(self):
+        return {}
+
+    def stepper_states(self):
+        return dict({name: True for name in self._settings if name.startswith('stepper_')},
+                    extruder=True)
+
+    def homed_axes(self):
+        return 'xyz'
+
     def connect(self, sock=None):
         return self
 
@@ -97,19 +107,37 @@ def test_envelope_note_names_the_twins_of_the_measured_motors():
     assert '"' not in awd_note(AWD, ['x', 'y'])              # travels inside RESPOND MSG="..."
 
 
-def test_belt_jog_releases_the_twins(monkeypatch):
+def test_belt_jog_releases_the_gantry(monkeypatch):
     from types import SimpleNamespace
 
     from chopper_autotune.belts import identify_belt
     kl = RecordingKl(AWD)
     hw = SimpleNamespace(center=(60.0, 60.0), kinematics='corexy', axis_span=120.0)
     identify_belt(kl, hw, 'x', SimpleNamespace(update=lambda *args, **kwargs: None), cycles=1)
-    assert 'SET_STEPPER_ENABLE STEPPER=stepper_x1 ENABLE=0' in kl.scripts[-1]
-    assert 'SET_STEPPER_ENABLE STEPPER=stepper_y1 ENABLE=0' in kl.scripts[-1]
+    assert kl.scripts[-1].startswith(XY_OFF) and 'M18' not in kl.scripts[-1]
 
 
-def test_release_gantry_switches_off_the_twins_too():
+XY_OFF = '\n'.join('SET_STEPPER_ENABLE STEPPER="%s" ENABLE=0' % name
+                   for name in ('stepper_x', 'stepper_x1', 'stepper_y', 'stepper_y1', 'extruder'))
+
+
+@pytest.mark.parametrize('force_move, clears', [
+    ("clear_homed = gcmd.get('CLEAR_HOMED', '')", True),       # Klipper v0.13+, Kalico
+    ("toolhead.set_position(pos, homing_axes=(0, 1, 2))", False),  # v0.12: it would home all
+    (None, False),                                                # Klipper not found
+])
+def test_release_gantry_forgets_only_the_xy_homing_where_klipper_can(tmp_path, monkeypatch,
+                                                                     force_move, clears):
+    # hands move the head next; Z keeps holding and its homing ([safe_z_home] z_hop);
+    # the check reads the RUNNING Klipper's code (info: klipper_path)
+    import chopper_autotune.collect as collect_mod
+    monkeypatch.setattr(collect_mod, '_CLEAR_HOMING', {})
+    if force_move is not None:
+        (tmp_path / 'klippy' / 'extras').mkdir(parents=True)
+        (tmp_path / 'klippy' / 'extras' / 'force_move.py').write_text(force_move)
     kl = RecordingKl(AWD)
+    kl.info = lambda: {'klipper_path': str(tmp_path)}
     release_gantry(kl)
-    assert kl.scripts == ['\n'.join('SET_STEPPER_ENABLE STEPPER=%s ENABLE=0' % name for name in
-                                    ('stepper_x', 'stepper_x1', 'stepper_y', 'stepper_y1'))]
+    expected = XY_OFF + ('\nSET_KINEMATIC_POSITION SET_HOMED= CLEAR_HOMED=XY' if clears
+                         else '\nM84\nSET_STEPPER_ENABLE STEPPER="stepper_z" ENABLE=1')
+    assert kl.scripts == [expected]
