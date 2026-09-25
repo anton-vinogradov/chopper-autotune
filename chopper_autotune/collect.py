@@ -84,12 +84,13 @@ class Hardware:
 ACCEL_SECTIONS = ('adxl345', 'lis2dw', 'lis3dh', 'mpu9250', 'icm20948', 'bmi160')
 
 
-def resolve_accel_chip(settings: dict, axis: str) -> str:
+def resolve_accel_chip(settings: dict, axis: str, sections=lambda: ()) -> str:
     """The chip [resonance_tester] names, in Kalico's order: a single accel_chips entry,
     the per-axis chip of a two-chip setup, accel_chip. Else the single accelerometer
     section in the config — never a guessed name (a bare 'adxl345' on a config with
     only [adxl345 hotend] would stream nothing). Several accel_chips entries measure
-    together in Kalico; which one moves with this motor is not written anywhere."""
+    together in Kalico; which one moves with this motor is not written anywhere.
+    sections: the section names as written, asked only for that single section."""
     resonance = settings.get('resonance_tester') or {}
     chips = [chip.strip() for chip in (resonance.get('accel_chips') or '').split(',') if chip.strip()]
     if len(chips) == 1:
@@ -105,7 +106,8 @@ def resolve_accel_chip(settings: dict, axis: str) -> str:
                          'chip each motor moves (Kalico keeps using accel_chips)' % ', '.join(chips))
     found = [name for name in settings if name.split()[0] in ACCEL_SECTIONS]
     if len(found) == 1:
-        return found[0]
+        # settings has the names lower-cased; CHIP= and the stream take them as written
+        return next((name for name in sections() if name.lower() == found[0]), found[0])
     raise SystemExit('cannot pick the accelerometer: %s — set [resonance_tester] accel_chip'
                      % ('no accelerometer section in the config' if not found
                         else 'several sections (%s)' % ', '.join(found)))
@@ -118,7 +120,7 @@ def accel_command_chip(settings: dict, accel_chip: str) -> str:
     parts = accel_chip.split()
     if parts[0] != 'beacon':
         return parts[-1]
-    name = (settings.get(accel_chip) or {}).get('accel_name')
+    name = (settings.get(accel_chip.lower()) or {}).get('accel_name')
     if name:
         return name.split()[-1]
     return 'beacon' if len(parts) == 1 else 'beacon_' + parts[-1]
@@ -646,7 +648,7 @@ def detect_hardware(kl: Klippy, axis: str, accel: bool = True) -> Hardware:
         stealth = driver.spreadcycle_switch
 
     # the endstop-referee tools never stream: no demanding a chip they won't use
-    chip = resolve_accel_chip(settings, axis) if accel else ''
+    chip = resolve_accel_chip(settings, axis, lambda: kl.config_sections()) if accel else ''
     return Hardware(
         kl=kl,
         stepper=stepper,
@@ -783,7 +785,8 @@ def park(kl: Klippy, hw: Hardware, release: bool = True):
     # a mid-run re-home keeps the motors energized: on a stepper without a dedicated
     # enable pin every disable->enable resets toff (Klipper restores its config copy,
     # klipper_tmc_autotune re-applies its value), replacing the candidate's
-    home_xy(kl, 'G28 X Y\nG0 X%.1f Y%.1f F6000\nM400' % hw.center
+    # G90: a macro may have left relative moves on, and G0 would then move by the center
+    home_xy(kl, 'G28 X Y\nG90\nG0 X%.1f Y%.1f F6000\nM400' % hw.center
             + ('\n' + motors_off_but_z(kl) if release else ''))
 
 

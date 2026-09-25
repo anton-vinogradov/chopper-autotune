@@ -140,7 +140,7 @@ def panel_on(module, *paths):
     panel._screen = SimpleNamespace(
         printer=SimpleNamespace(get_config_section=lambda section: config.get(section, False)),
         _confirm_send_action=lambda widget, confirm, method, params: panel.sent.append(params['script']),
-        _ws=SimpleNamespace(klippy=SimpleNamespace(gcode_script=panel.sent.append)))
+        _send_action=lambda widget, method, params: panel.sent.append(params['script']))
     panel.status = SimpleNamespace(set_markup=panel.shown.append)
     return panel
 
@@ -162,6 +162,14 @@ def test_the_panel_sends_a_wrapper_of_your_own(tmp_path, panel_module):
     panel = panel_on(panel_module, CFG, wrapper(tmp_path))
     panel.run(None, 'CHOPPER_TUNE MOTOR=AB SAVE=1', 'Tune?')
     assert panel.sent == ['CHOPPER_TUNE MOTOR=AB SAVE=1']
+
+
+def test_the_panel_sends_stop(panel_module):
+    # KlipperScreen renamed _ws.klippy to _ws.api (4afd4bef09): _send_action is in both
+    panel = panel_on(panel_module, CFG)
+    panel.show_status = panel.shown.append
+    panel.stop(None)
+    assert panel.sent == ['CHOPPER_STOP'] and 'Stopping' in panel.shown[-1]
 
 
 def test_the_panel_checks_stop_too(tmp_path, panel_module):

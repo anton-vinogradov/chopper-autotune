@@ -513,6 +513,49 @@ def test_every_accelerometer_streams_where_we_subscribe(source):
     assert 'bmi160' in checked or source.startswith('kalico')      # Klipper master has it
 
 
+@pytest.mark.parametrize('source', fetched('configfile.py'))
+def test_a_single_accelerometer_keeps_its_name_as_written(source, tmp_path, monkeypatch):
+    # settings has the section names lower-cased (access tracking), while a chip registers
+    # ACCELEROMETER_MEASURE and its stream under its section name as written
+    require(source)
+    fileconfig = read_main_config(source, printer_cfg(tmp_path, '[adxl345 Hotend]\ncs_pin: PA4\n'),
+                                  monkeypatch)
+    tracking = {}
+    load_klippy(source, 'configfile').ConfigWrapper(None, fileconfig, tracking, 'printer') \
+        .getsection('adxl345 Hotend').get('cs_pin')
+    settings = {}
+    for (section, option), value in tracking.items():      # as the configfile status builds it
+        settings.setdefault(section, {})[option] = value
+    assert list(settings) == ['adxl345 hotend']
+    chip = resolve_accel_chip(settings, 'x', fileconfig.sections)
+    assert chip == 'adxl345 Hotend' and accel_command_chip(settings, chip) == 'Hotend'
+
+
+@pytest.mark.parametrize('source', fetched('adxl345.py'))
+def test_accelerometer_measure_takes_the_chip_name_as_written(source):
+    require(source)
+    tag = source.replace('.', '_').replace('-', '_')
+    package = types.ModuleType('contract_%s_accel' % tag)
+    package.__path__ = [os.path.join(SRC, source)]
+    stubs = [package]
+    for stub in ('bus', 'bulk_sensor'):                     # used by the chip, not the commands
+        module = types.ModuleType(package.__name__ + '.' + stub)
+        setattr(package, stub, module)
+        stubs.append(module)
+    for module in stubs:
+        sys.modules[module.__name__] = module
+    name = package.__name__ + '.adxl345'
+    spec = importlib.util.spec_from_file_location(name, os.path.join(SRC, source, 'adxl345.py'))
+    adxl345 = importlib.util.module_from_spec(spec)
+    sys.modules[name] = adxl345
+    spec.loader.exec_module(adxl345)
+    printer, dispatch, _ = ready_dispatch(load_gcode(source), GCONF_STEALTH)
+    adxl345.AccelCommandHelper(types.SimpleNamespace(
+        get_printer=lambda: printer, get_name=lambda: 'adxl345 Hotend', error=configparser.Error), object())
+    assert list(dispatch.mux_commands['ACCELEROMETER_MEASURE'][1]) == [
+        accel_command_chip({}, 'adxl345 Hotend')]
+
+
 def load_extra(source: str, filename: str):
     """A klippy/extras module of the release, inside a stub package: resonance_tester's
     shaper_calibrate serves only OUTPUT=resonances, which the sweep never asks for."""
