@@ -207,7 +207,8 @@ def run_rung(kl: Klippy, board, motor: str, current: float, configured: float,
     # from one end: the first stroke runs the full 2*span too
     home_xy(kl, 'G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400'
             % (accel, cx - span * vec[0], cy - span * vec[1]))
-    kl.gcode('SET_TMC_CURRENT STEPPER=stepper_%s CURRENT=%.2f' % (motor, current))
+    # %r: the exact current (the bisection's 3 decimals, the config's 0.566), not 0.57
+    kl.gcode('SET_TMC_CURRENT STEPPER=stepper_%s CURRENT=%r' % (motor, current))
     factor = math.hypot(*vec)                   # belt speed per unit of head feed
     for belt in BELT_SPEEDS:
         feed = belt / factor * 60
@@ -218,7 +219,7 @@ def run_rung(kl: Klippy, board, motor: str, current: float, configured: float,
                      % (cx + span * vec[0], cy + span * vec[1], feed,
                         cx - span * vec[0], cy - span * vec[1], feed))
     kl.gcode('G1 X%.1f Y%.1f F6000\nM400' % (cx, cy))
-    kl.gcode('SET_TMC_CURRENT STEPPER=stepper_%s CURRENT=%.2f' % (motor, configured))
+    kl.gcode('SET_TMC_CURRENT STEPPER=stepper_%s CURRENT=%r' % (motor, configured))
 
 
 def unify_recommendation(recommended: 'dict[str, float]', configured: 'dict[str, float]',
@@ -337,7 +338,7 @@ def current_tune(kl: Klippy, args) -> int:
             screen.update('Chopper: %s current %.2fA' % (label, recommended[m]), force=True)
     finally:
         run_restore(
-            *[lambda m=m: kl.gcode('SET_TMC_CURRENT STEPPER=stepper_%s CURRENT=%.2f'
+            *[lambda m=m: kl.gcode('SET_TMC_CURRENT STEPPER=stepper_%s CURRENT=%r'
                                    % (m, configured[m])) for m in motors],
             lambda: kl.gcode('M204 S%.0f' % board.max_accel),
             *restores,

@@ -192,6 +192,9 @@ def test_current_checks_inside_a_rung_and_ends_with_the_motors_off(monkeypatch):
     assert len(strokes) == 3                     # stopped at the next stroke pair
     assert gantry_released(kl.scripts[-1], cycle=True)
     assert_cruise_ratio_lifted_and_put_back(kl.scripts)
+    # the exact current goes back, not a rounded one: 0.566 A as 0.57 set another IRUN
+    currents = [script for script in kl.scripts if script.startswith('SET_TMC_CURRENT')]
+    assert currents[-1] == 'SET_TMC_CURRENT STEPPER=stepper_x CURRENT=1.2'
 
 
 def assert_cruise_ratio_lifted_and_put_back(scripts):
@@ -275,6 +278,32 @@ def test_the_envelope_calls_a_short_ladder_untested_only_without_a_skip(tmp_path
         assert json.load(state)['recommend'].get('untested') == untested
     out = capsys.readouterr().out
     assert ('untested above' in out) is bool(untested)
+
+
+def test_a_stop_after_a_motor_of_the_envelope_is_not_swallowed(tmp_path, monkeypatch):
+    # run_restore swallows a second Stop on the way back: after a motor that finished, the
+    # accel restore is a plain command, and a Stop landing there ends the run
+    import chopper_autotune.envelope as env
+    kl = StatusKl()
+    monkeypatch.setattr(env, 'detect_hardware', lambda kl_, axis, accel=False: hardware(kl_))
+    monkeypatch.setattr(env, 'stress_burst', lambda *a, **k: None)
+    monkeypatch.setattr(env, 'enter_spreadcycle', lambda kl_, hw, restores=False: None)
+    monkeypatch.setattr(env, 'exit_spreadcycle', lambda kl_, hw: None)
+    monkeypatch.setattr(env, 'STATE', str(tmp_path / 'envelope.json'))
+    real_gcode, motors = kl.gcode, []
+
+    def gcode(script):
+        real_gcode(script)
+        if script == 'M204 S10000' and not motors:
+            motors.append('A')
+            raise SystemExit(143)                   # CHOPPER_STOP right after motor A
+    kl.gcode = gcode
+    referees = []
+    monkeypatch.setattr(env, 'Referee', lambda *a: referees.append(a) or SimpleNamespace(
+        calibrate=lambda: None, slipped=lambda: 0.0))
+    with pytest.raises(SystemExit) as stop:
+        env.envelope(kl, build_parser().parse_args(['envelope', '--yes']))
+    assert stop.value.code == 143 and len(referees) == 1       # motor B never started
 
 
 def test_find_speed_ends_with_the_motors_off_after_a_thermal_stop(tmp_path, monkeypatch):

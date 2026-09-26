@@ -67,6 +67,9 @@ class FakeMoonraker:
     def gcode(self, script):
         self.scripts.append(script)
 
+    def set_tmc_fields(self, stepper, fields):             # as Moonraker sends it
+        self.gcode(tmc.set_fields_script(stepper, fields))
+
 
 def test_run_save_backs_up_edits_and_restarts(capsys):
     mk = FakeMoonraker({'printer.cfg': CFG, 'mainsail.cfg': '[respond]\n'})
@@ -430,6 +433,23 @@ def test_apply_refuses_to_set_one_driver_of_a_pair():
     with pytest.raises(SystemExit, match='stepper_x1 share its axis'):
         run_apply(mk, 'stepper_x', tmc.Chopper(0, 8, 7, 5))
     assert mk.scripts == []
+
+
+@pytest.mark.parametrize('enable_pins, shared', [
+    ({'stepper_x': '!PA1', 'stepper_y': '!PA2'}, False),
+    ({'stepper_x': '!PA1', 'stepper_y': 'PA1'}, True),          # one EN line for both
+    ({}, True),                                                 # no enable pin at all
+])
+def test_apply_enables_the_motor_before_its_registers(enable_pins, shared, capsys):
+    # toff written to a motor Klipper counts as off energizes it, and Klipper's own enable
+    # would put its config toff back; a shared enable does that at every motors off and on
+    from chopper_autotune.analyze import run_apply
+    settings = {name: {'enable_pin': pin} for name, pin in enable_pins.items()}
+    mk = FakeMoonraker({}, settings=dict({'stepper_x': {}}, **settings))
+    run_apply(mk, 'stepper_x', tmc.Chopper(2, 3, 5, 0))
+    assert mk.scripts[0] == 'SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=1'
+    assert all(script.startswith('SET_TMC_FIELD') for script in mk.scripts[1:])
+    assert ('no enable pin of its own' in capsys.readouterr().out) is shared
 
 
 def test_restore_defaults_resets_both_drivers_of_a_pair():

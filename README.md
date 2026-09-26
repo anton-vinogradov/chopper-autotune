@@ -264,7 +264,7 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 | `AUDIBLE_WEIGHT` | `0.25` | ranking penalty for audible chopper frequency |
 | `RECOMPUTE` | `0` | recompute metrics from raw samples instead of stored scores |
 | `HTML` / `NO_HTML` | `<dataset>/report.html` | report path / skip the report |
-| `APPLY` | `0` | apply the winner live via `SET_TMC_FIELD` (until reboot) |
+| `APPLY` | `0` | apply the winner live via `SET_TMC_FIELD` (until Klipper restarts; on a motor without an enable pin of its own, toff returns to the config value at the next motors off and on) |
 | `SAVE` | `0` | rewrite the `driver_*` lines in the config (backup first) and restart |
 
 **CHOPPER_DEMO** — plays the driver defaults against the saved/tuned registers, alternating so you can *hear* the difference and announcing each on the display and console. `MOTOR` (a/b, or **ab** = the default: **both motors together** in coordinated moves, like printing — a whole-printer before/after), `SPEED`, `ROUNDS`, `REPEATS`. `REPORT=1` prints the measured numbers (how much less vibration, per motor, with bars) one motor at a time instead of the audible show; `DEFAULT=tbl,toff,hstrt,hend` replaces the driver's stock registers in the defaults round (the show and the report; a TMC2240/5160 keeps its stock TPFD, and values the driver cannot take are refused before anything moves); `ITERATIONS` applies to the report.
