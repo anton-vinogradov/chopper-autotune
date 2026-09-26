@@ -267,7 +267,9 @@ def autotune_carry_over(settings: dict, driver_name: str, stepper: str) -> 'list
     (Klipper's own defaults, sgthrs 0 or sgt 0, home wrong or not at all) and the
     TMC2240's fast slope. Only a starting point for the thresholds: they ran under
     autotune's CoolStep, TCOOLTHRS and PWM settings, which go with the section. Its
-    values come from the settings, where Klipper records defaults too."""
+    values come from the settings, where Klipper records defaults too, and so does every
+    option the [tmc...] section can take: a line naming another one stops Klipper at
+    start (Klipper v0.13.0 has no driver_SG4_THRS)."""
     section = settings.get('autotune_tmc ' + stepper) or {}
     lines = []
     if driver_name == '2209':
@@ -275,8 +277,9 @@ def autotune_carry_over(settings: dict, driver_name: str, stepper: str) -> 'list
     elif driver_name != '2208':                     # 2130, 2240, 2660, 5160: SGT; 2208: none
         lines.append('driver_SGT: %s' % section.get('sgt', 1))
     if driver_name == '2240':
-        # 0 too: it replaces an old line, and Klipper homes on SG4 when it is not 0
-        lines.append('driver_SG4_THRS: %s' % int(section.get('sg4_thrs') or 0))
+        if 'driver_sg4_thrs' in (settings.get('tmc2240 ' + stepper) or {}):
+            # 0 too: it replaces an old line, and Klipper homes on SG4 when it is not 0
+            lines.append('driver_SG4_THRS: %s' % int(section.get('sg4_thrs') or 0))
         lines.append('driver_SLOPE_CONTROL: 3')
     return lines
 

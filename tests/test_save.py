@@ -477,19 +477,28 @@ def test_the_autotune_refusal_points_the_display_at_the_log(command, driver, ste
     assert 'the log says what to do' in shown and 'remove' not in shown
 
 
-@pytest.mark.parametrize('driver, section, lines', [
-    ('2209', {'sg4_thrs': 80}, ['driver_SGTHRS: 80']),
+# the options each [tmc...] section reads, as Klipper records them in the settings
+MASTER_2240 = {'driver_sgt': 0, 'driver_sg4_thrs': 0, 'driver_slope_control': 0}
+
+
+@pytest.mark.parametrize('driver, section, reads, lines', [
+    ('2209', {'sg4_thrs': 80}, {'driver_sgthrs': 0}, ['driver_SGTHRS: 80']),
     # SG4_THRS 0 too: it replaces an old line, and Klipper homes on SG4 when it is not 0
-    ('2240', {'sgt': 2, 'sg4_thrs': 0}, ['driver_SGT: 2', 'driver_SG4_THRS: 0', 'driver_SLOPE_CONTROL: 3']),
-    ('2240', {'sgt': 1, 'sg4_thrs': 60}, ['driver_SGT: 1', 'driver_SG4_THRS: 60', 'driver_SLOPE_CONTROL: 3']),
-    ('5160', {'sgt': -4}, ['driver_SGT: -4']),
-    ('2208', {}, []),
+    ('2240', {'sgt': 2, 'sg4_thrs': 0}, MASTER_2240,
+     ['driver_SGT: 2', 'driver_SG4_THRS: 0', 'driver_SLOPE_CONTROL: 3']),
+    ('2240', {'sgt': 1, 'sg4_thrs': 60}, MASTER_2240,
+     ['driver_SGT: 1', 'driver_SG4_THRS: 60', 'driver_SLOPE_CONTROL: 3']),
+    # Klipper v0.13.0 has no sg4_thrs option: a line naming it stops Klipper at start
+    ('2240', {'sgt': 1, 'sg4_thrs': 60}, {'driver_sgt': 0, 'driver_slope_control': 0},
+     ['driver_SGT: 1', 'driver_SLOPE_CONTROL: 3']),
+    ('5160', {'sgt': -4}, {'driver_sgt': 0}, ['driver_SGT: -4']),
+    ('2208', {}, {}, []),
 ])
-def test_the_advice_carries_over_what_autotune_sets(driver, section, lines):
+def test_the_advice_carries_over_what_autotune_sets(driver, section, reads, lines):
     # Klipper records autotune's defaults in the settings too; its own README moves the
     # StallGuard thresholds from [tmc...] into [autotune_tmc], so they must come back
     from chopper_autotune.collect import autotune_advice, autotune_carry_over
-    settings = {'autotune_tmc stepper_x': section}
+    settings = {'autotune_tmc stepper_x': section, 'tmc%s stepper_x' % driver: reads}
     assert autotune_carry_over(settings, driver, 'stepper_x') == lines
     advice = autotune_advice(settings, driver, 'stepper_x')
     assert all(line in advice for line in lines)

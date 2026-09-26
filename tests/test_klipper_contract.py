@@ -516,6 +516,21 @@ def test_every_supported_klipper_passes_the_version_check(source, tmp_path, monk
         info=lambda: {'klipper_path': str(tmp_path), 'process_id': 1}))
 
 
+@pytest.mark.parametrize('source', fetched('tmc2240.py'))
+def test_the_autotune_advice_names_only_options_the_tmc2240_section_takes(source):
+    # a [tmc2240] line naming an option Klipper does not read stops it at start; it
+    # records every option it reads in the settings, defaults too (set_config_field)
+    require(source)
+    with open(os.path.join(SRC, source, 'tmc2240.py')) as module:
+        read = re.findall(r'set_config_field\(\s*config,\s*["\'](\w+)["\']', module.read())
+    assert {'sgt', 'slope_control'} <= set(read), source
+    settings = {'tmc2240 stepper_x': {'driver_' + field: 0 for field in read},
+                'autotune_tmc stepper_x': {'sgt': 1, 'sg4_thrs': 60}}
+    lines = collect.autotune_carry_over(settings, '2240', 'stepper_x')
+    assert lines and {line.split(':')[0] for line in lines} <= {'driver_' + field.upper() for field in read}
+    assert any(line.startswith('driver_SG4_THRS') for line in lines) is ('sg4_thrs' in read)
+
+
 @pytest.mark.parametrize('source', fetched('configfile.py'))
 def test_a_single_accelerometer_keeps_its_name_as_written(source, tmp_path, monkeypatch):
     # settings has the section names lower-cased (access tracking), while a chip registers
