@@ -27,7 +27,7 @@ fetch() {
 for ref in v0.13.0 "$klipper_master"; do
     for file in gcode.py klippy.py webhooks.py configfile.py extras/resonance_tester.py \
                 extras/force_move.py extras/tmc2240.py toolhead.py extras/gcode_move.py \
-                kinematics/extruder.py extras/input_shaper.py; do
+                kinematics/extruder.py extras/input_shaper.py extras/gcode_macro.py; do
         fetch "https://raw.githubusercontent.com/Klipper3d/klipper/$ref/klippy/$file" \
               "$dest/klipper-$ref/$(basename "$file")"
     done
@@ -35,7 +35,8 @@ done
 # Kalico keeps Printer in printer.py
 for file in gcode.py configfile.py printer.py webhooks.py extras/resonance_tester.py \
             extras/force_move.py extras/tmc2240.py toolhead.py extras/gcode_move.py \
-            kinematics/extruder.py extras/input_shaper.py; do
+            kinematics/extruder.py extras/input_shaper.py extras/gcode_macro.py \
+            extras/gcode_shell_command.py; do
     fetch "https://raw.githubusercontent.com/KalicoCrew/kalico/$kalico_main/klippy/$file" \
           "$dest/kalico-$kalico_main/$(basename "$file")"
 done

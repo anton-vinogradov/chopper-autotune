@@ -1045,3 +1045,97 @@ def test_the_input_shaper_frequencies_come_back_as_klipper_reports_them(source):
     kl = types.SimpleNamespace(gcode_output=lambda script: ['// ' + line for line in printed])
     assert shaper_freqs(kl) == {'x': '40.000', 'y': '0.000'}
 
+
+class Popen:
+    """What RUN_SHELL_COMMAND starts: the argv is recorded, the process ends at once."""
+    started = []
+
+    def __init__(self, argv, stdout=None, stderr=None):
+        Popen.started.append(list(argv))
+        read, write = os.pipe()
+        os.close(write)
+        self.stdout = os.fdopen(read, 'rb')
+
+    def poll(self):
+        return 0
+
+    def terminate(self):
+        pass
+
+
+class ShellReactor(Reactor):
+    def pause(self, waketime):
+        return waketime
+
+
+def macro_printer(source: str):
+    """Our chopper_autotune.cfg on this release's own gcode.py, config reader and
+    gcode_macro.py, with the shell command module the printer runs: Kalico ships one,
+    install.sh puts ours beside Klipper's extras (and leaves one already there)."""
+    gcode = load_gcode(source)
+    configfile = load_klippy(source, 'configfile')
+    if source.startswith('kalico'):
+        sys.modules['klippy'] = types.SimpleNamespace(configfile=configfile)   # 'from klippy import'
+    macro = load_klippy(source, 'gcode_macro')
+    shell_path = (os.path.join(SRC, source, 'gcode_shell_command.py') if source.startswith('kalico')
+                  else os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                    'gcode_shell_command.py'))
+    spec = importlib.util.spec_from_file_location('contract_shell_%s' % source.replace('-', '_')
+                                                  .replace('.', '_'), shell_path)
+    shell = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(shell)
+    shell.subprocess = types.SimpleNamespace(Popen=Popen, PIPE=-1, STDOUT=-2)
+    fileconfig = read_like_klipper(CFG)
+    printer = Printer()
+    printer.reactor = ShellReactor()
+    printer.command_error = gcode.CommandError
+    printer.config_error = configparser.Error
+    dispatch = gcode.GCodeDispatch(printer)
+    printer.objects['gcode'] = dispatch
+    tracking = {}
+
+    def load_object(config, section, default=None):
+        if section not in printer.objects:
+            wrapper = configfile.ConfigWrapper(printer, fileconfig, tracking, section)
+            module = {'gcode_macro': macro, 'gcode_shell_command': shell}[section.split()[0]]
+            printer.objects[section] = (module.load_config_prefix(wrapper) if ' ' in section
+                                        else module.load_config(wrapper))
+        return printer.objects[section]
+    printer.load_object = load_object
+    printer.lookup_objects = lambda module=None: [
+        (name, obj) for name, obj in printer.objects.items()
+        if module is None or name.split()[0] == module]
+    for section in fileconfig.sections():
+        if section.split()[0] in ('gcode_macro', 'gcode_shell_command'):
+            load_object(None, section)
+    printer.send_event('klippy:ready')
+    console = []
+    dispatch.register_output_handler(console.append)
+    return dispatch, console
+
+
+MACRO_LINES = [
+    # what the user types, and what the tool gets
+    ('CHOPPER_COLLECT SPEED=55 DRY_RUN=1 ; my note', ['SPEED=55', 'DRY_RUN=1']),
+    ('chopper_collect speed=55 dry_run=1', ['SPEED=55', 'DRY_RUN=1']),
+    ("CHOPPER_ANALYZE DATASET='/home/pi/my set'", ['DATASET=/home/pi/my set']),
+    ('CHOPPER_ANALYZE DATASET="/home/pi/my set" TOP=5', ['DATASET=/home/pi/my set', 'TOP=5']),
+    ('CHOPPER_ANALYZE HTML="/home/pi/it\'s.html"', ["HTML=/home/pi/it's.html"]),
+    ('CHOPPER_ANALYZE HTML=\'say "hi".html\'', ['HTML=say "hi".html']),
+    ('CHOPPER_BELTS MU=', ['MU=']),
+    ('CHOPPER_STATUS', []),
+]
+
+
+@pytest.mark.parametrize('source', fetched('gcode_macro.py'))
+@pytest.mark.parametrize('line, argv', MACRO_LINES)
+def test_a_macro_line_reaches_the_tool_as_typed(source, line, argv):
+    # {rawparams} carried a '; comment' into the tool's arguments, and a value in single
+    # quotes broke the macro's own quoting
+    require(source)
+    dispatch, console = macro_printer(source)
+    Popen.started = []
+    dispatch.run_script(line)
+    assert [started[1:] for started in Popen.started] == [argv], (source, console)
+    assert not [text for text in console if text.startswith('!!')], console
+

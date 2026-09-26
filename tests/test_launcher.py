@@ -111,3 +111,29 @@ def test_no_failure_report_through_klipper_in_a_foreground_run(monkeypatch):
     monkeypatch.delenv('CHOPPER_SYNC')
     cli.announce_failure(None, 'tune FAILED: no accelerometer')     # a detached run does report
     assert calls == [(None,)]
+
+
+@pytest.mark.parametrize('args, detached', [
+    (['APPLY=1'], True), (['apply=On'], True), (['SAVE=yes'], True), (['--apply'], True),
+    # APPLY=0 is no apply: the table stays in the console
+    (['APPLY=0'], False), (['SAVE=off'], False), (['TOP=5'], False), ([], False),
+])
+def test_analyze_detaches_only_an_apply_or_a_save(tmp_path, args, detached):
+    # APPLY/SAVE send G-code back while RUN_SHELL_COMMAND holds Klipper's queue: detached
+    shutil.copy(os.path.join(REPO, 'analyze.sh'), str(tmp_path))
+    (tmp_path / 'run.sh').write_text('#!/bin/bash\necho "$@" > "$(dirname "$0")/called"\n')
+    os.chmod(str(tmp_path / 'run.sh'), 0o755)
+    subprocess.run(['bash', str(tmp_path / 'analyze.sh')] + args, check=True)
+    called = (tmp_path / 'called').read_text().split()
+    assert (called[0] != '--sync') is detached and called[called.index('analyze'):] == ['analyze'] + args
+
+
+def test_analyze_takes_the_yes_values_the_cli_takes():
+    import re
+
+    from chopper_autotune.cli import TRUE_VALUES
+    with open(os.path.join(REPO, 'analyze.sh')) as script:
+        pattern = next(line for line in script if line.strip().startswith('--apply|'))
+    patterns = re.findall(r'\b(APPLY|SAVE)=(\w+)', pattern)
+    assert sorted(patterns) == sorted((key, value) for key in ('APPLY', 'SAVE') for value in TRUE_VALUES)
+
