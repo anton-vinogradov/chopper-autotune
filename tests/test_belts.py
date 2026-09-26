@@ -644,3 +644,20 @@ def test_a_failed_shuttle_puts_absolute_moves_and_the_accel_back(monkeypatch):
     with pytest.raises(KlippyError):
         belts_mod.machine_axes(SimpleNamespace(max_accel=3000.0), SimpleNamespace(gcode=sent.append))
     assert sent == ['G90\nM204 S3000']
+
+
+def test_a_stop_after_the_shuttles_is_not_swallowed(monkeypatch):
+    # run_restore swallows a SIGTERM on purpose; the accel restore after good shuttles
+    # is a plain command, so a Stop that lands there still stops the session
+    from types import SimpleNamespace
+
+    import chopper_autotune.collect as collect_mod
+
+    def gcode(script):
+        if script == 'M204 S3000':
+            raise SystemExit(143)
+    samples = np.column_stack([np.arange(400) / 400.0] + [np.sin(np.arange(400) * k) for k in (0.1, 0.2, 0.3)])
+    monkeypatch.setattr(collect_mod, 'capture_stream', lambda hw, script, duration: (0.0, samples))
+    with pytest.raises(SystemExit) as stop:
+        belts_mod.machine_axes(SimpleNamespace(max_accel=3000.0), SimpleNamespace(gcode=gcode))
+    assert stop.value.code == 143

@@ -566,9 +566,11 @@ def machine_axes(hw, kl) -> 'tuple | None':
 
     try:
         ex, ey = direction('X'), direction('Y')
-    finally:
+    except BaseException:
         # a shuttle that fails midway leaves relative moves and its low accel behind
         run_restore(lambda: kl.gcode('G90\nM204 S%.0f' % hw.max_accel))
+        raise
+    kl.gcode('M204 S%.0f' % hw.max_accel)           # the shuttles lowered it
     if abs(float(np.dot(ex, ey))) > 0.5:            # jogs read alike: mounting is odd,
         return None                                 # fall back to unpolarized analysis
     return ex, ey
