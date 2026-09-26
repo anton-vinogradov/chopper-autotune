@@ -130,3 +130,21 @@ def test_kalicos_limited_kinematics_are_refused_before_any_motion(monkeypatch):
     with pytest.raises(SystemExit, match='limited_corexy is not supported by the envelope'):
         envelope_mod.envelope(kl, args)
     assert scripts == []
+
+
+def test_the_ladders_drop_the_rungs_a_stroke_cannot_reach(capsys):
+    # a rung never reached would 'hold' and top the max_velocity advice
+    import pytest
+
+    from chopper_autotune.envelope import stroke_ladders
+    span, vec, speeds, accels = stroke_ladders('cartesian', 'x', 400.0, (150, 200, 250, 300),
+                                               1000, (500, 1000, 2000), 180)
+    assert (span, vec, speeds, accels) == (25.0, (1.0, 0.0), (150, 200), (1000, 2000))
+    out = capsys.readouterr().out
+    assert 'capping the speed ladder at 200 mm/s' in out and 'ACCEL=1800 reaches 300' in out
+    assert 'the accel ladder starts at 1000 mm/s2' in out
+    with pytest.raises(SystemExit, match='below MIN_SPEED 150: raise ACCEL to 500 or more'):
+        stroke_ladders('cartesian', 'x', 400.0, (150, 200), 400, (400,), 100)
+    with pytest.raises(SystemExit, match='lower ACCEL_PROBE_SPEED'):
+        stroke_ladders('cartesian', 'x', 400.0, (100,), 3000, (300,), 150)
+

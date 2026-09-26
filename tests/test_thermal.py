@@ -51,6 +51,9 @@ class StatusKl:
     def gcode(self, script):
         self.scripts.append(script)
 
+    def request(self, method, params=None):
+        return {'status': {'toolhead': {'minimum_cruise_ratio': 0.5}}}   # Klipper's default
+
     def gcode_output(self, script):
         return []
 
@@ -186,6 +189,38 @@ def test_current_checks_inside_a_rung_and_ends_with_the_motors_off(monkeypatch):
         cur.current_tune(kl, build_parser().parse_args(['current', '--motor', 'a', '--yes']))
     assert len(strokes) == 3                     # stopped at the next stroke pair
     assert gantry_released(kl.scripts[-1], cycle=True)
+    assert_cruise_ratio_lifted_and_put_back(kl.scripts)
+
+
+def assert_cruise_ratio_lifted_and_put_back(scripts):
+    """The strokes brake as hard as they accelerate, and the configured ratio comes back
+    even after a stop."""
+    lifted = scripts.index('SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0')
+    first_stroke = next(i for i, script in enumerate(scripts) if script.count('\nG1 ') == 1)
+    assert lifted < first_stroke < scripts.index('SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0.5')
+
+
+def test_envelope_lifts_the_cruise_ratio_and_puts_it_back_after_a_stop(monkeypatch):
+    import chopper_autotune.envelope as env
+    kl = StatusKl()
+    monkeypatch.setattr(env, 'detect_hardware', lambda kl_, axis, accel=False: hardware(kl_))
+    monkeypatch.setattr(env, 'Referee', lambda *a: SimpleNamespace(calibrate=lambda: None,
+                                                                     slipped=lambda: 0.0))
+    monkeypatch.setattr(env, 'enter_spreadcycle', lambda kl_, hw, restores=False: None)
+    monkeypatch.setattr(env, 'exit_spreadcycle', lambda kl_, hw: None)
+    real_gcode = kl.gcode
+    strokes = []
+
+    def gcode(script):
+        real_gcode(script)
+        if script.count('\nG1 ') == 1 and script.startswith('G1 '):
+            strokes.append(script)
+            if len(strokes) == 4:                # the driver warns within the speed ladder
+                kl.status_map = HOT_X
+    kl.gcode = gcode
+    with pytest.raises(DriverTooHot):
+        env.envelope(kl, build_parser().parse_args(['envelope', '--motor', 'a', '--yes']))
+    assert_cruise_ratio_lifted_and_put_back(kl.scripts)
 
 
 def test_find_speed_ends_with_the_motors_off_after_a_thermal_stop(tmp_path, monkeypatch):

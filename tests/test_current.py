@@ -171,3 +171,45 @@ def test_referee_refuses_sensorless_endstops():
                               'position_endstop': 120, 'position_max': 120}}
     with pytest.raises(SystemExit, match='sensorless'):
         Referee(None, 'x', settings, 60.0)
+
+
+def test_a_stroke_peaks_where_it_brakes_as_hard_as_it_accelerates():
+    from chopper_autotune.current import stroke_accel, stroke_peak
+    assert stroke_peak(25.0, (1.0, 0.0), 3000) == pytest.approx(387.3, abs=0.1)
+    assert stroke_peak(25.0, (1.0, 0.0), 500) == pytest.approx(158.1, abs=0.1)
+    # corexy: the head runs 1/sqrt2 of the belt speed along a 2*span*sqrt2 diagonal
+    assert stroke_peak(25.0, (1.0, 1.0), 500) == pytest.approx(265.9, abs=0.1)
+    assert stroke_accel(200, 25.0, (1.0, 0.0)) == 800           # 200^2 / 50
+    assert stroke_peak(25.0, (1.0, 0.0), stroke_accel(200, 25.0, (1.0, 0.0))) >= 200
+
+
+def test_the_pattern_refuses_an_accel_its_strokes_cannot_carry(monkeypatch):
+    # a 50 mm stroke at 500 mm/s2 peaks at 158 mm/s: the 200 mm/s rung would be a weaker
+    # load than the header says, and the saved current too low
+    from types import SimpleNamespace
+
+    import chopper_autotune.current as cur
+    from chopper_autotune.cli import build_parser
+    hw = SimpleNamespace(kinematics='cartesian', axis_span=300.0, max_accel=500.0,
+                         driver=SimpleNamespace(name='2209'))
+    monkeypatch.setattr(cur, 'detect_hardware', lambda kl, axis, accel=False: hw)
+    scripts = []
+    kl = SimpleNamespace(gcode=scripts.append, settings=lambda: {
+        'tmc2209 stepper_x': {'run_current': 0.8}, 'stepper_x': {}})
+    with pytest.raises(SystemExit, match='peaks at 158 mm/s.*raise ACCEL to 800 or more'):
+        cur.current_tune(kl, build_parser().parse_args(['current', '--motor', 'a', '--yes']))
+    assert scripts == []
+
+
+def test_the_strokes_brake_as_hard_as_they_accelerate_and_put_it_back():
+    from types import SimpleNamespace
+
+    from chopper_autotune.current import lift_cruise_ratio
+    scripts = []
+    kl = SimpleNamespace(gcode=scripts.append, request=lambda method, params: {
+        'status': {'toolhead': {'minimum_cruise_ratio': 0.35}}})
+    put_back = lift_cruise_ratio(kl)
+    assert scripts == ['SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0']
+    put_back()
+    assert scripts[-1] == 'SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0.35'
+

@@ -140,6 +140,28 @@ class Referee:
         return None if offset is None else offset - self.bias
 
 
+def stroke_peak(span: float, vec: 'tuple[float, float]', accel: float) -> float:
+    """The belt speed a stress stroke reaches: standstill to standstill over 2*span along
+    vec, braking as hard as it accelerates (lift_cruise_ratio)."""
+    factor = math.hypot(*vec)                   # belt speed per unit of head feed
+    return math.sqrt(2 * span * factor * accel) * factor
+
+
+def stroke_accel(speed: float, span: float, vec: 'tuple[float, float]') -> int:
+    """The accel, in hundreds, a stress stroke needs to reach this belt speed."""
+    return int(math.ceil(speed ** 2 / (2 * span * math.hypot(*vec) ** 3) / 100.0)) * 100
+
+
+def lift_cruise_ratio(kl: Klippy):
+    """Klipper brakes short moves early (minimum_cruise_ratio, 0.5 by default): a 50 mm
+    stroke at 3000 mm/s2 peaked at 274 mm/s, and a 300 mm/s rung 'held' at that. Lifted
+    to 0 for the strokes; returns the step that puts the configured value back."""
+    status = kl.request('objects/query', {'objects': {'toolhead': ['minimum_cruise_ratio']}})
+    ratio = status['status']['toolhead']['minimum_cruise_ratio']
+    kl.gcode('SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0')
+    return lambda: kl.gcode('SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=%s' % ratio)
+
+
 def run_rung(kl: Klippy, board, motor: str, current: float, configured: float,
              vec: 'tuple[float, float]', span: float, accel: float, check=lambda: None):
     """One rung at `current`. check() runs before every stroke pair (about a second each,
@@ -147,7 +169,9 @@ def run_rung(kl: Klippy, board, motor: str, current: float, configured: float,
     warns of over-temperature may shut down within seconds (#133)."""
     cx, cy = board.center
     check()
-    home_xy(kl, 'G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, cx, cy))
+    # from one end: the first stroke runs the full 2*span too
+    home_xy(kl, 'G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400'
+            % (accel, cx - span * vec[0], cy - span * vec[1]))
     kl.gcode('SET_TMC_CURRENT STEPPER=stepper_%s CURRENT=%.2f' % (motor, current))
     factor = math.hypot(*vec)                   # belt speed per unit of head feed
     for belt in BELT_SPEEDS:
@@ -196,6 +220,13 @@ def current_tune(kl: Klippy, args) -> int:
                   for m in motors}
     accel = args.accel or board.max_accel
     span = min(25.0, board.axis_span / 8)
+    for m in motors:
+        vec = stress_vector(board.kinematics, m)
+        if stroke_peak(span, vec, accel) < BELT_SPEEDS[-1]:
+            raise SystemExit('motor %s: a %.0f mm stroke at accel %.0f peaks at %.0f mm/s, below '
+                             'the %d mm/s of the pattern: raise ACCEL to %d or more. Nothing was '
+                             'moved' % (motor_label(m), 2 * span, accel, stroke_peak(span, vec, accel),
+                                        BELT_SPEEDS[-1], stroke_accel(BELT_SPEEDS[-1], span, vec)))
 
     print('Current tuning on motor(s) %s: worst-case pattern (single-motor load, belts %s mm/s, '
           'accel %.0f, ±%.0f mm), endstop referee, margin %.1fx over the measured skip threshold'
@@ -215,8 +246,10 @@ def current_tune(kl: Klippy, args) -> int:
     recommended, thresholds = {}, {}
     refuse_blind_z_hop(kl, settings)
     guard.preflight()
+    put_back = lambda: None
     try:
         home_xy(kl, 'G28 X Y\nG90')
+        put_back = lift_cruise_ratio(kl)
         for m in motors:
             label = motor_label(m)
             ref = Referee(kl, referee_axis(board.kinematics, m), settings,
@@ -258,6 +291,7 @@ def current_tune(kl: Klippy, args) -> int:
             *[lambda m=m: kl.gcode('SET_TMC_CURRENT STEPPER=stepper_%s CURRENT=%.2f'
                                    % (m, configured[m])) for m in motors],
             lambda: kl.gcode('M204 S%.0f' % board.max_accel),
+            lambda: put_back(),
             lambda: rehome_unless_hot(kl))
 
     unified = unify_recommendation(recommended, configured, coupled_xy(board.kinematics),

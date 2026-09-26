@@ -13,7 +13,8 @@ import os
 from .collect import (KLIPPY_DIR, Screen, ThermalGuard, detect_hardware, enter_spreadcycle,
                       exit_spreadcycle, full_steps_per_mm, home_xy, rail_twins, refuse_blind_z_hop,
                       refuse_if_printing, rehome_unless_hot, run_restore)
-from .current import Referee, referee_axis, stress_vector
+from .current import (Referee, lift_cruise_ratio, referee_axis, stress_vector, stroke_accel,
+                      stroke_peak)
 from .dataset import save_json
 from .klippy import Klippy, find_socket
 
@@ -128,13 +129,46 @@ def stress_burst(kl: Klippy, board, motor: str, vec: 'tuple[float, float]',
     cx, cy = board.center
     feed = speed / math.hypot(*vec) * 60.0
     check()
-    kl.gcode('G90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, cx, cy))
+    # from one end: the first stroke runs the full 2*span too
+    kl.gcode('G90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400'
+             % (accel, cx - span * vec[0], cy - span * vec[1]))
     for _ in range(STRESS_REPS):
         check()
         kl.gcode('G1 X%.1f Y%.1f F%.0f\nG1 X%.1f Y%.1f F%.0f\nM400'
                  % (cx + span * vec[0], cy + span * vec[1], feed,
                     cx - span * vec[0], cy - span * vec[1], feed))
     kl.gcode('G1 X%.1f Y%.1f F6000\nM400' % (cx, cy))
+
+
+def stroke_ladders(kinematics: str, motor: str, axis_span: float, speeds, accel: float, accels,
+                   probe_speed: float):
+    """(span, vec, speed rungs, accel rungs) of one motor, without the rungs its strokes
+    cannot reach: a rung never reached would 'hold' and top the advice."""
+    from .collect import motor_label
+    label = motor_label(motor)
+    span = min(25.0, axis_span / 8)
+    vec = stress_vector(kinematics, motor)
+    top = stroke_peak(span, vec, accel)
+    kept = tuple(speed for speed in speeds if speed <= top)
+    if not kept:
+        raise SystemExit('motor %s: a %.0f mm stroke at accel %.0f peaks at %.0f mm/s, below '
+                         'MIN_SPEED %d: raise ACCEL to %d or more. Nothing was moved'
+                         % (label, 2 * span, accel, top, speeds[0],
+                            stroke_accel(speeds[0], span, vec)))
+    if len(kept) < len(speeds):
+        print('Motor %s: capping the speed ladder at %d mm/s: a %.0f mm stroke at accel %.0f '
+              'peaks at %.0f mm/s (ACCEL=%d reaches %d)' % (
+                  label, kept[-1], 2 * span, accel, top, stroke_accel(speeds[-1], span, vec),
+                  speeds[-1]))
+    kept_accels = tuple(a for a in accels if stroke_peak(span, vec, a) >= probe_speed)
+    if not kept_accels:
+        raise SystemExit('motor %s: no accel rung up to %g mm/s2 lets a %.0f mm stroke reach '
+                         'the %d mm/s probe speed: lower ACCEL_PROBE_SPEED. Nothing was moved'
+                         % (label, accels[-1], 2 * span, probe_speed))
+    if len(kept_accels) < len(accels):
+        print('Motor %s: the accel ladder starts at %g mm/s2: below it a %.0f mm stroke never '
+              'reaches the %d mm/s probe speed' % (label, kept_accels[0], 2 * span, probe_speed))
+    return span, vec, kept, kept_accels
 
 
 def ceiling(ladder, run_one, report):
@@ -204,6 +238,8 @@ def envelope(kl: Klippy, args) -> int:
         if not speeds:
             raise SystemExit('MIN_SPEED %d exceeds [printer] max_velocity %g — nothing to test'
                              % (args.min_speed, max_velocity))
+    ladders = {m: stroke_ladders(board.kinematics, m, hw[m].axis_span, speeds, base_accel, accels,
+                                 args.accel_probe_speed) for m in motors}
 
     print('Motion envelope on motor(s) %s at the configured run current: worst-case '
           'single-motor stress, endstop referee.' % '+'.join(motor_label(m) for m in motors))
@@ -233,12 +269,13 @@ def envelope(kl: Klippy, args) -> int:
     speed_holds, accel_holds = {}, {}
     refuse_blind_z_hop(kl, settings)
     guard.preflight()
+    put_back = lambda: None
     try:
         home_xy(kl, 'G28 X Y\nG90')
+        put_back = lift_cruise_ratio(kl)
         for m in motors:
             label = motor_label(m)
-            span = min(25.0, hw[m].axis_span / 8)
-            vec = stress_vector(board.kinematics, m)
+            span, vec, motor_speeds, motor_accels = ladders[m]
             current = float(settings['tmc%s stepper_%s' % (hw[m].driver.name, m)]['run_current'])
             print('\n=== Motor %s @ %.2f A ===' % (label, current))
 
@@ -258,13 +295,13 @@ def envelope(kl: Klippy, args) -> int:
                 ref.calibrate()
                 print(' speed ceiling (accel %.0f):' % base_accel)
                 s_hold, s_skip = ceiling(
-                    speeds,
+                    motor_speeds,
                     lambda v: stress_burst(kl, board, m, vec, v, base_accel, span, guard.check)
                     or guard.check() or skips(ref.slipped()),
                     lambda v, sk: report(v, sk, 'mm/s'))
                 print(' accel ceiling (speed %d mm/s):' % args.accel_probe_speed)
                 a_hold, a_skip = ceiling(
-                    accels,
+                    motor_accels,
                     lambda a: stress_burst(kl, board, m, vec, args.accel_probe_speed, a, span, guard.check)
                     or guard.check() or skips(ref.slipped()),
                     lambda a, sk: report(a, sk, 'mm/s2'))
@@ -277,7 +314,8 @@ def envelope(kl: Klippy, args) -> int:
                                'accel': ceiling_label(a_hold, a_skip, kilo=True)}
             speed_holds[label], accel_holds[label] = s_hold, a_hold
     finally:
-        run_restore(lambda: kl.gcode('M204 S%.0f' % board.max_accel), lambda: rehome_unless_hot(kl))
+        run_restore(lambda: kl.gcode('M204 S%.0f' % board.max_accel), lambda: put_back(),
+                    lambda: rehome_unless_hot(kl))
 
     finale = ''
     if achieved:

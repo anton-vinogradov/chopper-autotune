@@ -15,6 +15,7 @@ import select
 import shutil
 import socket
 import struct
+import subprocess
 import sys
 import tempfile
 import threading
@@ -27,6 +28,8 @@ import fake_klipper
 from klipper_config import CFG, named, read_like_klipper, selfcheck, settings_of
 from chopper_autotune import collect, tmc
 from chopper_autotune.belts import CAPTURE, sweep_chip, sweep_command
+from chopper_autotune.current import BELT_SPEEDS, stress_vector
+from chopper_autotune.envelope import STRESS_REPS
 from chopper_autotune.collect import ACCEL_SECTIONS, accel_command_chip, live_stealth, resolve_accel_chip
 from chopper_autotune.klippy import Klippy, KlippyError, fence_markers
 
@@ -910,3 +913,67 @@ def test_beacon_measures_under_the_chip_name_we_send(source, chip, name, options
     if last_word != accel_command_chip(settings, chip):
         with pytest.raises(gcode_module.CommandError, match='not valid for CHIP'):
             dispatch.run_script('ACCELEROMETER_MEASURE CHIP=%s NAME=y' % last_word)
+
+
+RIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'toolhead_rig.py')
+
+
+def rig(source: str, **scenario) -> dict:
+    """The stress strokes through this release's own motion planner (toolhead_rig.py)."""
+    run = subprocess.run([sys.executable, '-W', 'ignore', RIG, os.path.join(SRC, source),
+                          json.dumps(dict({'max_velocity': 500, 'center': 150}, **scenario))],
+                         capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    return json.loads(run.stdout)
+
+
+STROKE_CASES = [
+    # kinematics, motor, accel, span, the envelope's speed ladder
+    ('cartesian', 'x', 3000, 25.0, (150, 200, 250, 300, 350)),
+    ('cartesian', 'x', 1000, 25.0, (150, 200, 250, 300)),
+    ('corexy', 'x', 1500, 25.0, (150, 250, 350)),
+    ('cartesian', 'y', 600, 15.0, (100, 150, 200)),
+]
+
+
+@pytest.mark.parametrize('source', fetched('toolhead.py'))
+@pytest.mark.parametrize('kinematics, motor, accel, span, speeds', STROKE_CASES)
+def test_every_rung_the_envelope_keeps_is_reached(source, kinematics, motor, accel, span, speeds):
+    # a rung the strokes never reached 'held' and topped the max_velocity advice
+    require(source)
+    from chopper_autotune.current import stroke_peak
+    from chopper_autotune.envelope import stroke_ladders
+    _, vec, kept, _ = stroke_ladders(kinematics, motor, span * 8, speeds, accel, (accel,), 0)
+    result = rig(source, tool='envelope', kinematics=kinematics, motor=motor, max_accel=accel,
+                 accel=accel, span=span, speeds=list(speeds))
+    assert (result['ratio'], result['lifted'], result['restored']) == (0.5, 0.0, 0.5)
+    for rung in result['rungs']:
+        assert len(rung['strokes']) == 2 * STRESS_REPS
+        # every stroke full-length: a half one from the center peaks lower
+        assert rung['lengths'] == pytest.approx([2 * span * math.hypot(*vec)] * len(rung['lengths']))
+        expected = rung['speed'] if rung['speed'] in kept else stroke_peak(span, vec, accel)
+        assert rung['strokes'] == pytest.approx([expected] * len(rung['strokes']), abs=0.5), rung
+
+
+@pytest.mark.parametrize('source', fetched('toolhead.py'))
+def test_klipper_brakes_the_strokes_early_unless_lifted(source):
+    # the harness sees the reported ceiling: minimum_cruise_ratio 0.5 stops a 50 mm stroke
+    # at 3000 mm/s2 at sqrt(50 * 1500) = 274 mm/s
+    require(source)
+    result = rig(source, tool='envelope', kinematics='cartesian', motor='x', max_accel=3000,
+                 accel=3000, span=25.0, speeds=[300], lift=False)
+    assert result['rungs'][0]['strokes'] == pytest.approx([273.9] * 2 * STRESS_REPS, abs=0.1)
+
+
+@pytest.mark.parametrize('source', fetched('toolhead.py'))
+@pytest.mark.parametrize('kinematics, accel', [('cartesian', 1000), ('corexy', 500)])
+def test_every_belt_speed_of_the_current_pattern_is_reached(source, kinematics, accel):
+    require(source)
+    result = rig(source, tool='current', kinematics=kinematics, motor='x', max_accel=accel,
+                 accel=accel, span=25.0, speeds=[])
+    assert [rung['speed'] for rung in result['rungs']] == list(BELT_SPEEDS)
+    length = 2 * 25.0 * math.hypot(*stress_vector(kinematics, 'x'))
+    for rung in result['rungs']:
+        assert rung['strokes'] == pytest.approx([rung['speed']] * len(rung['strokes']), abs=0.5)
+        assert rung['lengths'] == pytest.approx([length] * len(rung['lengths']))
+
