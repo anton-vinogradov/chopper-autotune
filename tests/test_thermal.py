@@ -164,8 +164,8 @@ def test_a_tmc2240_on_the_hottest_slope_gets_advice(extra, advised, capsys):
     assert ('driver_SLOPE_CONTROL: 3' in capsys.readouterr().out) is advised
 
 
-def hardware(kl):
-    return Hardware(kl=kl, stepper='stepper_x', driver=tmc.DRIVERS['2240'], accel_chip='adxl345',
+def hardware(kl, stepper='stepper_x'):
+    return Hardware(kl=kl, stepper=stepper, driver=tmc.DRIVERS['2240'], accel_chip='adxl345',
                     kinematics='corexy', axis_span=260, center=(130, 130), max_accel=10000,
                     baseline={'tbl': 0, 'toff': 3, 'hstrt': 5, 'hend': 0})
 
@@ -192,6 +192,9 @@ def test_current_checks_inside_a_rung_and_ends_with_the_motors_off(monkeypatch):
     assert len(strokes) == 3                     # stopped at the next stroke pair
     assert gantry_released(kl.scripts[-1], cycle=True)
     assert_cruise_ratio_lifted_and_put_back(kl.scripts)
+    # the exact current goes back, not a rounded one: 0.566 A as 0.57 set another IRUN
+    currents = [script for script in kl.scripts if script.startswith('SET_TMC_CURRENT')]
+    assert currents[-1] == 'SET_TMC_CURRENT STEPPER=stepper_x CURRENT=1.2'
 
 
 def assert_cruise_ratio_lifted_and_put_back(scripts):
@@ -275,6 +278,61 @@ def test_the_envelope_calls_a_short_ladder_untested_only_without_a_skip(tmp_path
         assert json.load(state)['recommend'].get('untested') == untested
     out = capsys.readouterr().out
     assert ('untested above' in out) is bool(untested)
+
+
+def test_a_stop_after_a_motor_of_the_envelope_is_not_swallowed(tmp_path, monkeypatch):
+    # run_restore swallows a second Stop on the way back: after a motor that finished, the
+    # accel restore is a plain command, and a Stop landing there ends the run
+    import chopper_autotune.envelope as env
+    kl = StatusKl()
+    monkeypatch.setattr(env, 'detect_hardware',
+                        lambda kl_, axis, accel=False: hardware(kl_, 'stepper_' + axis))
+    monkeypatch.setattr(env, 'stress_burst', lambda *a, **k: None)
+    monkeypatch.setattr(env, 'enter_spreadcycle', lambda kl_, hw, restores=False: None)
+    exits = []
+    monkeypatch.setattr(env, 'exit_spreadcycle', lambda kl_, hw: exits.append(hw.stepper))
+    monkeypatch.setattr(env, 'STATE', str(tmp_path / 'envelope.json'))
+    real_gcode, motors = kl.gcode, []
+
+    def gcode(script):
+        real_gcode(script)
+        if script == 'M204 S10000' and not motors:
+            motors.append('A')
+            raise SystemExit(143)                   # CHOPPER_STOP right after motor A
+    kl.gcode = gcode
+    referees = []
+    monkeypatch.setattr(env, 'Referee', lambda *a: referees.append(a) or SimpleNamespace(
+        calibrate=lambda: None, slipped=lambda: 0.0))
+    with pytest.raises(SystemExit) as stop:
+        env.envelope(kl, build_parser().parse_args(['envelope', '--yes']))
+    assert stop.value.code == 143 and len(referees) == 1       # motor B never started
+    assert exits == ['stepper_x']                               # motor A's mode came back
+
+
+def test_a_stop_during_the_current_restore_saves_nothing(tmp_path, monkeypatch):
+    # run_restore swallows a Stop so every step gets its chance; on a run's success path it
+    # re-raises it after them: SAVE=1 must not rewrite run_current and restart Klipper
+    import chopper_autotune.analyze as analyze_mod
+    import chopper_autotune.current as cur
+    kl = StatusKl()
+    monkeypatch.setattr(cur, 'detect_hardware', lambda kl_, axis, accel=False: hardware(kl_))
+    monkeypatch.setattr(cur, 'Referee', lambda *a: SimpleNamespace(calibrate=lambda: None,
+                                                                     slipped=lambda: 0.0))
+    monkeypatch.setattr(cur, 'STATE', str(tmp_path / 'current.json'))
+    saved = []
+    monkeypatch.setattr(analyze_mod, 'run_save_currents', lambda mk, items: saved.append(items))
+    real_gcode = kl.gcode
+
+    def gcode(script):
+        real_gcode(script)
+        if script == 'M204 S10000':                 # the restore's accel: CHOPPER_STOP lands
+            raise SystemExit(143)
+    kl.gcode = gcode
+    with pytest.raises(SystemExit) as stop:
+        cur.current_tune(kl, build_parser().parse_args(['current', '--motor', 'a', '--yes',
+                                                        '--save']))
+    assert stop.value.code == 143 and saved == []
+    assert any(script.startswith('G28') for script in kl.scripts[-2:])   # the rest still ran
 
 
 def test_find_speed_ends_with_the_motors_off_after_a_thermal_stop(tmp_path, monkeypatch):

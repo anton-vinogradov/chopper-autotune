@@ -812,12 +812,20 @@ def refuse_if_printing(kl: Klippy):
 
 def run_restore(*steps):
     """Run every restore step even when one fails or a second SIGTERM lands mid-restore:
-    registers, spreadCycle and homing must each get their chance."""
+    registers, spreadCycle and homing must each get their chance. A Stop swallowed there
+    (SIGTERM's integer exit, Ctrl-C) still ends the run once the steps are done, unless
+    the run is on its way out already: another exception in flight keeps its own cause."""
+    stop = None
     for step in steps:
         try:
             step()
         except BaseException as failure:
             print('restore step failed: %s' % failure)
+            if stop is None and (isinstance(failure, KeyboardInterrupt) or isinstance(
+                    failure, SystemExit) and not isinstance(failure.code, str)):
+                stop = failure
+    if stop is not None and sys.exc_info()[1] is None:
+        raise stop
 
 
 class Screen:

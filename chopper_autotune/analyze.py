@@ -314,10 +314,34 @@ def refuse_twin_write(mk, stepper: str):
                          'keep their old registers (see issue #129)' % (stepper, ', '.join(twins)))
 
 
+def shares_enable(settings: dict, stepper: str) -> bool:
+    """No enable_pin of its own (none, or one another stepper uses): Klipper switches such
+    a driver off with toff=0 and puts its config toff back at every enable (tmc.py)."""
+    def pin(name):
+        value = (settings.get(name) or {}).get('enable_pin')
+        return value.strip().lstrip('!^~').strip() if isinstance(value, str) else None
+    own = pin(stepper)
+    return not own or any(pin(name) == own for name in settings if name != stepper)
+
+
 def run_apply(mk, stepper: str, chopper: tmc.Chopper):
-    """Set a combo live (SET_TMC_FIELD), not persisted."""
+    """Set a combo live (SET_TMC_FIELD), not persisted. The motor goes on first, in a
+    request of its own (see collect.wake_stepper): toff written to a motor Klipper counts
+    as off energizes it, and Klipper's own enable would then put its config toff back."""
+    if mk.is_printing():
+        raise SystemExit('printer is busy printing, not touching the drivers')
     refuse_twin_write(mk, stepper)
+    mk.gcode('SET_STEPPER_ENABLE STEPPER=%s ENABLE=1' % stepper)
     mk.set_tmc_fields(stepper, chopper.fields())
+    if shares_enable(mk.settings(), stepper):
+        warning = ('WARNING: %s has no enable pin of its own: at the next motors off and on '
+                   'Klipper puts toff back to the config value and keeps the other applied '
+                   'registers; SAVE=1 keeps the whole set' % stepper)
+        print(warning)
+        try:
+            mk.gcode('M118 ' + warning)             # APPLY runs detached: the log alone is unseen
+        except Exception:
+            pass
 
 
 def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]', extruder_state: 'dict | None' = None):

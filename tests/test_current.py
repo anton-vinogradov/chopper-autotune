@@ -276,3 +276,22 @@ def test_kalicos_limited_kinematics_are_refused_before_any_motion(monkeypatch, k
         cur.current_tune(kl, build_parser().parse_args(['current', '--motor', 'a', '--yes']))
     assert scripts == []
 
+
+def test_a_rung_sets_and_puts_back_the_exact_current():
+    # 0.566 A sent as 0.57 set IRUN 18 instead of 17 until Klipper restarted
+    from types import SimpleNamespace
+
+    import chopper_autotune.current as cur
+    scripts = []
+    kl = SimpleNamespace(gcode=scripts.append)
+    board = SimpleNamespace(center=(150.0, 150.0))
+    original = cur.home_xy
+    cur.home_xy = lambda kl_, script: kl_.gcode(script)
+    try:
+        cur.run_rung(kl, board, 'x', 0.4375, 0.566, (1.0, 0.0), 25.0, 3000.0)
+    finally:
+        cur.home_xy = original
+    currents = [script for script in scripts if script.startswith('SET_TMC_CURRENT')]
+    assert currents == ['SET_TMC_CURRENT STEPPER=stepper_x CURRENT=0.4375',
+                        'SET_TMC_CURRENT STEPPER=stepper_x CURRENT=0.566']
+
