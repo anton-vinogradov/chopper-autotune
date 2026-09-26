@@ -381,14 +381,13 @@ def test_klipper_extra_trusts_only_code_older_than_the_process(tmp_path, monkeyp
     monkeypatch.setattr(collect_mod, '_KLIPPER_EXTRAS', {})
     monkeypatch.setattr(collect_mod, 'process_start', lambda pid: {7: 2000.0}.get(pid))
     (tmp_path / 'klippy' / 'extras').mkdir(parents=True)
-    for name, text in (('force_move.py', 'CLEAR_HOMED'), ('resonance_tester.py', 'CHIPS')):
-        path = tmp_path / 'klippy' / 'extras' / name
-        path.write_text(text)
-        os.utime(path, (mtime, mtime))
+    path = tmp_path / 'klippy' / 'extras' / 'force_move.py'
+    path.write_text('CLEAR_HOMED')
+    os.utime(path, (mtime, mtime))
     kl = SimpleNamespace(info=lambda: {'klipper_path': str(tmp_path), 'process_id': process_id})
     assert collect_mod.klipper_extra(kl, 'force_move.py') == ('CLEAR_HOMED' if trusted else '')
-    # a question older code answers the same way reads the file whatever its age
-    assert collect_mod.klipper_extra(kl, 'resonance_tester.py', any_age=True) == 'CHIPS'
+    # any_age reads the file whatever its age: 'updated, restart' against 'too old'
+    assert collect_mod.klipper_extra(kl, 'force_move.py', any_age=True) == 'CLEAR_HOMED'
     assert collect_mod.klipper_extra(kl, 'missing.py', any_age=True) == ''
 
 
@@ -417,13 +416,14 @@ def klipper_at(tmp_path, monkeypatch, force_move, mtime=1000):
     (None, 1000, 'cannot check the Klipper version'),
 ])
 def test_only_the_current_klipper_is_supported(tmp_path, monkeypatch, force_move, mtime, refusal):
-    # before v0.13 (Kalico before July 2026) SET_KINEMATIC_POSITION marks every axis homed,
+    # before v0.13 (Kalico v2026.08.00) SET_KINEMATIC_POSITION marks every axis homed,
     # and before December 2023 FORCE_MOVE is measured on the standstill after the move
-    from chopper_autotune.collect import detect_hardware, require_current_klipper
+    from chopper_autotune.collect import UnsupportedKlipper, detect_hardware, require_current_klipper
     kl = klipper_at(tmp_path, monkeypatch, force_move, mtime)
     if refusal is None:
         require_current_klipper(kl)
         return
-    with pytest.raises(SystemExit, match=refusal):
+    # a stop of the whole run: CHOPPER_DEMO REPORT=1 would read a plain one as 'motor skipped'
+    with pytest.raises(UnsupportedKlipper, match=refusal):
         detect_hardware(kl, 'x')                    # every tool that moves starts there
 

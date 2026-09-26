@@ -30,11 +30,6 @@ from chopper_autotune.belts import CAPTURE, sweep_chip, sweep_command
 from chopper_autotune.collect import ACCEL_SECTIONS, accel_command_chip, live_stealth, resolve_accel_chip
 from chopper_autotune.klippy import Klippy, KlippyError, fence_markers
 
-# old Klipper releases carry regex strings Python warns about while compiling them
-# (DeprecationWarning up to 3.11, SyntaxWarning from 3.12)
-pytestmark = [pytest.mark.filterwarnings('ignore:invalid escape sequence:DeprecationWarning'),
-              pytest.mark.filterwarnings('ignore:invalid escape sequence:SyntaxWarning')]
-
 SRC = os.environ.get('KLIPPER_SRC_DIR') or os.path.join(os.path.dirname(__file__), '.klipper-src')
 # GCONF as a TMC2209 prints it after Klipper's own init (spreadCycle bit clear = stealthChop)
 GCONF_STEALTH = 'GCONF:      000001c0 pdn_disable=1 mstep_reg_select=1 multistep_filt=1'

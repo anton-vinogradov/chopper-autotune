@@ -407,9 +407,9 @@ def klipper_extra(kl: Klippy, filename: str, any_age: bool = False) -> str:
     cannot be read. RESTART and FIRMWARE_RESTART keep the modules the process imported,
     so after a git pull without a service restart the file can be newer than the code
     that runs: it counts only when it is older than the Klipper process (process_id),
-    unless any_age — for a question older code answers the same way. The feature checks
-    read the code itself: forks and commits between releases make a version number
-    unreliable."""
+    unless any_age, which tells code pulled but not yet running from code too old (see
+    require_current_klipper). The checks read the code itself: forks and commits between
+    releases make a version number unreliable."""
     try:
         info = kl.info()
     except KlippyError:
@@ -430,21 +430,21 @@ def klipper_extra(kl: Klippy, filename: str, any_age: bool = False) -> str:
 
 
 def require_current_klipper(kl: Klippy):
-    """The tools support the current Klipper (v0.13 and later) and Kalico (since July
-    2026), told apart by SET_KINEMATIC_POSITION CLEAR_HOMED in the running code: older
+    """The tools support the current Klipper (v0.13 and later) and Kalico (v2026.08.00
+    and later), told apart by SET_KINEMATIC_POSITION CLEAR_HOMED in the running code: older
     code marks every axis homed with that command, and measures FORCE_MOVE on the
     standstill after the move (Klipper before December 2023)."""
     if 'CLEAR_HOMED' in klipper_extra(kl, 'force_move.py'):
         return
     source = klipper_extra(kl, 'force_move.py', any_age=True)
     if 'CLEAR_HOMED' in source:
-        raise SystemExit('Klipper was updated but still runs its old code: restart the klipper '
-                         'service, then retry. Nothing was moved')
+        raise UnsupportedKlipper('Klipper was updated but still runs its old code: restart the '
+                                 'klipper service, then retry. Nothing was moved')
     if source:
-        raise SystemExit('this Klipper is too old: chopper-autotune needs Klipper v0.13 or later, '
-                         'or Kalico since July 2026. Nothing was moved')
-    raise SystemExit("cannot check the Klipper version: the running Klipper's "
-                     'klippy/extras/force_move.py cannot be read. Nothing was moved')
+        raise UnsupportedKlipper('this Klipper is too old: chopper-autotune needs Klipper v0.13 or '
+                                 'later, or Kalico v2026.08.00 or later. Nothing was moved')
+    raise UnsupportedKlipper("cannot check the Klipper version: the running Klipper's "
+                             'klippy/extras/force_move.py cannot be read. Nothing was moved')
 
 
 def release_gantry(kl: Klippy, cycle: bool = False):
@@ -459,6 +459,10 @@ def release_gantry(kl: Klippy, cycle: bool = False):
 
 class RunStopped(SystemExit):
     """A stop of the whole run, never a per-motor skip (see demo.run_demo)."""
+
+
+class UnsupportedKlipper(RunStopped):
+    """The running Klipper is not a current one (see require_current_klipper)."""
 
 
 class ZNotHomed(RunStopped):
@@ -594,9 +598,9 @@ def rehome_unless_hot(kl: Klippy):
     """The closing re-home of a run. After a thermal stop G28 would put the hot driver
     straight back under current: the gantry is released instead — X/Y off and their
     homing forgotten (FORCE_MOVE has left the head away from where Klipper thinks), Z
-    keeps holding (and its homing where release_gantry can clear X/Y alone). The on-off
-    cycle: a register restore may have re-energized a driver Klipper counts as off. With Z
-    unhomed by then (a failed homing), the gantry is released instead of lifting Z."""
+    keeps holding and its homing. The on-off cycle: a register restore may have
+    re-energized a driver Klipper counts as off. With Z unhomed by then (a failed
+    homing), the gantry is released instead of lifting Z."""
     if isinstance(sys.exc_info()[1], DriverTooHot):
         release_gantry(kl, cycle=True)
         return

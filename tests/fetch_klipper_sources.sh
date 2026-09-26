@@ -11,6 +11,9 @@ klipper_master=ce7002bedf37e938bb483572949f3703ac6476cb
 kalico_main=84a4105726e22c5c15943e791b5cdb3beff52e77
 beacon_master=3eb0134607664734ccf5cd94cb51840e1c8b27b3
 
+# only the pinned revisions: sources of an older pin would run their own contract
+rm -rf "$dest"/klipper-* "$dest"/kalico-* "$dest"/beacon-*
+
 fetch() {
     mkdir -p "$(dirname "$2")"
     curl -fsSL --retry 3 -o "$2" "$1"

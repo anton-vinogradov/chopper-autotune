@@ -387,6 +387,27 @@ def test_a_print_on_one_motor_stops_the_whole_report(monkeypatch):
     assert tried == ['x']
 
 
+def test_an_unsupported_klipper_stops_the_whole_report(monkeypatch):
+    # detect_hardware refuses inside the per-motor loop: not 'motor A/B skipped', a stop
+    # the display shows
+    from argparse import Namespace
+
+    from chopper_autotune.collect import UnsupportedKlipper
+    tried = []
+
+    def demo(kl, args):
+        tried.append(args.axis)
+        raise UnsupportedKlipper('this Klipper is too old')
+    monkeypatch.setattr(demo_module, 'demo', demo)
+    monkeypatch.setattr(demo_module, 'Klippy', lambda path: type('K', (), {
+        'connect': lambda self: self, 'close': lambda self: None,
+        'settings': lambda self: {'stepper_x': {}, 'stepper_y': {}}})())
+    monkeypatch.setattr(demo_module, 'find_socket', lambda explicit=None: '<sock>')
+    with pytest.raises(UnsupportedKlipper):
+        demo_module.run_demo(Namespace(axis='xy', report=True, socket=None))
+    assert tried == ['x']
+
+
 def test_a_shutdown_on_one_motor_stops_the_whole_report(monkeypatch):
     # a Klipper in shutdown fails the next motor too: not a per-motor skip
     from argparse import Namespace

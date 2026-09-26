@@ -48,9 +48,6 @@ class StatusKl:
     def homed_axes(self):
         return 'xyz'
 
-    def info(self):
-        return {}
-
     def gcode(self, script):
         self.scripts.append(script)
 
