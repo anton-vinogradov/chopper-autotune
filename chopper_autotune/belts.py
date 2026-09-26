@@ -28,12 +28,11 @@ from __future__ import annotations
 
 import glob
 import os
-import re
 
 import numpy as np
 
 from .collect import (Screen, ThermalGuard, await_flushed, capture_span, coupled_xy, detect_hardware,
-                      home_xy, klipper_extra, motor_label, refuse_blind_z_hop, refuse_if_printing,
+                      home_xy, motor_label, refuse_blind_z_hop, refuse_if_printing,
                       rehome_unless_hot, release_gantry, run_restore)
 from .current import stress_vector
 from .dataset import load_json, save_json
@@ -121,43 +120,15 @@ def diagonal_chips(settings: dict) -> 'list[str]':
     return sorted({name.strip() for name in names if name and name.strip()})
 
 
-def sweep_chip(kl: Klippy, settings: dict, chip: str) -> 'str | None':
-    """The chip to name in CHIPS=, or None to leave it to [resonance_tester]. With several
-    chips each writes its own file and the newest could be another chip's, so the sweep
-    names its chip where the running Klipper takes the name as given. v0.11 and v0.12 look
-    up 'adxl345 <name>' for a name without 'adxl345' in it, and a failed lookup is no
-    G-code error there: Klipper shuts down (Kalico did the same until April 2025). v0.10
-    has no CHIPS=. Without CHIPS= those releases write every chip to one file, so a
-    second chip is refused before anything moves."""
-    chips = diagonal_chips(settings)
-    if chip not in chips and chip not in kl.config_sections():
+def sweep_chip(kl: Klippy, settings: dict, chip: str) -> str:
+    """The chip to name in CHIPS=: with several chips each writes its own file and the
+    newest could be another chip's, so the sweep always names the one it listens to."""
+    if chip not in diagonal_chips(settings) and chip not in kl.config_sections():
         # Kalico reads accel_chip_x beside accel_chips without looking the chip up at start
         raise SystemExit('[resonance_tester] accel_chip_x names %s, which is not a section in the '
                          'config, and CHIPS= with it would shut Klipper down. Write the section '
                          'name exactly, as in accel_chips. Nothing was moved' % chip)
-    if 'adxl345' in chip:
-        # every release with CHIPS= looks such a name up as given
-        source = klipper_extra(kl, 'resonance_tester.py', any_age=True)
-        if 'CHIPS' in source:
-            return chip
-    else:
-        source = klipper_extra(kl, 'resonance_tester.py')
-        if 'CHIPS' in source and not re.search(r'''["']adxl345 ["']''', source):
-            return chip
-    if len(chips) < 2:
-        return None
-    if not source:
-        raise SystemExit('the sweep cannot check that the running Klipper takes CHIPS="%s": its '
-                         'klippy/extras/resonance_tester.py cannot be read, or changed after '
-                         'Klipper started (Klipper before v0.12 does not say when). Without '
-                         'CHIPS= the sweep may read another chip of %s. Restart the klipper '
-                         'service after an update. Nothing was moved; the pluck test (the '
-                         'default) streams %s directly' % (chip, ', '.join(chips), chip))
-    raise SystemExit('the sweep cannot measure %s alone on this Klipper: its TEST_RESONANCES '
-                     'takes CHIPS= for adxl345 names only, or has no CHIPS=, and without it the '
-                     'chips [resonance_tester] names (%s) write one file. Any chip works from '
-                     'Klipper v0.13 and in Kalico since April 2025. Nothing was moved; the pluck '
-                     'test (the default) streams %s directly' % (chip, ', '.join(chips), chip))
+    return chip
 
 
 def sweep_command(axis: str, label: str, chip: 'str | None', band: 'tuple[float, float]',

@@ -353,7 +353,7 @@ def test_process_start_reads_linux_proc(tmp_path, monkeypatch):
     assert collect_mod.process_start(4242, str(tmp_path)) == pytest.approx(
         1700000000 + 12345 / os.sysconf('SC_CLK_TCK'))
     assert collect_mod.process_start(4243, str(tmp_path)) is None
-    assert collect_mod.process_start(None, str(tmp_path)) is None   # v0.10, v0.11: no process_id
+    assert collect_mod.process_start(None, str(tmp_path)) is None   # no process_id
 
 
 def test_process_start_of_this_process():
@@ -370,7 +370,7 @@ def test_process_start_of_this_process():
 @pytest.mark.parametrize('mtime, process_id, trusted', [
     (1000, 7, True),        # the process started after the file was written
     (3000, 7, False),       # a git pull without a service restart: older code may run
-    (1000, None, False),    # v0.10, v0.11: the process is unknown
+    (1000, None, False),    # the process is unknown
 ])
 def test_klipper_extra_trusts_only_code_older_than_the_process(tmp_path, monkeypatch,
                                                                mtime, process_id, trusted):
@@ -387,7 +387,43 @@ def test_klipper_extra_trusts_only_code_older_than_the_process(tmp_path, monkeyp
         os.utime(path, (mtime, mtime))
     kl = SimpleNamespace(info=lambda: {'klipper_path': str(tmp_path), 'process_id': process_id})
     assert collect_mod.klipper_extra(kl, 'force_move.py') == ('CLEAR_HOMED' if trusted else '')
-    assert collect_mod.can_clear_homing(kl) is trusted
     # a question older code answers the same way reads the file whatever its age
     assert collect_mod.klipper_extra(kl, 'resonance_tester.py', any_age=True) == 'CHIPS'
     assert collect_mod.klipper_extra(kl, 'missing.py', any_age=True) == ''
+
+
+def klipper_at(tmp_path, monkeypatch, force_move, mtime=1000):
+    """A running Klipper (started at 2000) whose force_move.py reads `force_move`."""
+    import os
+    from types import SimpleNamespace
+
+    import chopper_autotune.collect as collect_mod
+    monkeypatch.setattr(collect_mod, '_KLIPPER_EXTRAS', {})
+    monkeypatch.setattr(collect_mod, 'process_start', lambda pid: 2000.0)
+    if force_move is not None:
+        (tmp_path / 'klippy' / 'extras').mkdir(parents=True)
+        path = tmp_path / 'klippy' / 'extras' / 'force_move.py'
+        path.write_text(force_move)
+        os.utime(path, (mtime, mtime))
+    return SimpleNamespace(info=lambda: {'klipper_path': str(tmp_path), 'process_id': 7},
+                           settings=lambda: pytest.fail('asked the config of an unsupported Klipper'))
+
+
+@pytest.mark.version_gate
+@pytest.mark.parametrize('force_move, mtime, refusal', [
+    ("clear_homed = gcmd.get('CLEAR_HOMED', '')", 1000, None),      # Klipper v0.13+, Kalico
+    ("clear_homed = gcmd.get('CLEAR_HOMED', '')", 3000, 'restart the klipper service'),
+    ('toolhead.set_position(pos, homing_axes=(0, 1, 2))', 1000, 'needs Klipper v0.13 or later'),
+    (None, 1000, 'cannot check the Klipper version'),
+])
+def test_only_the_current_klipper_is_supported(tmp_path, monkeypatch, force_move, mtime, refusal):
+    # before v0.13 (Kalico before July 2026) SET_KINEMATIC_POSITION marks every axis homed,
+    # and before December 2023 FORCE_MOVE is measured on the standstill after the move
+    from chopper_autotune.collect import detect_hardware, require_current_klipper
+    kl = klipper_at(tmp_path, monkeypatch, force_move, mtime)
+    if refusal is None:
+        require_current_klipper(kl)
+        return
+    with pytest.raises(SystemExit, match=refusal):
+        detect_hardware(kl, 'x')                    # every tool that moves starts there
+

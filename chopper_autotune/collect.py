@@ -246,7 +246,7 @@ def unexpected_stealth(name: str) -> str:
     """Why a driver the config keeps in spreadCycle for moves can report stealthChop.
     Forcing spreadCycle and restoring the read value afterwards is right either way."""
     return ('%s reports stealthChop although the config does not enable it for moves '
-            '(stealthchop_threshold: 0 keeps it at standstill on Klipper 0.12+; '
+            '(stealthchop_threshold: 0 keeps it at standstill; '
             'klipper_tmc_autotune turns it on at runtime: silent and autoswitch goals, and its '
             'default auto goal on Z and the extruder with a motor above 0.3 Nm)' % name)
 
@@ -406,10 +406,10 @@ def klipper_extra(kl: Klippy, filename: str, any_age: bool = False) -> str:
     """The running Klipper's own klippy/extras/<filename> (info: klipper_path), '' when it
     cannot be read. RESTART and FIRMWARE_RESTART keep the modules the process imported,
     so after a git pull without a service restart the file can be newer than the code
-    that runs: it counts only when it is older than the Klipper process (process_id,
-    reported since v0.12), unless any_age — for a question older code answers the same
-    way. The feature checks read the code itself: forks and commits between releases
-    make a version number unreliable."""
+    that runs: it counts only when it is older than the Klipper process (process_id),
+    unless any_age — for a question older code answers the same way. The feature checks
+    read the code itself: forks and commits between releases make a version number
+    unreliable."""
     try:
         info = kl.info()
     except KlippyError:
@@ -429,29 +429,31 @@ def klipper_extra(kl: Klippy, filename: str, any_age: bool = False) -> str:
     return text if current or any_age else ''
 
 
-def can_clear_homing(kl: Klippy) -> bool:
-    """SET_KINEMATIC_POSITION SET_HOMED=/CLEAR_HOMED= (Klipper v0.13+, Kalico since July
-    2026); older code marks EVERY axis homed with that same command. Anything unclear
-    counts as unsupported."""
-    return 'CLEAR_HOMED' in klipper_extra(kl, 'force_move.py')
+def require_current_klipper(kl: Klippy):
+    """The tools support the current Klipper (v0.13 and later) and Kalico (since July
+    2026), told apart by SET_KINEMATIC_POSITION CLEAR_HOMED in the running code: older
+    code marks every axis homed with that command, and measures FORCE_MOVE on the
+    standstill after the move (Klipper before December 2023)."""
+    if 'CLEAR_HOMED' in klipper_extra(kl, 'force_move.py'):
+        return
+    source = klipper_extra(kl, 'force_move.py', any_age=True)
+    if 'CLEAR_HOMED' in source:
+        raise SystemExit('Klipper was updated but still runs its old code: restart the klipper '
+                         'service, then retry. Nothing was moved')
+    if source:
+        raise SystemExit('this Klipper is too old: chopper-autotune needs Klipper v0.13 or later, '
+                         'or Kalico since July 2026. Nothing was moved')
+    raise SystemExit("cannot check the Klipper version: the running Klipper's "
+                     'klippy/extras/force_move.py cannot be read. Nothing was moved')
 
 
 def release_gantry(kl: Klippy, cycle: bool = False):
     """Hand the gantry to the user's hands: the gantry and head motors off, and the X/Y
     homing forgotten (hands move the head next; SET_STEPPER_ENABLE alone keeps the axes
-    homed at a stale position). With every axis homed and CLEAR_HOMED in Klipper, Z
-    keeps its homing (older code marks all axes homed with that command, harmless only
-    then). Otherwise M84 forgets it all, and the Z motors that held go straight back on
-    so a bed or gantry does not sink."""
-    homed = kl.homed_axes()
-    states = kl.stepper_states()
+    homed at a stale position). Z keeps holding and its homing, homed or not."""
     lines = [motors_off_but_z(kl, cycle)]
-    if homed == 'xyz' and can_clear_homing(kl):
+    if set(kl.homed_axes()) & set('xy'):
         lines.append('SET_KINEMATIC_POSITION SET_HOMED= CLEAR_HOMED=XY')
-    elif 'x' in homed or 'y' in homed:
-        lines.append('M84')
-        lines += ['SET_STEPPER_ENABLE STEPPER="%s" ENABLE=1' % name
-                  for name, enabled in states.items() if name.startswith('stepper_z') and enabled]
     kl.gcode('\n'.join(lines))
 
 
@@ -619,6 +621,7 @@ def driver_of(settings: dict, stepper: str) -> 'str | None':
 
 
 def detect_hardware(kl: Klippy, axis: str, accel: bool = True) -> Hardware:
+    require_current_klipper(kl)                     # every tool that moves starts here
     settings = kl.settings()
     stepper = 'stepper_' + axis
     name = driver_of(settings, stepper)

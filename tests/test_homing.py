@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import chopper_autotune.collect as collect_mod
 from chopper_autotune import extruder
 from chopper_autotune.collect import (PARK_INTERVAL_MOVES, ZNotHomed, homing_z_hop, make_parker,
                                       park, refuse_blind_z_hop, rehome_unless_hot, release_gantry,
@@ -18,20 +17,13 @@ Z_HOP = 10.0
 SAFE_Z_HOME = {'safe_z_home': {'z_hop': Z_HOP}}
 
 
-@pytest.fixture(autouse=True)
-def fresh_feature_cache(monkeypatch):
-    monkeypatch.setattr(collect_mod, '_KLIPPER_EXTRAS', {})
-    monkeypatch.setattr(collect_mod, 'process_start', lambda pid: float('inf'))  # after any file
-
-
 class SafeZHomeKl:
     """Klipper's homing state as a z_hop G28 override and stepper_enable change it."""
 
-    def __init__(self, homed='', z=100.0, override=SAFE_Z_HOME, klipper_path=None):
+    def __init__(self, homed='', z=100.0, override=SAFE_Z_HOME):
         self.homed = set(homed)
         self.z = z
         self.override = override
-        self.klipper_path = klipper_path
         self.blind_lifts = 0
         self.fail_next_homing = False
         self.scripts = []
@@ -44,9 +36,6 @@ class SafeZHomeKl:
 
     def stepper_states(self):
         return {'stepper_x': True, 'stepper_y': True, 'stepper_z': True, 'extruder': True}
-
-    def info(self):
-        return {'klipper_path': self.klipper_path}
 
     def gcode(self, script):
         self.scripts.append(script)
@@ -108,12 +97,10 @@ def test_a_job_on_a_homed_z_never_lifts_blind():
     assert not any('M18' in script for script in kl.scripts)
 
 
-def test_plan_steps_in_a_row_keep_z_where_it_was(tmp_path):
+def test_plan_steps_in_a_row_keep_z_where_it_was():
     # tune, current, tune again, belts between them: before, every step's M18 unhomed Z
     # and every later G28 X Y lifted it by z_hop
-    (tmp_path / 'klippy' / 'extras').mkdir(parents=True)
-    (tmp_path / 'klippy' / 'extras' / 'force_move.py').write_text("CLEAR_HOMED")
-    kl = SafeZHomeKl(homed='xyz', z=40.0, klipper_path=str(tmp_path))
+    kl = SafeZHomeKl(homed='xyz', z=40.0)
     for _ in range(3):
         run_a_job(kl)
         release_gantry(kl)                           # belts hands the gantry over
@@ -152,17 +139,14 @@ def test_the_extruder_tools_never_switch_z_off():
     assert "SET_STEPPER_ENABLE STEPPER=extruder ENABLE=0" in source
 
 
-@pytest.mark.parametrize('supported, tail', [(True, ' SET_HOMED=X'), (False, '')])
-def test_the_referee_marks_only_its_own_axis_homed(tmp_path, supported, tail):
+def test_the_referee_marks_only_its_own_axis_homed():
+    # SET_KINEMATIC_POSITION marks every axis homed by default: Z too, at a made-up height
     from chopper_autotune.current import Referee
-    (tmp_path / 'klippy' / 'extras').mkdir(parents=True)
-    (tmp_path / 'klippy' / 'extras' / 'force_move.py').write_text(
-        "CLEAR_HOMED" if supported else "homing_axes=(0, 1, 2)")
-    kl = SafeZHomeKl(homed='xyz', z=40.0, klipper_path=str(tmp_path))
+    kl = SafeZHomeKl(homed='xyz', z=40.0)
     kl.request = lambda method, params=None: {'stepper_x': 'TRIGGERED'}
     settings = {'stepper_x': {'endstop_pin': 'PA1', 'position_endstop': 0, 'position_max': 300}}
     Referee(kl, 'x', settings, 150.0).slipped()
-    assert 'SET_KINEMATIC_POSITION X=28.000%s' % tail in kl.scripts
+    assert 'SET_KINEMATIC_POSITION X=28.000 SET_HOMED=X' in kl.scripts
 
 
 def test_the_refusal_keeps_its_instruction_on_the_display():
@@ -173,21 +157,13 @@ def test_the_refusal_keeps_its_instruction_on_the_display():
     assert 'run G28, then retry' in ('find-speed FAILED: %s' % refused.value.code)[:120]
 
 
-def test_the_xy_homing_is_cleared_only_with_every_axis_homed(tmp_path):
-    # code older than the file on disk (updated, not restarted) marks ALL axes homed with
-    # that command: harmless only when all three already are
-    (tmp_path / 'klippy' / 'extras').mkdir(parents=True)
-    (tmp_path / 'klippy' / 'extras' / 'force_move.py').write_text("CLEAR_HOMED")
-    kl = SafeZHomeKl(homed='xy', klipper_path=str(tmp_path))
+@pytest.mark.parametrize('homed, left', [('xyz', {'z'}), ('xy', set()), ('', set())])
+def test_a_release_forgets_only_the_xy_homing(homed, left):
+    # hands move the head next; Z keeps holding and its homing, homed or not
+    kl = SafeZHomeKl(homed=homed)
     release_gantry(kl)
-    assert 'SET_KINEMATIC_POSITION' not in kl.scripts[-1]
-
-
-def test_a_release_without_a_clearable_homing_forgets_it_all_and_keeps_z_holding():
-    # no CLEAR_HOMED (or Z unhomed): M84 forgets the stale X/Y homing, Z goes back on
-    kl = SafeZHomeKl(homed='xy', override={})
-    release_gantry(kl)
-    assert kl.scripts[-1].endswith('M84\nSET_STEPPER_ENABLE STEPPER="stepper_z" ENABLE=1')
+    assert kl.homed == left and 'M84' not in kl.scripts[-1]
+    assert ('CLEAR_HOMED=XY' in kl.scripts[-1]) is bool(homed)
 
 
 def test_only_gantry_and_head_motors_are_switched_off():
