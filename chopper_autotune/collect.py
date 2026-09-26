@@ -828,6 +828,19 @@ def run_restore(*steps):
         raise stop
 
 
+def accepted_commands(kl: Klippy) -> 'set[str] | None':
+    """The G-code commands Klipper takes right now (the gcode object's status): an unknown
+    one is no error there, it only prints 'Unknown command', so a channel cannot find out
+    by failing. Without [respond] there is no RESPOND or M118, without [display_status]
+    no M117, and after a shutdown only what runs then (M118 and RESPOND, not M117).
+    None when it cannot be read: then every channel is tried."""
+    try:
+        status = kl.request('objects/query', {'objects': {'gcode': ['commands']}})
+        return set(status['status']['gcode']['commands'])
+    except Exception:
+        return None
+
+
 class Screen:
     """Progress to the display via M117 (display_status -> KlipperScreen / LCD / web
     header) and to the console via a prefixed RESPOND (Mainsail / Fluidd / KlipperScreen
@@ -838,19 +851,20 @@ class Screen:
     panel and swallow touch input (e.g. the Stop button). A non-`echo:` prefix still
     shows in every console but raises no popup.
 
-    The display is only written when display_status exists; the console is attempted
-    regardless and self-disables if the printer has no [respond]. Either channel
+    Each channel is used only where Klipper takes its command (accepted_commands), and
     disables itself on error so a missing one never stops a run.
     """
 
-    CONSOLE_PREFIX = 'Chopper: '
+    CONSOLE_PREFIX = 'Chopper:'                     # RESPOND puts the space in itself
 
     INTERVAL_SEC = 5.0
 
     def __init__(self, kl: Klippy, display: bool):
         self.kl = kl
-        self.display = display
-        self.console = True
+        commands = accepted_commands(kl)
+        self.display = display and (commands is None or 'M117' in commands)
+        self.console = commands is None or 'RESPOND' in commands
+        self.popup = commands is None or 'M118' in commands
         self.last = 0.0
 
     def update(self, text: str, force: bool = False):
@@ -862,14 +876,20 @@ class Screen:
         if self.display:
             self.display = self._send('M117 %s' % text)
         if self.console:
-            self.console = self._send('RESPOND PREFIX="%s" MSG="%s"' % (self.CONSOLE_PREFIX, text))
+            self.console = self._send('RESPOND PREFIX="%s" MSG="%s"' % (
+                self.CONSOLE_PREFIX, console_text(text)))
 
     def final(self, text: str):
-        """End-of-run verdict: the status line as usual PLUS a KlipperScreen popup (M118's
-        `echo:` raises one). Popups are banned for progress — mid-run they cover the panel
-        and its Stop button — but a single one is right when the run is over."""
-        self.update(text, force=True)
-        self._send('M118 %s' % text)
+        """End-of-run verdict: the display line PLUS a KlipperScreen popup (M118's `echo:`
+        raises one), which is the console line too. Popups are banned for progress —
+        mid-run they cover the panel and its Stop button — but one is right at the end."""
+        if self.display:
+            self.display = self._send('M117 %s' % text)
+        if self.popup:
+            self._send('M118 %s' % text)
+        elif self.console:
+            self.console = self._send('RESPOND PREFIX="%s" MSG="%s"' % (
+                self.CONSOLE_PREFIX, console_text(text)))
 
     def _send(self, command: str) -> bool:
         # the display is a best-effort channel: no failure of it may kill a run
@@ -878,6 +898,12 @@ class Screen:
             return True
         except Exception:
             return False
+
+
+def console_text(text: str) -> str:
+    """A display text as RESPOND's MSG: without the tool's name the prefix already gives,
+    and with no double quote, which would end MSG."""
+    return re.sub(r'^Chopper:?\s+', '', text).replace('"', "'")
 
 
 def eta_text(seconds: float) -> str:
