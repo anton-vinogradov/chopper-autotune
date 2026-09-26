@@ -1,8 +1,9 @@
 #!/bin/bash
 # Fetch the real Klipper/Kalico G-code parser, config reader, API server, resonance
 # tester and accelerometer modules, and Beacon's probe module, for
-# tests/test_klipper_contract.py. The GPL sources are downloaded, never committed;
-# pinned revisions keep the contract reproducible.
+# tests/test_klipper_contract.py: the supported ones, the current Klipper release and
+# master, and Kalico. The GPL sources are downloaded, never committed; pinned revisions
+# keep the contract reproducible.
 set -euo pipefail
 
 dest=${1:-"$(dirname "$0")/.klipper-src"}
@@ -16,20 +17,18 @@ fetch() {
 }
 
 # klippy.py holds Printer.lookup_object: an unknown name is a config error there,
-# which the G-code dispatcher turns into a shutdown; webhooks.py answers info
-for ref in v0.10.0 v0.11.0 v0.12.0 v0.13.0 "$klipper_master"; do
-    for file in gcode.py klippy.py webhooks.py extras/resonance_tester.py; do
+# which the G-code dispatcher turns into a shutdown; webhooks.py answers info;
+# force_move.py tells a supported Klipper (collect.require_current_klipper)
+for ref in v0.13.0 "$klipper_master"; do
+    for file in gcode.py klippy.py webhooks.py configfile.py extras/resonance_tester.py \
+                extras/force_move.py; do
         fetch "https://raw.githubusercontent.com/Klipper3d/klipper/$ref/klippy/$file" \
               "$dest/klipper-$ref/$(basename "$file")"
     done
 done
-# v0.10's config reader is Python 2 code (no strict mode: sections always merge)
-for ref in v0.11.0 v0.12.0 v0.13.0 "$klipper_master"; do
-    fetch "https://raw.githubusercontent.com/Klipper3d/klipper/$ref/klippy/configfile.py" \
-          "$dest/klipper-$ref/configfile.py"
-done
 # Kalico keeps Printer in printer.py
-for file in gcode.py configfile.py printer.py webhooks.py extras/resonance_tester.py; do
+for file in gcode.py configfile.py printer.py webhooks.py extras/resonance_tester.py \
+            extras/force_move.py; do
     fetch "https://raw.githubusercontent.com/KalicoCrew/kalico/$kalico_main/klippy/$file" \
           "$dest/kalico-$kalico_main/$(basename "$file")"
 done

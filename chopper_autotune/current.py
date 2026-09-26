@@ -12,7 +12,7 @@ from __future__ import annotations
 import math
 import os
 
-from .collect import (Screen, ThermalGuard, can_clear_homing, coupled_xy, detect_hardware, home_xy,
+from .collect import (Screen, ThermalGuard, coupled_xy, detect_hardware, home_xy,
                       refuse_blind_z_hop, refuse_if_printing, refuse_multi_motor, rehome_unless_hot,
                       run_restore)
 from .dataset import save_json
@@ -78,7 +78,6 @@ class Referee:
         self.home_dir = 1.0 if self.endstop > mid else -1.0
         self.park_other = park_other
         self.bias = 0.0
-        self.set_homed = can_clear_homing(kl)
         self.key = None
 
     def _endstop_key(self) -> str:
@@ -115,9 +114,8 @@ class Referee:
         lie = self.endstop - self.home_dir * CREEP_RANGE
         self.kl.gcode('G90\nG1 %s%.2f %s%.2f F6000\nM400'
                       % (a.upper(), start, other.upper(), self.park_other))
-        # SET_HOMED=<axis> where Klipper has it: the default marks Z homed as well
-        self.kl.gcode('SET_KINEMATIC_POSITION %s=%.3f%s'
-                      % (a.upper(), lie, ' SET_HOMED=%s' % a.upper() if self.set_homed else ''))
+        # SET_HOMED=<axis>: the default marks Z homed as well
+        self.kl.gcode('SET_KINEMATIC_POSITION %s=%.3f SET_HOMED=%s' % (a.upper(), lie, a.upper()))
         # fast coarse approach, then back off one coarse step and creep in fine steps
         coarse = self._creep(lie, COARSE_STEP, 3000, 0.0)
         if coarse is None:
