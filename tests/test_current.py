@@ -183,33 +183,77 @@ def test_a_stroke_peaks_where_it_brakes_as_hard_as_it_accelerates():
     assert stroke_peak(25.0, (1.0, 0.0), stroke_accel(200, 25.0, (1.0, 0.0))) >= 200
 
 
-def test_the_pattern_refuses_an_accel_its_strokes_cannot_carry(monkeypatch):
+def status(max_velocity=300.0, ratio=0.5, speed_factor=1.0):
+    """objects/query of the live limits, as Klipper answers it."""
+    return lambda method, params: {'status': {
+        'toolhead': {'max_velocity': max_velocity, 'minimum_cruise_ratio': ratio},
+        'gcode_move': {'speed_factor': speed_factor}}}
+
+
+@pytest.mark.parametrize('max_accel, max_velocity, refusal', [
     # a 50 mm stroke at 500 mm/s2 peaks at 158 mm/s: the 200 mm/s rung would be a weaker
     # load than the header says, and the saved current too low
+    (500.0, 300.0, 'raise ACCEL to 800 or more: at 500 a stroke of motor A peaks at 158 of the 200'),
+    # G1 feed never passes max_velocity (set at runtime too)
+    (3000.0, 160.0, 'raise max_velocity to 200 or more: now 160, it caps motor A at 160 of the 200'),
+])
+def test_the_pattern_refuses_what_its_strokes_cannot_carry(monkeypatch, max_accel, max_velocity,
+                                                           refusal):
     from types import SimpleNamespace
 
     import chopper_autotune.current as cur
     from chopper_autotune.cli import build_parser
-    hw = SimpleNamespace(kinematics='cartesian', axis_span=300.0, max_accel=500.0,
+    hw = SimpleNamespace(kinematics='cartesian', axis_span=300.0, max_accel=max_accel,
                          driver=SimpleNamespace(name='2209'))
     monkeypatch.setattr(cur, 'detect_hardware', lambda kl, axis, accel=False: hw)
     scripts = []
-    kl = SimpleNamespace(gcode=scripts.append, settings=lambda: {
+    kl = SimpleNamespace(gcode=scripts.append, request=status(max_velocity), settings=lambda: {
         'tmc2209 stepper_x': {'run_current': 0.8}, 'stepper_x': {}})
-    with pytest.raises(SystemExit, match='peaks at 158 mm/s.*raise ACCEL to 800 or more'):
+    with pytest.raises(SystemExit) as refused:
         cur.current_tune(kl, build_parser().parse_args(['current', '--motor', 'a', '--yes']))
-    assert scripts == []
+    assert str(refused.value.code).startswith(refusal) and scripts == []
+    # the action reaches the display, which keeps 120 characters of '<command> FAILED: ...'
+    assert ('current FAILED: %s' % refused.value.code)[:120].startswith('current FAILED: raise ')
 
 
-def test_the_strokes_brake_as_hard_as_they_accelerate_and_put_it_back():
+@pytest.mark.parametrize('settings, answers, freed, restored', [
+    ({}, [], ['SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0'],
+     ['SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0.35']),
+    # a print left M220 S80, and an input shaper smooths what the motors get
+    ({'input_shaper': {}}, ['// shaper_type_x:mzv shaper_freq_x:40.000 damping_ratio_x:0.100000',
+                            '// shaper_type_y:ei shaper_freq_y:35.500 damping_ratio_y:0.100000'],
+     ['SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0', 'M220 S100',
+      'SET_INPUT_SHAPER SHAPER_FREQ_X=0 SHAPER_FREQ_Y=0'],
+     ['SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0.35', 'M220 S80',
+      'SET_INPUT_SHAPER SHAPER_FREQ_X=40.000 SHAPER_FREQ_Y=35.500']),
+])
+def test_the_strokes_run_free_and_everything_comes_back(settings, answers, freed, restored):
     from types import SimpleNamespace
 
-    from chopper_autotune.current import lift_cruise_ratio
+    from chopper_autotune.current import free_strokes, live_limits
     scripts = []
-    kl = SimpleNamespace(gcode=scripts.append, request=lambda method, params: {
-        'status': {'toolhead': {'minimum_cruise_ratio': 0.35}}})
-    put_back = lift_cruise_ratio(kl)
-    assert scripts == ['SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0']
-    put_back()
-    assert scripts[-1] == 'SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0.35'
+    kl = SimpleNamespace(gcode=scripts.append, gcode_output=lambda script: answers,
+                         request=status(ratio=0.35, speed_factor=0.8 if answers else 1.0))
+    restores = []
+    free_strokes(kl, settings, live_limits(kl), restores)
+    assert scripts == freed
+    del scripts[:]
+    for step in restores:
+        step()
+    assert scripts == restored
+
+
+def test_a_stop_during_the_first_change_still_puts_it_back():
+    # the way back is registered before the command: a Stop may land while it runs
+    from types import SimpleNamespace
+
+    from chopper_autotune.current import free_strokes, live_limits
+
+    def gcode(script):
+        raise SystemExit(143)
+    kl = SimpleNamespace(gcode=gcode, request=status())
+    restores = []
+    with pytest.raises(SystemExit):
+        free_strokes(kl, {}, live_limits(kl), restores)
+    assert len(restores) == 1
 

@@ -52,7 +52,9 @@ class StatusKl:
         self.scripts.append(script)
 
     def request(self, method, params=None):
-        return {'status': {'toolhead': {'minimum_cruise_ratio': 0.5}}}   # Klipper's default
+        # the live limits at Klipper's defaults: objects/query of toolhead and gcode_move
+        return {'status': {'toolhead': {'max_velocity': 500.0, 'minimum_cruise_ratio': 0.5},
+                           'gcode_move': {'speed_factor': 1.0}}}
 
     def gcode_output(self, script):
         return []
@@ -221,6 +223,26 @@ def test_envelope_lifts_the_cruise_ratio_and_puts_it_back_after_a_stop(monkeypat
     with pytest.raises(DriverTooHot):
         env.envelope(kl, build_parser().parse_args(['envelope', '--motor', 'a', '--yes']))
     assert_cruise_ratio_lifted_and_put_back(kl.scripts)
+
+
+def test_envelope_runs_only_the_rungs_its_strokes_reach(tmp_path, monkeypatch, capsys):
+    # cartesian at 1000 mm/s2: a 50 mm stroke peaks at 224 mm/s, the ladder stops at 200
+    import re
+
+    import chopper_autotune.envelope as env
+    kl = StatusKl()
+    monkeypatch.setattr(env, 'detect_hardware', lambda kl_, axis, accel=False: Hardware(
+        kl=kl_, stepper='stepper_x', driver=tmc.DRIVERS['2240'], accel_chip='adxl345',
+        kinematics='cartesian', axis_span=400, center=(200, 200), max_accel=1000, baseline={}))
+    monkeypatch.setattr(env, 'Referee', lambda *a: SimpleNamespace(calibrate=lambda: None,
+                                                                     slipped=lambda: 0.0))
+    monkeypatch.setattr(env, 'enter_spreadcycle', lambda kl_, hw, restores=False: None)
+    monkeypatch.setattr(env, 'exit_spreadcycle', lambda kl_, hw: None)
+    monkeypatch.setattr(env, 'STATE', str(tmp_path / 'envelope.json'))
+    env.envelope(kl, build_parser().parse_args(['envelope', '--motor', 'a', '--yes']))
+    feeds = {float(feed) / 60 for script in kl.scripts if script.count('\nG1 ') == 1
+             for feed in re.findall(r' F(\d+)', script)}
+    assert max(feeds) == 200 and 'the speed ladder stops at 200 mm/s' in capsys.readouterr().out
 
 
 def test_find_speed_ends_with_the_motors_off_after_a_thermal_stop(tmp_path, monkeypatch):

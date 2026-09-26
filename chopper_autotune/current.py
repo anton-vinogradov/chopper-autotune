@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 
 from .collect import (Screen, ThermalGuard, coupled_xy, detect_hardware, home_xy,
                       refuse_blind_z_hop, refuse_if_printing, refuse_multi_motor, rehome_unless_hot,
@@ -142,7 +143,7 @@ class Referee:
 
 def stroke_peak(span: float, vec: 'tuple[float, float]', accel: float) -> float:
     """The belt speed a stress stroke reaches: standstill to standstill over 2*span along
-    vec, braking as hard as it accelerates (lift_cruise_ratio)."""
+    vec, braking as hard as it accelerates (free_strokes)."""
     factor = math.hypot(*vec)                   # belt speed per unit of head feed
     return math.sqrt(2 * span * factor * accel) * factor
 
@@ -152,14 +153,48 @@ def stroke_accel(speed: float, span: float, vec: 'tuple[float, float]') -> int:
     return int(math.ceil(speed ** 2 / (2 * span * math.hypot(*vec) ** 3) / 100.0)) * 100
 
 
-def lift_cruise_ratio(kl: Klippy):
-    """Klipper brakes short moves early (minimum_cruise_ratio, 0.5 by default): a 50 mm
-    stroke at 3000 mm/s2 peaked at 274 mm/s, and a 300 mm/s rung 'held' at that. Lifted
-    to 0 for the strokes; returns the step that puts the configured value back."""
-    status = kl.request('objects/query', {'objects': {'toolhead': ['minimum_cruise_ratio']}})
-    ratio = status['status']['toolhead']['minimum_cruise_ratio']
+def belt_top(span: float, vec: 'tuple[float, float]', accel: float, max_velocity: float) -> float:
+    """The fastest belt speed a stress stroke runs: its peak, or max_velocity, which caps
+    the head (a belt runs |vec| times the head speed)."""
+    return min(stroke_peak(span, vec, accel), max_velocity * math.hypot(*vec))
+
+
+def live_limits(kl: Klippy) -> dict:
+    """What the next moves obey, set at runtime or not: the toolhead's max_velocity and
+    minimum_cruise_ratio, gcode_move's speed_factor (M220, 1.0 at 100%)."""
+    status = kl.request('objects/query', {'objects': {
+        'toolhead': ['max_velocity', 'minimum_cruise_ratio'],
+        'gcode_move': ['speed_factor']}})['status']
+    return dict(status['toolhead'], speed_factor=status['gcode_move']['speed_factor'])
+
+
+def shaper_freqs(kl: Klippy) -> 'dict[str, str]':
+    """The X/Y input shaper frequencies in force: SET_INPUT_SHAPER without parameters
+    reports them ('shaper_type_x:mzv shaper_freq_x:40.000 ...'), no status object does."""
+    return dict(re.findall(r'shaper_freq_([xy]):(\S+)', '\n'.join(kl.gcode_output('SET_INPUT_SHAPER'))))
+
+
+def free_strokes(kl: Klippy, settings: dict, limits: dict, restores: list):
+    """Let the strokes run as planned, each change's way back registered before the change
+    (a Stop may land on any command):
+    - minimum_cruise_ratio 0: Klipper brakes short moves early (0.5 by default), a 50 mm
+      stroke at 3000 mm/s2 peaked at 274 mm/s and a 300 mm/s rung 'held' at that;
+    - M220 S100: a speed factor left from a print scales every stroke;
+    - no input shaping: it smooths what the motors get below the planned move, a
+      stroke's peak and its accel alike (unshaped is the harder load)."""
+    restores.append(lambda: kl.gcode('SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=%s'
+                                     % limits['minimum_cruise_ratio']))
     kl.gcode('SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0')
-    return lambda: kl.gcode('SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=%s' % ratio)
+    if limits['speed_factor'] != 1:
+        restores.append(lambda: kl.gcode('M220 S%g' % (limits['speed_factor'] * 100)))
+        kl.gcode('M220 S100')
+    if 'input_shaper' in settings:
+        freqs = shaper_freqs(kl)
+        if any(float(freq) for freq in freqs.values()):
+            restores.append(lambda: kl.gcode('SET_INPUT_SHAPER ' + ' '.join(
+                'SHAPER_FREQ_%s=%s' % (axis.upper(), freq) for axis, freq in sorted(freqs.items()))))
+            kl.gcode('SET_INPUT_SHAPER ' + ' '.join(
+                'SHAPER_FREQ_%s=0' % axis.upper() for axis in sorted(freqs)))
 
 
 def run_rung(kl: Klippy, board, motor: str, current: float, configured: float,
@@ -220,13 +255,21 @@ def current_tune(kl: Klippy, args) -> int:
                   for m in motors}
     accel = args.accel or board.max_accel
     span = min(25.0, board.axis_span / 8)
+    limits = live_limits(kl)
     for m in motors:
         vec = stress_vector(board.kinematics, m)
-        if stroke_peak(span, vec, accel) < BELT_SPEEDS[-1]:
-            raise SystemExit('motor %s: a %.0f mm stroke at accel %.0f peaks at %.0f mm/s, below '
-                             'the %d mm/s of the pattern: raise ACCEL to %d or more. Nothing was '
-                             'moved' % (motor_label(m), 2 * span, accel, stroke_peak(span, vec, accel),
-                                        BELT_SPEEDS[-1], stroke_accel(BELT_SPEEDS[-1], span, vec)))
+        top = BELT_SPEEDS[-1]
+        if limits['max_velocity'] * math.hypot(*vec) < top:
+            # the action first: the display keeps 120 characters of '<command> FAILED: ...'
+            raise SystemExit('raise max_velocity to %d or more: now %g, it caps motor %s at %.0f '
+                             'of the %d mm/s the pattern needs. Nothing was moved'
+                             % (math.ceil(top / math.hypot(*vec)), limits['max_velocity'],
+                                motor_label(m), limits['max_velocity'] * math.hypot(*vec), top))
+        if stroke_peak(span, vec, accel) < top:
+            raise SystemExit('raise ACCEL to %d or more: at %.0f a stroke of motor %s peaks at %.0f '
+                             'of the %d mm/s the pattern needs. Nothing was moved'
+                             % (stroke_accel(top, span, vec), accel, motor_label(m),
+                                stroke_peak(span, vec, accel), top))
 
     print('Current tuning on motor(s) %s: worst-case pattern (single-motor load, belts %s mm/s, '
           'accel %.0f, ±%.0f mm), endstop referee, margin %.1fx over the measured skip threshold'
@@ -246,10 +289,10 @@ def current_tune(kl: Klippy, args) -> int:
     recommended, thresholds = {}, {}
     refuse_blind_z_hop(kl, settings)
     guard.preflight()
-    put_back = lambda: None
+    restores = []
     try:
         home_xy(kl, 'G28 X Y\nG90')
-        put_back = lift_cruise_ratio(kl)
+        free_strokes(kl, settings, limits, restores)
         for m in motors:
             label = motor_label(m)
             ref = Referee(kl, referee_axis(board.kinematics, m), settings,
@@ -291,7 +334,7 @@ def current_tune(kl: Klippy, args) -> int:
             *[lambda m=m: kl.gcode('SET_TMC_CURRENT STEPPER=stepper_%s CURRENT=%.2f'
                                    % (m, configured[m])) for m in motors],
             lambda: kl.gcode('M204 S%.0f' % board.max_accel),
-            lambda: put_back(),
+            *restores,
             lambda: rehome_unless_hot(kl))
 
     unified = unify_recommendation(recommended, configured, coupled_xy(board.kinematics),

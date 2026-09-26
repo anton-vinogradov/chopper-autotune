@@ -13,8 +13,8 @@ import os
 from .collect import (KLIPPY_DIR, Screen, ThermalGuard, detect_hardware, enter_spreadcycle,
                       exit_spreadcycle, full_steps_per_mm, home_xy, rail_twins, refuse_blind_z_hop,
                       refuse_if_printing, rehome_unless_hot, run_restore)
-from .current import (Referee, lift_cruise_ratio, referee_axis, stress_vector, stroke_accel,
-                      stroke_peak)
+from .current import (Referee, belt_top, free_strokes, live_limits, referee_axis, stress_vector,
+                      stroke_accel, stroke_peak)
 from .dataset import save_json
 from .klippy import Klippy, find_socket
 
@@ -141,34 +141,41 @@ def stress_burst(kl: Klippy, board, motor: str, vec: 'tuple[float, float]',
 
 
 def stroke_ladders(kinematics: str, motor: str, axis_span: float, speeds, accel: float, accels,
-                   probe_speed: float):
-    """(span, vec, speed rungs, accel rungs) of one motor, without the rungs its strokes
-    cannot reach: a rung never reached would 'hold' and top the advice."""
+                   probe_speed: float, max_velocity: float):
+    """(span, vec, speed rungs, accel rungs, why the speed ladder stops short or None) of one
+    motor, without the rungs its strokes cannot run: a rung never reached would 'hold'
+    and top the advice."""
     from .collect import motor_label
     label = motor_label(motor)
     span = min(25.0, axis_span / 8)
     vec = stress_vector(kinematics, motor)
-    top = stroke_peak(span, vec, accel)
+    top = belt_top(span, vec, accel, max_velocity)
+    by_velocity = top < stroke_peak(span, vec, accel)
     kept = tuple(speed for speed in speeds if speed <= top)
     if not kept:
-        raise SystemExit('motor %s: a %.0f mm stroke at accel %.0f peaks at %.0f mm/s, below '
-                         'MIN_SPEED %d: raise ACCEL to %d or more. Nothing was moved'
-                         % (label, 2 * span, accel, top, speeds[0],
-                            stroke_accel(speeds[0], span, vec)))
+        # the action first: the display keeps 120 characters of '<command> FAILED: ...'
+        raise SystemExit('%s: motor %s runs %.0f mm/s at most, below MIN_SPEED %d. Nothing was '
+                         'moved' % ('raise max_velocity to %d or more' % math.ceil(
+                             speeds[0] / math.hypot(*vec)) if by_velocity else
+                                    'raise ACCEL to %d or more' % stroke_accel(speeds[0], span, vec),
+                                    label, top, speeds[0]))
+    short = None
     if len(kept) < len(speeds):
-        print('Motor %s: capping the speed ladder at %d mm/s: a %.0f mm stroke at accel %.0f '
-              'peaks at %.0f mm/s (ACCEL=%d reaches %d)' % (
-                  label, kept[-1], 2 * span, accel, top, stroke_accel(speeds[-1], span, vec),
-                  speeds[-1]))
-    kept_accels = tuple(a for a in accels if stroke_peak(span, vec, a) >= probe_speed)
+        short = ('max_velocity %g caps the head' % max_velocity if by_velocity else
+                 'the strokes peak at %.0f mm/s at accel %.0f; ACCEL=%d reaches %d'
+                 % (top, accel, stroke_accel(speeds[-1], span, vec), speeds[-1]))
+        print('Motor %s: the speed ladder stops at %d mm/s: %s' % (label, kept[-1], short))
+    probe_top = max_velocity * math.hypot(*vec)
+    kept_accels = tuple(a for a in accels if probe_speed <= belt_top(span, vec, a, max_velocity))
     if not kept_accels:
-        raise SystemExit('motor %s: no accel rung up to %g mm/s2 lets a %.0f mm stroke reach '
-                         'the %d mm/s probe speed: lower ACCEL_PROBE_SPEED. Nothing was moved'
-                         % (label, accels[-1], 2 * span, probe_speed))
+        raise SystemExit('lower ACCEL_PROBE_SPEED to %d or less: no accel rung up to %g lets '
+                         'motor %s reach %d mm/s. Nothing was moved'
+                         % (min(probe_top, stroke_peak(span, vec, accels[-1])), accels[-1], label,
+                            probe_speed))
     if len(kept_accels) < len(accels):
-        print('Motor %s: the accel ladder starts at %g mm/s2: below it a %.0f mm stroke never '
-              'reaches the %d mm/s probe speed' % (label, kept_accels[0], 2 * span, probe_speed))
-    return span, vec, kept, kept_accels
+        print('Motor %s: the accel ladder starts at %g mm/s2: below it a stroke never reaches '
+              'the %d mm/s probe speed' % (label, kept_accels[0], probe_speed))
+    return span, vec, kept, kept_accels, short
 
 
 def ceiling(ladder, run_one, report):
@@ -228,24 +235,20 @@ def envelope(kl: Klippy, args) -> int:
     base_accel = args.accel or board.max_accel
     speeds = tuple(range(args.min_speed, args.max_speed + 1, args.step))
     accels = tuple(round(base_accel * f, -2) for f in (1.0, 1.5, 2.0, 3.0, 4.0))
-    max_velocity = float(settings.get('printer', {}).get('max_velocity') or 0)
-    if max_velocity and speeds and speeds[-1] > max_velocity:
-        # G1 feed is silently clamped to [printer] max_velocity — rungs above it would
-        # "hold" without ever being commanded, so cut them instead of lying
-        speeds = tuple(s for s in speeds if s <= max_velocity)
-        print('Capping the speed ladder at [printer] max_velocity = %g mm/s — raise it in '
-              'the config to probe higher' % max_velocity)
-        if not speeds:
-            raise SystemExit('MIN_SPEED %d exceeds [printer] max_velocity %g — nothing to test'
-                             % (args.min_speed, max_velocity))
+    # G1 feed is clamped to max_velocity, the one in force now: rungs above it would "hold"
+    # without ever being run, as would rungs a stroke is too short to reach
+    limits = live_limits(kl)
     ladders = {m: stroke_ladders(board.kinematics, m, hw[m].axis_span, speeds, base_accel, accels,
-                                 args.accel_probe_speed) for m in motors}
+                                 args.accel_probe_speed, limits['max_velocity']) for m in motors}
 
     print('Motion envelope on motor(s) %s at the configured run current: worst-case '
           'single-motor stress, endstop referee.' % '+'.join(motor_label(m) for m in motors))
-    print('  speed ladder %s mm/s (accel %.0f); accel ladder %s mm/s2 (speed %d)'
-          % ('/'.join(map(str, speeds)), base_accel, '/'.join('%g' % a for a in accels),
-             args.accel_probe_speed))
+    for m in motors:
+        _, _, motor_speeds, motor_accels, _ = ladders[m]
+        print('  motor %s: speed ladder %s mm/s (accel %.0f); accel ladder %s mm/s2 (speed %d)'
+              % (motor_label(m), '/'.join(map(str, motor_speeds)), base_accel,
+                 '/'.join('%g' % a for a in motor_accels), args.accel_probe_speed))
+    top_speed = max(ladders[m][2][-1] for m in motors)
     rail = settings.get('stepper_%s' % motors[0], {})
     if rail.get('rotation_distance') and rail.get('microsteps'):
         # the ladder's real ceiling is usually the MCU's step generation, not the motor:
@@ -253,7 +256,7 @@ def envelope(kl: Klippy, args) -> int:
         steps_per_mm = full_steps_per_mm(rail) * int(rail['microsteps'])
         print('  ladder top %d mm/s = %.0fk steps/s at %sx microstepping — if Klipper '
               'shuts down on step rate, lower MAX_SPEED'
-              % (speeds[-1], speeds[-1] * steps_per_mm / 1000, rail['microsteps']))
+              % (top_speed, top_speed * steps_per_mm / 1000, rail['microsteps']))
     if args.dry_run:
         return 0
     if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):
@@ -269,13 +272,13 @@ def envelope(kl: Klippy, args) -> int:
     speed_holds, accel_holds = {}, {}
     refuse_blind_z_hop(kl, settings)
     guard.preflight()
-    put_back = lambda: None
+    restores, untested = [], {}
     try:
         home_xy(kl, 'G28 X Y\nG90')
-        put_back = lift_cruise_ratio(kl)
+        free_strokes(kl, settings, limits, restores)
         for m in motors:
             label = motor_label(m)
-            span, vec, motor_speeds, motor_accels = ladders[m]
+            span, vec, motor_speeds, motor_accels, short = ladders[m]
             current = float(settings['tmc%s stepper_%s' % (hw[m].driver.name, m)]['run_current'])
             print('\n=== Motor %s @ %.2f A ===' % (label, current))
 
@@ -313,8 +316,10 @@ def envelope(kl: Klippy, args) -> int:
             achieved[label] = {'speed': ceiling_label(s_hold, s_skip),
                                'accel': ceiling_label(a_hold, a_skip, kilo=True)}
             speed_holds[label], accel_holds[label] = s_hold, a_hold
+            if s_skip is None and short:
+                untested[label] = short             # no skip: the test stopped, not the motor
     finally:
-        run_restore(lambda: kl.gcode('M204 S%.0f' % board.max_accel), lambda: put_back(),
+        run_restore(lambda: kl.gcode('M204 S%.0f' % board.max_accel), *restores,
                     lambda: rehome_unless_hot(kl))
 
     finale = ''
@@ -342,7 +347,9 @@ def envelope(kl: Klippy, args) -> int:
               ' %d keeps a %.1fx margin'
               % (rec['max_velocity'],
                  verdict_now(rec['now_velocity'], rec['max_velocity'],
-                             over='a 45 deg travel would outrun the tested ceiling'),
+                             over='untested above: %s' % '; '.join(
+                                 '%s: %s' % item for item in untested.items()) if untested
+                             else 'a 45 deg travel would outrun the tested ceiling'),
                  rec['belt_ceiling'], rec['max_velocity_margin'], MARGIN))
         print('[printer] max_accel: %d%s\n    the MACHINE cap: motor torque /%.1f;'
               ' travels use it — smoothing costs nothing where no plastic is laid'
@@ -375,8 +382,9 @@ def envelope(kl: Klippy, args) -> int:
                   % (rec['print_accel'], crisp, rec['limited_by']))
         else:
             print('(no [input_shaper] found — run SHAPER_CALIBRATE for the print-accel guidance)')
-        finale += ' · set vel<=%d acc<=%dk print<=%.1fk' % (
-            rec['max_velocity'], rec['max_accel'] / 1000, (rec['print_accel'] or 0) / 1000)
+        finale += ' · %s vel<=%d acc<=%dk print<=%.1fk' % (
+            'tested' if untested else 'set', rec['max_velocity'], rec['max_accel'] / 1000,
+            (rec['print_accel'] or 0) / 1000)
     if finale and note:
         finale += ' · AWD: approximate (#129)'
     if finale:

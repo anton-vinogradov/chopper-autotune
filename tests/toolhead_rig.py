@@ -25,7 +25,7 @@ def trapq_append(trapq, print_time, accel_t, cruise_t, decel_t, sx, sy, sz, rx, 
     length = (start_v * accel_t + accel * accel_t ** 2 / 2 + cruise_v * cruise_t
               + cruise_v * decel_t - accel * decel_t ** 2 / 2)
     TRAPQ.append({'r': (rx, ry), 'start_v': start_v, 'cruise_v': cruise_v, 'accel': accel,
-                  'length': length})
+                  'length': length, 'cruise_t': cruise_t})
 
 
 class Kinematics:
@@ -261,18 +261,21 @@ class Printer:
 
 
 class RigKlippy:
-    """The tool's side: G-code into the release's dispatcher, the toolhead status out of
-    its own get_status."""
+    """The tool's side: G-code into the release's dispatcher, the status out of the
+    objects' own get_status."""
 
-    def __init__(self, dispatch, toolhead, settings):
-        self.dispatch, self.toolhead, self._settings = dispatch, toolhead, settings
+    def __init__(self, dispatch, printer, settings):
+        self.dispatch, self.printer, self._settings = dispatch, printer, settings
 
     def gcode(self, script):
         self.dispatch.run_script(script)
 
     def request(self, method, params=None):
-        assert method == 'objects/query'
-        return {'status': {'toolhead': self.toolhead.get_status(0.)}}
+        assert method == 'objects/query'                # the fields asked for, as webhooks does
+        return {'status': {name: {field: value
+                                  for field, value in self.printer.objects[name].get_status(0.).items()
+                                  if fields is None or field in fields}
+                           for name, fields in params['objects'].items()}}
 
     def settings(self):
         return self._settings
@@ -307,34 +310,39 @@ def run(source, scenario):
 
     from chopper_autotune import current, envelope
     current.home_xy = lambda kl, script: kl.gcode(script)
-    kl = RigKlippy(dispatch, toolhead, {'printer': options})
+    kl = RigKlippy(dispatch, printer, {'printer': options})
+    for script in scenario.get('before', []):
+        kl.gcode(script)                                # the state a print may leave behind
     board = types.SimpleNamespace(center=(scenario['center'], scenario['center']),
                                   max_accel=scenario['max_accel'])
     motor, kinematics = scenario['motor'], scenario['kinematics']
     vec = current.stress_vector(kinematics, motor)
-    ratio = toolhead.get_status(0.)['minimum_cruise_ratio']
-    put_back = current.lift_cruise_ratio(kl) if scenario.get('lift', True) else lambda: None
-    lifted = toolhead.get_status(0.)['minimum_cruise_ratio']
+    limits = current.live_limits(kl)
+    restores = []
+    if scenario.get('free', True):
+        current.free_strokes(kl, {}, limits, restores)
+    freed = current.live_limits(kl)
     rungs = []
+
+    def stroke_records():
+        return [{'speed': belt_speed(record, kinematics, motor), 'length': record['length'],
+                 'accel': record['accel']} for record in TRAPQ[1:-1]]  # between the end moves
     if scenario['tool'] == 'envelope':
-        for speed in scenario['speeds']:
+        for speed, accel in scenario['rungs']:
             del TRAPQ[:]
-            envelope.stress_burst(kl, board, motor, vec, speed, scenario['accel'], scenario['span'])
-            rungs.append({'speed': speed, 'strokes': [belt_speed(record, kinematics, motor)
-                                                      for record in TRAPQ[1:-1]],
-                          'lengths': [record['length'] for record in TRAPQ[1:-1]]})
+            envelope.stress_burst(kl, board, motor, vec, speed, accel, scenario['span'])
+            rungs.append({'speed': speed, 'accel': accel, 'strokes': stroke_records()})
     else:
         del TRAPQ[:]
         current.run_rung(kl, board, motor, 0.8, 1.0, vec, scenario['span'], scenario['accel'])
-        strokes = [belt_speed(record, kinematics, motor) for record in TRAPQ[1:-1]]
-        lengths = [record['length'] for record in TRAPQ[1:-1]]
+        strokes = stroke_records()
         pairs = len(strokes) // len(current.BELT_SPEEDS)
-        rungs = [{'speed': speed, 'strokes': strokes[index * pairs:(index + 1) * pairs],
-                  'lengths': lengths[index * pairs:(index + 1) * pairs]}
+        rungs = [{'speed': speed, 'accel': scenario['accel'],
+                  'strokes': strokes[index * pairs:(index + 1) * pairs]}
                  for index, speed in enumerate(current.BELT_SPEEDS)]
-    put_back()
-    return {'ratio': ratio, 'lifted': lifted, 'restored': toolhead.get_status(0.)['minimum_cruise_ratio'],
-            'rungs': rungs}
+    for step in restores:
+        step()
+    return {'limits': limits, 'freed': freed, 'restored': current.live_limits(kl), 'rungs': rungs}
 
 
 if __name__ == '__main__':
