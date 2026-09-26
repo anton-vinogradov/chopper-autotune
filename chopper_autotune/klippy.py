@@ -265,8 +265,8 @@ class Klippy:
         sample buffer holds this chip only.
 
         Once per chip and connection: Klipper streams until the connection closes, and
-        since v0.12.0-53 (bulk_sensor.py, Kalico too) it sends each batch once per
-        subscribe request — tune subscribed in the scan and again in the descent, and
+        it sends each batch once per subscribe request (bulk_sensor.py, Kalico too) —
+        tune subscribed in the scan and again in the descent, and
         every sample arrived twice (four times for motor B of AXIS=xy). A chip subscribed
         earlier keeps streaming; the chip name in the response template tells its
         batches apart."""

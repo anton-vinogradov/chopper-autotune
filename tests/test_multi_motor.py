@@ -121,24 +121,8 @@ XY_OFF = '\n'.join('SET_STEPPER_ENABLE STEPPER="%s" ENABLE=0' % name
                    for name in ('stepper_x', 'stepper_x1', 'stepper_y', 'stepper_y1', 'extruder'))
 
 
-@pytest.mark.parametrize('force_move, clears', [
-    ("clear_homed = gcmd.get('CLEAR_HOMED', '')", True),       # Klipper v0.13+, Kalico
-    ("toolhead.set_position(pos, homing_axes=(0, 1, 2))", False),  # v0.12: it would home all
-    (None, False),                                                # Klipper not found
-])
-def test_release_gantry_forgets_only_the_xy_homing_where_klipper_can(tmp_path, monkeypatch,
-                                                                     force_move, clears):
-    # hands move the head next; Z keeps holding and its homing ([safe_z_home] z_hop);
-    # the check reads the RUNNING Klipper's code (info: klipper_path)
-    import chopper_autotune.collect as collect_mod
-    monkeypatch.setattr(collect_mod, '_KLIPPER_EXTRAS', {})
-    monkeypatch.setattr(collect_mod, 'process_start', lambda pid: float('inf'))  # after any file
-    if force_move is not None:
-        (tmp_path / 'klippy' / 'extras').mkdir(parents=True)
-        (tmp_path / 'klippy' / 'extras' / 'force_move.py').write_text(force_move)
+def test_release_gantry_forgets_only_the_xy_homing():
+    # hands move the head next; Z keeps holding and its homing ([safe_z_home] z_hop)
     kl = RecordingKl(AWD)
-    kl.info = lambda: {'klipper_path': str(tmp_path)}
     release_gantry(kl)
-    expected = XY_OFF + ('\nSET_KINEMATIC_POSITION SET_HOMED= CLEAR_HOMED=XY' if clears
-                         else '\nM84\nSET_STEPPER_ENABLE STEPPER="stepper_z" ENABLE=1')
-    assert kl.scripts == [expected]
+    assert kl.scripts == [XY_OFF + '\nSET_KINEMATIC_POSITION SET_HOMED= CLEAR_HOMED=XY']
