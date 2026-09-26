@@ -153,3 +153,23 @@ def test_a_failure_reaches_the_console_even_when_the_display_is_refused(monkeypa
                "drv_err=1(ErrorShutdown!)): the run stops here; fix the cause, then FIRMWARE_RESTART")
     announce_failure(type('A', (), {'socket': None})(), message)
     assert sent == ['M118 ' + message, 'M117 ' + message[:120]]
+
+
+@pytest.mark.parametrize('value, problem', [('2,16,5,0', 'toff out of range'),
+                                            ('2,3,8,0', 'hstrt out of range'),
+                                            ('0,1,5,0', 'toff=1 requires tbl >= 2')])
+def test_demo_refuses_a_default_the_driver_would_mask(value, problem, capsys):
+    # SET_TMC_FIELD masks a value without an error: toff=16 lands as 0, the driver off
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(['demo', '--default', value])
+    assert problem in capsys.readouterr().err
+
+
+@pytest.mark.parametrize('argv', [['APP=1', 'DATASET=x'], ['S='], ['--app']])
+def test_no_abbreviation_passes_for_apply_or_save(argv):
+    # analyze.sh detaches on APPLY/SAVE spelled out: an abbreviation would run the apply
+    # synchronously, under RUN_SHELL_COMMAND, and hang Klipper's G-code queue
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(_gcode_args(['analyze'] + argv, boolean_flags(parser)))
+

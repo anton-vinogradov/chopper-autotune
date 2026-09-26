@@ -11,11 +11,19 @@ from . import tmc
 from .tmc import Range                  # not from collect: parse before numpy loads
 
 
+TRUE_VALUES = ('1', 'true', 'yes', 'on', 'y')      # analyze.sh matches the same
+
+
 def _chopper(text: str) -> tmc.Chopper:
     parts = [int(v) for v in text.replace('/', ',').split(',')]
     if len(parts) != 4:
         raise argparse.ArgumentTypeError('expected tbl,toff,hstrt,hend, e.g. 2,3,5,0')
-    return tmc.Chopper(*parts)
+    chopper = tmc.Chopper(*parts)
+    problem = tmc.validate(chopper)
+    if problem is not None:
+        # SET_TMC_FIELD masks a value without an error: toff=16 lands as 0, the driver off
+        raise argparse.ArgumentTypeError(problem)
+    return chopper
 
 
 def _motor(text: str) -> str:
@@ -35,7 +43,7 @@ def _gcode_args(argv: 'list[str]', boolean_flags: 'frozenset[str]') -> 'list[str
         flag = '--' + match.group(1).lower().replace('_', '-')
         if flag in boolean_flags:
             value = match.group(2).lower()
-            if value in ('1', 'true', 'yes', 'on', 'y'):
+            if value in TRUE_VALUES:
                 out.append(flag)
             elif value not in ('0', 'false', 'no', 'off', 'n', ''):
                 # silently treating e.g. DRY_RUN=Y as "off" would move the printer
@@ -318,6 +326,9 @@ def build_parser() -> argparse.ArgumentParser:
     env.add_argument('--socket', default=None)
     env.add_argument('--dry-run', action='store_true')
     env.add_argument('-y', '--yes', action='store_true')
+    for command in sub.choices.values():
+        # APP=1 would pass for --apply here, while analyze.sh detaches on APPLY only
+        command.allow_abbrev = False
     return parser
 
 

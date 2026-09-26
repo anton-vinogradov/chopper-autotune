@@ -426,3 +426,21 @@ def test_a_shutdown_on_one_motor_stops_the_whole_report(monkeypatch):
     with pytest.raises(KlipperShutdown):
         demo_module.run_demo(Namespace(axis='xy', report=True, socket=None))
     assert tried == ['x']
+
+
+def test_the_defaults_round_takes_the_driver_stock_tpfd_and_its_limits():
+    from argparse import Namespace
+
+    from chopper_autotune import tmc
+    from chopper_autotune.collect import RunStopped
+    assert demo_module.before_registers(Namespace(default=None), tmc.DRIVERS['2240']) \
+        == tmc.DRIVERS['2240'].default
+    # a Chopper without tpfd would leave the tuned tpfd in the chip for the 'defaults' round
+    assert demo_module.before_registers(Namespace(default=tmc.Chopper(2, 3, 5, 2)),
+                                        tmc.DRIVERS['5160']) == tmc.Chopper(2, 3, 5, 2, 4)
+    assert demo_module.before_registers(Namespace(default=tmc.Chopper(2, 3, 5, 0)),
+                                        tmc.DRIVERS['2209']) == tmc.Chopper(2, 3, 5, 0)
+    # TMC2660 refuses hstrt + hend above 15 at config load: no demo on it either
+    with pytest.raises(RunStopped, match='DEFAULT=tbl2_toff4_hstrt7_hend9: hstrt \\+ hend'):
+        demo_module.before_registers(Namespace(default=tmc.Chopper(2, 4, 7, 9)), tmc.DRIVERS['2660'])
+

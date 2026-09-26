@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import statistics
+from dataclasses import replace
 from datetime import datetime
 
 from . import __version__, tmc
@@ -61,6 +62,18 @@ def run_demo(args) -> int:
 MOTORS = ('x', 'y')
 
 
+def before_registers(args, driver: tmc.Driver) -> tmc.Chopper:
+    """The 'defaults' round: the driver's stock registers, or DEFAULT= checked for this
+    driver (TMC2660 caps hstrt + hend), with the stock tpfd where it has one: a Chopper
+    without tpfd leaves the tuned value in the chip."""
+    if args.default is None:
+        return driver.default
+    problem = tmc.validate(args.default, driver)
+    if problem is not None:
+        raise RunStopped('DEFAULT=%s: %s' % (args.default.label(), problem))
+    return replace(args.default, tpfd=driver.default.tpfd) if driver.has_tpfd else args.default
+
+
 def showcase_together(kl, args) -> int:
     """Live show for the whole printer: put default vs tuned on BOTH motors and do the same
     coordinated back-and-forth that runs each motor at its own resonance speed at once (a
@@ -71,8 +84,7 @@ def showcase_together(kl, args) -> int:
     tpfd = {axis: hw[axis].baseline.get('tpfd') for axis in MOTORS}
     tuned = {axis: tmc.baseline_chopper(hw[axis].baseline, tpfd[axis], hw[axis].driver.default)
              for axis in MOTORS}
-    default = {axis: args.default if args.default is not None else hw[axis].driver.default
-               for axis in MOTORS}
+    default = {axis: before_registers(args, hw[axis].driver) for axis in MOTORS}
     # autotune's motor runs its own registers, not its config lines: judged once read live
     if all(hw[axis].autotune is None and tuned[axis] == default[axis] for axis in MOTORS):
         raise SystemExit('current registers equal the defaults on both motors — tune and save first')
@@ -196,7 +208,7 @@ def demo(kl: Klippy, args) -> int:
     hw = detect_hardware(kl, args.axis)
     tpfd = hw.baseline.get('tpfd')
     tuned = tmc.baseline_chopper(hw.baseline, tpfd, hw.driver.default)
-    default = args.default if args.default is not None else hw.driver.default
+    default = before_registers(args, hw.driver)
     if hw.autotune is None and tuned == default:
         raise SystemExit('current registers equal the defaults — nothing to demo '
                          '(tune and save the motor first)')
