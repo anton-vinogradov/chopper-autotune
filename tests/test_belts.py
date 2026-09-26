@@ -628,3 +628,36 @@ def test_a_hot_driver_after_a_diagonal_stops_the_sweep_without_a_re_home(monkeyp
         sweep_run(monkeypatch, tmp_path, BY_NAME, {'accel_chip': 'adxl345'})
     assert events == ['preflight'] + [e for label in sweeps for e in ('check', 'sweep ' + label)] \
         + ['check'] and closing == [True]
+
+
+def test_a_failed_shuttle_puts_absolute_moves_and_the_accel_back(monkeypatch):
+    # the shuttle runs M204 S800 and G91 first: a move that fails midway skips its G90
+    from types import SimpleNamespace
+
+    import chopper_autotune.collect as collect_mod
+    from chopper_autotune.klippy import KlippyError
+    sent = []
+
+    def capture(hw, script, duration):
+        raise KlippyError('gcode/script failed: Move out of range')
+    monkeypatch.setattr(collect_mod, 'capture_stream', capture)
+    with pytest.raises(KlippyError):
+        belts_mod.machine_axes(SimpleNamespace(max_accel=3000.0), SimpleNamespace(gcode=sent.append))
+    assert sent == ['G90\nM204 S3000']
+
+
+def test_a_stop_after_the_shuttles_is_not_swallowed(monkeypatch):
+    # run_restore swallows a SIGTERM on purpose; the accel restore after good shuttles
+    # is a plain command, so a Stop that lands there still stops the session
+    from types import SimpleNamespace
+
+    import chopper_autotune.collect as collect_mod
+
+    def gcode(script):
+        if script == 'M204 S3000':
+            raise SystemExit(143)
+    samples = np.column_stack([np.arange(400) / 400.0] + [np.sin(np.arange(400) * k) for k in (0.1, 0.2, 0.3)])
+    monkeypatch.setattr(collect_mod, 'capture_stream', lambda hw, script, duration: (0.0, samples))
+    with pytest.raises(SystemExit) as stop:
+        belts_mod.machine_axes(SimpleNamespace(max_accel=3000.0), SimpleNamespace(gcode=gcode))
+    assert stop.value.code == 143

@@ -44,8 +44,9 @@ class FakeKl:
     head (the lie), G28 snaps both to the endstop. The endstop triggers on the *physical*
     position; `slip` mm of lost steps toward the endstop shifts that trigger point earlier."""
 
-    def __init__(self, slip=0.0):
+    def __init__(self, slip=0.0, names=('stepper_x', 'stepper_y')):
         self.slip = slip
+        self.names = names
         self.phys = None
         self.belief = None
         self.scripts = []
@@ -74,7 +75,7 @@ class FakeKl:
     def request(self, method):
         assert method == 'query_endstops/status'
         triggered = self.phys is not None and self.phys >= ENDSTOP_POS - self.slip
-        return {'stepper_x': 'TRIGGERED' if triggered else 'open', 'stepper_y': 'open'}
+        return {self.names[0]: 'TRIGGERED' if triggered else 'open', self.names[1]: 'open'}
 
 
 SETTINGS = {'stepper_x': {'position_endstop': ENDSTOP_POS, 'position_min': 0.0,
@@ -104,6 +105,23 @@ def test_referee_measures_offset_and_bias():
     kl = FakeKl(slip=-1000.0)
     ref4 = Referee(kl, 'x', SETTINGS, park_other=130.0)
     assert ref4.slipped() is None
+
+
+@pytest.mark.parametrize('names', [('x', 'y'), ('stepper_x', 'stepper_y')])
+def test_referee_reads_the_endstop_by_either_name(names):
+    # every release and Kalico name it by the rail ('x'), Klipper master since May 2025
+    # by the section: an unread trigger crept the head 16 mm past the switch
+    kl = FakeKl(names=names)
+    ref = Referee(kl, 'x', SETTINGS, park_other=130.0)
+    ref.calibrate()
+    assert abs(ref.bias) <= 0.21
+
+
+def test_referee_moves_nothing_without_an_endstop_it_can_read():
+    kl = FakeKl(names=('probe', 'z'))
+    with pytest.raises(SystemExit, match='reports no endstop for x'):
+        Referee(kl, 'x', SETTINGS, park_other=130.0).calibrate()
+    assert kl.scripts == []
 
 
 def test_referee_calibration_rejects_broken_endstop():

@@ -205,7 +205,7 @@ def test_autotunes_extruder_is_read_live_and_its_spreadcycle_kept():
 
 
 def test_an_early_stop_enables_the_extruder_before_putting_registers_back(monkeypatch):
-    # M104 above max_temp fails before wake_stepper: without the enable first, the register
+    # a heat target above max_temp fails before wake_stepper: without the enable first, the register
     # write energizes a driver without an enable pin that Klipper counts as off
     from types import SimpleNamespace
 
@@ -217,7 +217,7 @@ def test_an_early_stop_enables_the_extruder_before_putting_registers_back(monkey
 
     def gcode(script):
         sent.append(script)
-        if script.startswith('M104 S260'):
+        if script == 'SET_HEATER_TEMPERATURE HEATER=extruder TARGET=260':
             raise KlippyError("gcode/script failed: Requested temperature (260.0) out of range")
     kl = SimpleNamespace(settings=lambda: {'tmc2209 extruder': {'driver_toff': 3}, 'extruder': {}},
                          gcode=gcode, subscribe_accel=lambda chip: None)
@@ -233,3 +233,6 @@ def test_an_early_stop_enables_the_extruder_before_putting_registers_back(monkey
     enable = sent.index('SET_STEPPER_ENABLE STEPPER=extruder ENABLE=1')
     first_write = next(i for i, s in enumerate(sent) if s.startswith('SET_TMC_FIELD'))
     assert enable < first_write < sent.index('SET_STEPPER_ENABLE STEPPER=extruder ENABLE=0')
+    # M104 heats the ACTIVE extruder: another hotend on an IDEX or a toolchanger
+    assert 'SET_HEATER_TEMPERATURE HEATER=extruder TARGET=0' in sent
+    assert not [script for script in sent if script.startswith('M104')]

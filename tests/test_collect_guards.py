@@ -144,6 +144,9 @@ def test_resolve_accel_chip_never_guesses_a_name():
     with pytest.raises(SystemExit, match='several'):
         resolve_accel_chip({'adxl345': {}, 'lis2dw bed': {}}, 'x')
     assert resolve_accel_chip({'bmi160': {}, 'printer': {}}, 'x') == 'bmi160'
+    # settings has the section names lower-cased: CHIP= takes the name as written
+    assert resolve_accel_chip({'adxl345 hotend': {}}, 'x',
+                              lambda: ['printer', 'adxl345 Hotend']) == 'adxl345 Hotend'
 
 
 def test_resolve_accel_chip_reads_kalicos_accel_chips():
@@ -180,6 +183,8 @@ def test_a_beacon_accelerometer_is_named_not_guessed():
     ('beacon', {'beacon': {'accel_name': 'probe'}}, 'probe'),
     ('beacon sensor tool', {'beacon sensor tool': {'accel_name': 'beacon_tool'}}, 'beacon_tool'),
     ('beacon sensor tool', {}, 'beacon_tool'),
+    # settings has the section names lower-cased, the chip keeps its name as written
+    ('beacon sensor Tool', {'beacon sensor tool': {'accel_name': 'toolaccel'}}, 'toolaccel'),
 ])
 def test_the_chip_name_accelerometer_measure_takes(chip, settings, command_chip):
     from chopper_autotune.collect import accel_command_chip
@@ -322,6 +327,18 @@ def test_mid_run_rehome_keeps_the_motors_energized():
         before_move(1, 1.0)
     # a disable->enable mid-run would reset toff (Klipper's config copy or klipper_tmc_autotune)
     assert 'G28 X Y' in scripts[-1] and 'M18' not in scripts[-1]
+
+
+def test_park_moves_to_the_center_in_absolute_coordinates():
+    # a macro may leave G91 behind: G0 would then move BY the center
+    from types import SimpleNamespace
+
+    from chopper_autotune.collect import park
+    scripts = []
+    kl = SimpleNamespace(gcode=scripts.append, settings=lambda: {})
+    park(kl, SimpleNamespace(center=(130.0, 130.0)), release=False)
+    lines = scripts[-1].split('\n')
+    assert lines.index('G90') < lines.index('G0 X130.0 Y130.0 F6000')
 
 
 def test_process_start_reads_linux_proc(tmp_path, monkeypatch):

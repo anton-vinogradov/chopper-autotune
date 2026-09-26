@@ -100,6 +100,12 @@ def autotune_extruder_baseline(kl: Klippy, driver: tmc.Driver, configured: dict)
     return live
 
 
+def heat_script(temp: float) -> str:
+    """The heater of [extruder], the one the run waits on and moves: M104 without T heats
+    the ACTIVE extruder, another hotend on an IDEX or a toolchanger."""
+    return 'SET_HEATER_TEMPERATURE HEATER=extruder TARGET=%.0f' % temp
+
+
 def oscillation(speed: float, amp: float, cycles: int) -> str:
     lines = []
     for _ in range(cycles):
@@ -172,9 +178,9 @@ def extruder_show(kl: Klippy, args, driver: tmc.Driver, baseline_regs: dict,
     untouched = autotune_goal(kl.settings(), 'extruder') is not None
     try:
         # the heater goes on INSIDE the try — a SIGTERM during the long heat-up must
-        # still reach the M104 S0 in the finally
+        # still reach the heater off in the finally
         screen.update('Chopper E show: heating to %.0fC' % temp, force=True)
-        kl.gcode('M104 S%.0f' % temp)
+        kl.gcode(heat_script(temp))
         kl.gcode('TEMPERATURE_WAIT SENSOR=extruder MINIMUM=%.0f' % (temp - 3))
         wake_stepper(kl, 'extruder')
         stealth = resolve_extruder_stealth(kl, driver, stealth)
@@ -206,7 +212,7 @@ def extruder_show(kl: Klippy, args, driver: tmc.Driver, baseline_regs: dict,
             lambda: untouched or kl.gcode(tmc.set_fields_script('extruder', baseline_regs)),
             lambda: untouched or stealth and kl.gcode(tmc.set_fields_script(
                 'extruder', {stealth[0]: stealth[2]})),
-            lambda: kl.gcode('M104 S0'),
+            lambda: kl.gcode(heat_script(0)),
             lambda: kl.gcode('SET_STEPPER_ENABLE STEPPER=extruder ENABLE=0'))
     return 0
 
@@ -280,10 +286,10 @@ def extruder_tune(kl: Klippy, args) -> int:
     untouched = autotune_goal(settings, 'extruder') is not None   # as in extruder_show
     try:
         # the heater goes on INSIDE the try: heating is the longest wait of the whole
-        # run, and a SIGTERM/Ctrl-C there must still reach the M104 S0 in the finally
+        # run, and a SIGTERM/Ctrl-C there must still reach the heater off in the finally
         screen.update('Chopper E: heating to %.0fC' % temp, force=True)
         print('Heating hotend to %.0fC...' % temp)
-        kl.gcode('M104 S%.0f' % temp)
+        kl.gcode(heat_script(temp))
         kl.gcode('TEMPERATURE_WAIT SENSOR=extruder MINIMUM=%.0f' % (temp - 3))
 
         wake_stepper(kl, 'extruder')
@@ -363,5 +369,5 @@ def extruder_tune(kl: Klippy, args) -> int:
                 'extruder', baseline_regs or tmc.stock_chopper(driver, False).fields())),
             lambda: untouched or stealth and kl.gcode(tmc.set_fields_script(
                 'extruder', {stealth[0]: stealth[2]})),
-            lambda: kl.gcode('M104 S0'),
+            lambda: kl.gcode(heat_script(0)),
             lambda: kl.gcode('SET_STEPPER_ENABLE STEPPER=extruder ENABLE=0'))

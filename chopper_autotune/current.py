@@ -79,9 +79,23 @@ class Referee:
         self.park_other = park_other
         self.bias = 0.0
         self.set_homed = can_clear_homing(kl)
+        self.key = None
+
+    def _endstop_key(self) -> str:
+        """The rail's endstop in query_endstops/status: 'x' on every release and in Kalico,
+        'stepper_x' on Klipper master since the Generic Cartesian rework (May 2025). Asked
+        before any move: a trigger the referee cannot read would creep the head past it."""
+        if self.key is None:
+            names = self.kl.request('query_endstops/status')
+            self.key = next((key for key in ('stepper_' + self.axis, self.axis) if key in names), None)
+            if self.key is None:
+                raise SystemExit('Klipper reports no endstop for %s (it reports: %s), so the '
+                                 'endstop referee cannot see the head reach it; nothing moved '
+                                 'toward it' % (self.axis, ', '.join(names) or 'none'))
+        return self.key
 
     def _triggered(self) -> bool:
-        return self.kl.request('query_endstops/status').get('stepper_' + self.axis) == 'TRIGGERED'
+        return self.kl.request('query_endstops/status').get(self._endstop_key()) == 'TRIGGERED'
 
     def _creep(self, lie: float, step: float, feed: int, travelled: float) -> 'float | None':
         """Step toward the endstop until it triggers; returns the travel at the trigger."""
@@ -96,6 +110,7 @@ class Referee:
     def _measure(self) -> 'float | None':
         a = self.axis
         other = 'y' if a == 'x' else 'x'
+        self._endstop_key()
         start = self.endstop - self.home_dir * CREEP_START
         lie = self.endstop - self.home_dir * CREEP_RANGE
         self.kl.gcode('G90\nG1 %s%.2f %s%.2f F6000\nM400'

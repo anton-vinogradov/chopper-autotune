@@ -205,7 +205,8 @@ class Panel(ScreenPanel):
     def stop(self, widget):
         if self.refuse_replaced("CHOPPER_STOP"):
             return
-        self._screen._ws.klippy.gcode_script("CHOPPER_STOP")
+        # no widget: Stop never waits busy for the answer, a second tap still goes out
+        self._screen._send_action(None, "printer.gcode.script", {"script": "CHOPPER_STOP"})
         # the tool restores registers and re-homes before exiting (~10 s), so give
         # immediate feedback that the tap registered
         self.show_status(_("Stopping — restoring registers and re-homing…"))
