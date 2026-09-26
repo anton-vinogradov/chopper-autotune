@@ -253,6 +253,12 @@ def current_tune(kl: Klippy, args) -> int:
     board = hw[motors[0]]
     configured = {m: float(settings['tmc%s stepper_%s' % (hw[m].driver.name, m)]['run_current'])
                   for m in motors}
+    if board.kinematics.startswith('limited_'):
+        # Kalico caps each belt there (max_x/y_velocity and accel; on limited_corexy
+        # max_velocity caps the belt, not the head): the pattern would not reach its rungs
+        raise SystemExit('%s is not supported by CHOPPER_CURRENT yet: Kalico caps each belt, so '
+                         'the 200 mm/s rung would not be reached. Nothing was moved'
+                         % board.kinematics)
     accel = args.accel or board.max_accel
     span = min(25.0, board.axis_span / 8)
     limits = live_limits(kl)

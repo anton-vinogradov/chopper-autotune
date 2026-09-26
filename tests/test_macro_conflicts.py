@@ -208,3 +208,22 @@ def test_the_panel_does_not_show_autotunes_motor_as_tuned(tmp_path, panel_module
     assert panel.autotune('stepper_x') and not panel.autotune('stepper_y')
     assert panel.tuned_registers('stepper_x') == ''
     assert panel.tuned_registers('stepper_y') == '0/8/7/5'
+
+
+@pytest.mark.parametrize('untested, prefix', [(['A'], 'tested: '), (None, 'set: ')])
+def test_the_results_say_tested_where_the_envelope_ran_short(tmp_path, panel_module, monkeypatch,
+                                                            untested, prefix):
+    # no skip and a ladder the test stopped short of: the velocity is tested, not a limit
+    import json
+    recommend = {'max_velocity': 176, 'max_accel': 3000, 'print_accel': 2500}
+    if untested:
+        recommend['untested'] = untested
+    (tmp_path / 'envelope.json').write_text(json.dumps(
+        {'A': {'speed': '250+', 'accel': '12k+'}, 'recommend': recommend}))
+    for name in ('STATE', 'CURRENT_STATE', 'BELTS_STATE', 'MAP_STATE'):
+        monkeypatch.setattr(panel_module, name, str(tmp_path / 'none.json'))
+    monkeypatch.setattr(panel_module, 'ENVELOPE_STATE', str(tmp_path / 'envelope.json'))
+    panel = panel_on(panel_module, CFG)
+    panel.motors = []
+    assert prefix + '[printer] velocity ≤176' in panel.results_text()
+

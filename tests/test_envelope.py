@@ -140,17 +140,22 @@ def test_the_ladders_drop_the_rungs_a_stroke_cannot_reach(capsys):
     span, vec, speeds, accels, short = stroke_ladders(
         'cartesian', 'x', 400.0, (150, 200, 250, 300), 1000, (500, 1000, 2000), 180, 500)
     assert (span, vec, speeds, accels) == (25.0, (1.0, 0.0), (150, 200), (1000, 2000))
-    assert short == 'the strokes peak at 224 mm/s at accel 1000; ACCEL=1800 reaches 300'
+    assert short == ('the strokes stop at 223 mm/s (max_velocity 500, accel 1000): raise ACCEL '
+                     'to 1800 to reach 300')
     out = capsys.readouterr().out
     assert 'the speed ladder stops at 200 mm/s' in out and 'accel ladder starts at 1000' in out
     # max_velocity caps the head: a corexy belt runs sqrt2 times as fast
     assert stroke_ladders('corexy', 'x', 400.0, (250, 300), 3000, (3000,), 100, 200)[2] == (250,)
-    _, _, speeds, _, short = stroke_ladders('cartesian', 'x', 400.0, (150, 200), 3000, (3000,), 100, 160)
-    assert speeds == (150,) and short == 'max_velocity 160 caps the head'
+    # every limit in the way is named, and where a max_velocity set at runtime comes from
+    _, _, speeds, _, short = stroke_ladders('cartesian', 'x', 400.0, (150, 200, 300), 1500,
+                                            (3000,), 100, 160, 300)
+    assert speeds == (150,) and short == (
+        'the strokes stop at 160 mm/s (max_velocity 160 (set at runtime; printer.cfg has 300), '
+        'accel 1500): raise max_velocity to 300 and ACCEL to 1800 to reach 300')
     # the action first: the display keeps 120 characters of '<command> FAILED: ...'
-    with pytest.raises(SystemExit, match='^raise ACCEL to 500 or more: motor A runs 141'):
+    with pytest.raises(SystemExit, match='^raise ACCEL to 500 or more: motor A runs under 142'):
         stroke_ladders('cartesian', 'x', 400.0, (150, 200), 400, (400,), 100, 500)
-    with pytest.raises(SystemExit, match='^raise max_velocity to 150 or more'):
+    with pytest.raises(SystemExit, match='^raise max_velocity to 150 or more: motor A runs under 121'):
         stroke_ladders('cartesian', 'x', 400.0, (150, 200), 3000, (3000,), 100, 120)
     with pytest.raises(SystemExit, match='^lower ACCEL_PROBE_SPEED to 122 or less'):
         stroke_ladders('cartesian', 'x', 400.0, (100,), 3000, (300,), 150, 500)

@@ -245,6 +245,38 @@ def test_envelope_runs_only_the_rungs_its_strokes_reach(tmp_path, monkeypatch, c
     assert max(feeds) == 200 and 'the speed ladder stops at 200 mm/s' in capsys.readouterr().out
 
 
+@pytest.mark.parametrize('skip_at, untested', [
+    (None, ['A', 'B']),         # no skip, both ladders stop at 250: the test ran out
+    (250, None),                # motor A skipped at 250: a measured limit, not a gap
+])
+def test_the_envelope_calls_a_short_ladder_untested_only_without_a_skip(tmp_path, monkeypatch,
+                                                                        capsys, skip_at, untested):
+    import json
+
+    import chopper_autotune.envelope as env
+    kl = StatusKl()
+    kl.request = lambda method, params=None: {'status': {
+        'toolhead': {'max_velocity': 200.0, 'minimum_cruise_ratio': 0.5},   # set at runtime
+        'gcode_move': {'speed_factor': 1.0}}}
+    monkeypatch.setattr(env, 'detect_hardware', lambda kl_, axis, accel=False: hardware(kl_))
+    burst = {}
+
+    def stress_burst(kl_, board, motor, vec, speed, accel, span, check=lambda: None):
+        burst.update(motor=motor, speed=speed, accel=accel)
+    monkeypatch.setattr(env, 'stress_burst', stress_burst)
+    monkeypatch.setattr(env, 'Referee', lambda *a: SimpleNamespace(
+        calibrate=lambda: None, slipped=lambda: 2.0 if skip_at and burst['motor'] == 'x'
+        and burst['accel'] == 10000 and burst['speed'] >= skip_at else 0.0))
+    monkeypatch.setattr(env, 'enter_spreadcycle', lambda kl_, hw, restores=False: None)
+    monkeypatch.setattr(env, 'exit_spreadcycle', lambda kl_, hw: None)
+    monkeypatch.setattr(env, 'STATE', str(tmp_path / 'envelope.json'))
+    env.envelope(kl, build_parser().parse_args(['envelope', '--yes']))
+    with open(tmp_path / 'envelope.json') as state:
+        assert json.load(state)['recommend'].get('untested') == untested
+    out = capsys.readouterr().out
+    assert ('untested above' in out) is bool(untested)
+
+
 def test_find_speed_ends_with_the_motors_off_after_a_thermal_stop(tmp_path, monkeypatch):
     import chopper_autotune.find_speed as fs
     kl = StatusKl()

@@ -257,3 +257,22 @@ def test_a_stop_during_the_first_change_still_puts_it_back():
         free_strokes(kl, {}, live_limits(kl), restores)
     assert len(restores) == 1
 
+
+@pytest.mark.parametrize('kinematics', ['limited_corexy', 'limited_cartesian'])
+def test_kalicos_limited_kinematics_are_refused_before_any_motion(monkeypatch, kinematics):
+    # Kalico caps each belt there (max_x/y_velocity and accel): the pattern would not
+    # reach its 200 mm/s, as the envelope already refuses
+    from types import SimpleNamespace
+
+    import chopper_autotune.current as cur
+    from chopper_autotune.cli import build_parser
+    hw = SimpleNamespace(kinematics=kinematics, axis_span=300.0, max_accel=3000.0,
+                         driver=SimpleNamespace(name='2209'))
+    monkeypatch.setattr(cur, 'detect_hardware', lambda kl, axis, accel=False: hw)
+    scripts = []
+    kl = SimpleNamespace(gcode=scripts.append, request=status(), settings=lambda: {
+        'tmc2209 stepper_x': {'run_current': 0.8}, 'stepper_x': {}})
+    with pytest.raises(SystemExit, match='%s is not supported by CHOPPER_CURRENT' % kinematics):
+        cur.current_tune(kl, build_parser().parse_args(['current', '--motor', 'a', '--yes']))
+    assert scripts == []
+

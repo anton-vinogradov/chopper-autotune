@@ -346,7 +346,9 @@ class Panel(ScreenPanel):
                 for name, values in envelope.items()))
         if recommend:
             crisp = recommend.get("print_accel_crisp")
-            lines.append(_("set: ") + "[printer] velocity ≤%s · accel ≤%s · print accel ≤%s%s%s"
+            # untested: no skip, the test stopped short of the velocity it could check
+            lines.append((_("tested: ") if recommend.get("untested") else _("set: "))
+                         + "[printer] velocity ≤%s · accel ≤%s · print accel ≤%s%s%s"
                          % (recommend.get("max_velocity"), recommend.get("max_accel"),
                             recommend.get("print_accel") or "?",
                             " (crisp ≤%s)" % crisp if crisp else "",

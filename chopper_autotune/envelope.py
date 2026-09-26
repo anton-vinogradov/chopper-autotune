@@ -141,36 +141,44 @@ def stress_burst(kl: Klippy, board, motor: str, vec: 'tuple[float, float]',
 
 
 def stroke_ladders(kinematics: str, motor: str, axis_span: float, speeds, accel: float, accels,
-                   probe_speed: float, max_velocity: float):
+                   probe_speed: float, max_velocity: float, configured: float = 0):
     """(span, vec, speed rungs, accel rungs, why the speed ladder stops short or None) of one
     motor, without the rungs its strokes cannot run: a rung never reached would 'hold'
-    and top the advice."""
+    and top the advice. The rungs are belt speeds; max_velocity is the one in force,
+    configured the one in printer.cfg."""
     from .collect import motor_label
     label = motor_label(motor)
     span = min(25.0, axis_span / 8)
     vec = stress_vector(kinematics, motor)
     top = belt_top(span, vec, accel, max_velocity)
-    by_velocity = top < stroke_peak(span, vec, accel)
     kept = tuple(speed for speed in speeds if speed <= top)
+    source = (' (set at runtime; printer.cfg has %g)' % configured
+              if configured and configured != max_velocity else '')
+
+    def needs(speed) -> str:
+        # every limit that stops a stroke short of this belt speed, not just the lower one
+        return ' and '.join(
+            (['max_velocity to %d' % math.ceil(speed / math.hypot(*vec))]
+             if max_velocity * math.hypot(*vec) < speed else [])
+            + (['ACCEL to %d' % stroke_accel(speed, span, vec)]
+               if stroke_peak(span, vec, accel) < speed else []))
     if not kept:
         # the action first: the display keeps 120 characters of '<command> FAILED: ...'
-        raise SystemExit('%s: motor %s runs %.0f mm/s at most, below MIN_SPEED %d. Nothing was '
-                         'moved' % ('raise max_velocity to %d or more' % math.ceil(
-                             speeds[0] / math.hypot(*vec)) if by_velocity else
-                                    'raise ACCEL to %d or more' % stroke_accel(speeds[0], span, vec),
-                                    label, top, speeds[0]))
+        raise SystemExit('raise %s or more: motor %s runs under %d mm/s, MIN_SPEED %d (max_velocity '
+                         '%g%s, accel %.0f). Nothing was moved'
+                         % (needs(speeds[0]), label, math.floor(top) + 1, speeds[0], max_velocity,
+                            source, accel))
     short = None
     if len(kept) < len(speeds):
-        short = ('max_velocity %g caps the head' % max_velocity if by_velocity else
-                 'the strokes peak at %.0f mm/s at accel %.0f; ACCEL=%d reaches %d'
-                 % (top, accel, stroke_accel(speeds[-1], span, vec), speeds[-1]))
+        short = ('the strokes stop at %d mm/s (max_velocity %g%s, accel %.0f): raise %s to '
+                 'reach %d' % (math.floor(top), max_velocity, source, accel, needs(speeds[-1]),
+                               speeds[-1]))
         print('Motor %s: the speed ladder stops at %d mm/s: %s' % (label, kept[-1], short))
-    probe_top = max_velocity * math.hypot(*vec)
     kept_accels = tuple(a for a in accels if probe_speed <= belt_top(span, vec, a, max_velocity))
     if not kept_accels:
         raise SystemExit('lower ACCEL_PROBE_SPEED to %d or less: no accel rung up to %g lets '
                          'motor %s reach %d mm/s. Nothing was moved'
-                         % (min(probe_top, stroke_peak(span, vec, accels[-1])), accels[-1], label,
+                         % (belt_top(span, vec, accels[-1], max_velocity), accels[-1], label,
                             probe_speed))
     if len(kept_accels) < len(accels):
         print('Motor %s: the accel ladder starts at %g mm/s2: below it a stroke never reaches '
@@ -238,8 +246,10 @@ def envelope(kl: Klippy, args) -> int:
     # G1 feed is clamped to max_velocity, the one in force now: rungs above it would "hold"
     # without ever being run, as would rungs a stroke is too short to reach
     limits = live_limits(kl)
+    configured = float(settings.get('printer', {}).get('max_velocity') or 0)
     ladders = {m: stroke_ladders(board.kinematics, m, hw[m].axis_span, speeds, base_accel, accels,
-                                 args.accel_probe_speed, limits['max_velocity']) for m in motors}
+                                 args.accel_probe_speed, limits['max_velocity'], configured)
+               for m in motors}
 
     print('Motion envelope on motor(s) %s at the configured run current: worst-case '
           'single-motor stress, endstop referee.' % '+'.join(motor_label(m) for m in motors))
@@ -272,7 +282,7 @@ def envelope(kl: Klippy, args) -> int:
     speed_holds, accel_holds = {}, {}
     refuse_blind_z_hop(kl, settings)
     guard.preflight()
-    restores, untested = [], {}
+    restores, shorts, skipped = [], {}, False
     try:
         home_xy(kl, 'G28 X Y\nG90')
         free_strokes(kl, settings, limits, restores)
@@ -316,8 +326,9 @@ def envelope(kl: Klippy, args) -> int:
             achieved[label] = {'speed': ceiling_label(s_hold, s_skip),
                                'accel': ceiling_label(a_hold, a_skip, kilo=True)}
             speed_holds[label], accel_holds[label] = s_hold, a_hold
-            if s_skip is None and short:
-                untested[label] = short             # no skip: the test stopped, not the motor
+            skipped = skipped or s_skip is not None
+            if short:
+                shorts[label] = short
     finally:
         run_restore(lambda: kl.gcode('M204 S%.0f' % board.max_accel), *restores,
                     lambda: rehome_unless_hot(kl))
@@ -329,6 +340,10 @@ def envelope(kl: Klippy, args) -> int:
             '%s %s mm/s, %s acc' % (label, values['speed'], values['accel'])
             for label, values in achieved.items())
 
+    # no motor skipped and the slowest ladder stopped short: the test ran out, not the motor
+    untested = {} if skipped or not speed_holds else {
+        label: short for label, short in shorts.items()
+        if speed_holds[label] == min(speed_holds.values())}
     recommendation, shaper_caps = None, {}
     if args.axis == 'xy':                           # both motors measured in THIS run
         from .collect import coupled_xy
@@ -339,6 +354,8 @@ def envelope(kl: Klippy, args) -> int:
     if recommendation:
         if note:
             recommendation['approximate'] = 'AWD'
+        if untested:
+            recommendation['untested'] = sorted(untested)
         save_state({'recommend': recommendation})   # Results carries the numbers
         rec = recommendation
         print('\n=== What to set ===')
@@ -347,10 +364,11 @@ def envelope(kl: Klippy, args) -> int:
               ' %d keeps a %.1fx margin'
               % (rec['max_velocity'],
                  verdict_now(rec['now_velocity'], rec['max_velocity'],
-                             over='untested above: %s' % '; '.join(
-                                 '%s: %s' % item for item in untested.items()) if untested
+                             over='untested above, not a limit' if untested
                              else 'a 45 deg travel would outrun the tested ceiling'),
                  rec['belt_ceiling'], rec['max_velocity_margin'], MARGIN))
+        for label, short in untested.items():
+            print('    untested above %g mm/s on motor %s: %s' % (speed_holds[label], label, short))
         print('[printer] max_accel: %d%s\n    the MACHINE cap: motor torque /%.1f;'
               ' travels use it — smoothing costs nothing where no plastic is laid'
               % (rec['max_accel'],
