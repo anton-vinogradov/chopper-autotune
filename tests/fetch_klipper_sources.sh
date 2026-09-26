@@ -22,17 +22,20 @@ fetch() {
 # klippy.py holds Printer.lookup_object: an unknown name is a config error there,
 # which the G-code dispatcher turns into a shutdown; webhooks.py answers info;
 # force_move.py tells a supported Klipper (collect.require_current_klipper); tmc2240.py
-# names the options its section takes (collect.autotune_carry_over)
+# names the options its section takes (collect.autotune_carry_over); toolhead.py plans
+# the stress strokes (tests/toolhead_rig.py)
 for ref in v0.13.0 "$klipper_master"; do
     for file in gcode.py klippy.py webhooks.py configfile.py extras/resonance_tester.py \
-                extras/force_move.py extras/tmc2240.py; do
+                extras/force_move.py extras/tmc2240.py toolhead.py extras/gcode_move.py \
+                kinematics/extruder.py extras/input_shaper.py; do
         fetch "https://raw.githubusercontent.com/Klipper3d/klipper/$ref/klippy/$file" \
               "$dest/klipper-$ref/$(basename "$file")"
     done
 done
 # Kalico keeps Printer in printer.py
 for file in gcode.py configfile.py printer.py webhooks.py extras/resonance_tester.py \
-            extras/force_move.py extras/tmc2240.py; do
+            extras/force_move.py extras/tmc2240.py toolhead.py extras/gcode_move.py \
+            kinematics/extruder.py extras/input_shaper.py; do
     fetch "https://raw.githubusercontent.com/KalicoCrew/kalico/$kalico_main/klippy/$file" \
           "$dest/kalico-$kalico_main/$(basename "$file")"
 done

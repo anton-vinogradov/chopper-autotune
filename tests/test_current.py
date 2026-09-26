@@ -171,3 +171,108 @@ def test_referee_refuses_sensorless_endstops():
                               'position_endstop': 120, 'position_max': 120}}
     with pytest.raises(SystemExit, match='sensorless'):
         Referee(None, 'x', settings, 60.0)
+
+
+def test_a_stroke_peaks_where_it_brakes_as_hard_as_it_accelerates():
+    from chopper_autotune.current import stroke_accel, stroke_peak
+    assert stroke_peak(25.0, (1.0, 0.0), 3000) == pytest.approx(387.3, abs=0.1)
+    assert stroke_peak(25.0, (1.0, 0.0), 500) == pytest.approx(158.1, abs=0.1)
+    # corexy: the head runs 1/sqrt2 of the belt speed along a 2*span*sqrt2 diagonal
+    assert stroke_peak(25.0, (1.0, 1.0), 500) == pytest.approx(265.9, abs=0.1)
+    assert stroke_accel(200, 25.0, (1.0, 0.0)) == 800           # 200^2 / 50
+    assert stroke_peak(25.0, (1.0, 0.0), stroke_accel(200, 25.0, (1.0, 0.0))) >= 200
+
+
+def status(max_velocity=300.0, ratio=0.5, speed_factor=1.0):
+    """objects/query of the live limits, as Klipper answers it."""
+    return lambda method, params: {'status': {
+        'toolhead': {'max_velocity': max_velocity, 'minimum_cruise_ratio': ratio},
+        'gcode_move': {'speed_factor': speed_factor}}}
+
+
+@pytest.mark.parametrize('max_accel, max_velocity, refusal', [
+    # a 50 mm stroke at 500 mm/s2 peaks at 158 mm/s: the 200 mm/s rung would be a weaker
+    # load than the header says, and the saved current too low
+    (500.0, 300.0, 'raise ACCEL to 800 or more: at 500 a stroke of motor A peaks at 158 of the 200'),
+    # G1 feed never passes max_velocity (set at runtime too)
+    (3000.0, 160.0, 'raise max_velocity to 200 or more: now 160, it caps motor A at 160 of the 200'),
+])
+def test_the_pattern_refuses_what_its_strokes_cannot_carry(monkeypatch, max_accel, max_velocity,
+                                                           refusal):
+    from types import SimpleNamespace
+
+    import chopper_autotune.current as cur
+    from chopper_autotune.cli import build_parser
+    hw = SimpleNamespace(kinematics='cartesian', axis_span=300.0, max_accel=max_accel,
+                         driver=SimpleNamespace(name='2209'))
+    monkeypatch.setattr(cur, 'detect_hardware', lambda kl, axis, accel=False: hw)
+    scripts = []
+    kl = SimpleNamespace(gcode=scripts.append, request=status(max_velocity), settings=lambda: {
+        'tmc2209 stepper_x': {'run_current': 0.8}, 'stepper_x': {}})
+    with pytest.raises(SystemExit) as refused:
+        cur.current_tune(kl, build_parser().parse_args(['current', '--motor', 'a', '--yes']))
+    assert str(refused.value.code).startswith(refusal) and scripts == []
+    # the action reaches the display, which keeps 120 characters of '<command> FAILED: ...'
+    assert ('current FAILED: %s' % refused.value.code)[:120].startswith('current FAILED: raise ')
+
+
+@pytest.mark.parametrize('settings, answers, freed, restored', [
+    ({}, [], ['SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0'],
+     ['SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0.35']),
+    # a print left M220 S80, and an input shaper smooths what the motors get
+    ({'input_shaper': {}}, ['// shaper_type_x:mzv shaper_freq_x:40.000 damping_ratio_x:0.100000',
+                            '// shaper_type_y:ei shaper_freq_y:35.500 damping_ratio_y:0.100000'],
+     ['SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0', 'M220 S100',
+      'SET_INPUT_SHAPER SHAPER_FREQ_X=0 SHAPER_FREQ_Y=0'],
+     ['SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0.35', 'M220 S80',
+      'SET_INPUT_SHAPER SHAPER_FREQ_X=40.000 SHAPER_FREQ_Y=35.500']),
+])
+def test_the_strokes_run_free_and_everything_comes_back(settings, answers, freed, restored):
+    from types import SimpleNamespace
+
+    from chopper_autotune.current import free_strokes, live_limits
+    scripts = []
+    kl = SimpleNamespace(gcode=scripts.append, gcode_output=lambda script: answers,
+                         request=status(ratio=0.35, speed_factor=0.8 if answers else 1.0))
+    restores = []
+    free_strokes(kl, settings, live_limits(kl), restores)
+    assert scripts == freed
+    del scripts[:]
+    for step in restores:
+        step()
+    assert scripts == restored
+
+
+def test_a_stop_during_the_first_change_still_puts_it_back():
+    # the way back is registered before the command: a Stop may land while it runs
+    from types import SimpleNamespace
+
+    from chopper_autotune.current import free_strokes, live_limits
+
+    def gcode(script):
+        raise SystemExit(143)
+    kl = SimpleNamespace(gcode=gcode, request=status())
+    restores = []
+    with pytest.raises(SystemExit):
+        free_strokes(kl, {}, live_limits(kl), restores)
+    assert len(restores) == 1
+
+
+@pytest.mark.parametrize('kinematics', ['limited_corexy', 'limited_cartesian'])
+def test_kalicos_limited_kinematics_are_refused_before_any_motion(monkeypatch, kinematics):
+    # Kalico caps each belt there (max_x/y_velocity and accel): the pattern would not
+    # reach its 200 mm/s, as the envelope already refuses
+    from types import SimpleNamespace
+
+    import chopper_autotune.current as cur
+    from chopper_autotune.cli import build_parser
+    hw = SimpleNamespace(kinematics=kinematics, axis_span=300.0, max_accel=3000.0,
+                         driver=SimpleNamespace(name='2209'))
+    monkeypatch.setattr(cur, 'detect_hardware', lambda kl, axis, accel=False: hw)
+    scripts = []
+    kl = SimpleNamespace(gcode=scripts.append, request=status(), settings=lambda: {
+        'tmc2209 stepper_x': {'run_current': 0.8}, 'stepper_x': {}})
+    with pytest.raises(SystemExit, match='%s is not supported by CHOPPER_CURRENT' % kinematics):
+        cur.current_tune(kl, build_parser().parse_args(['current', '--motor', 'a', '--yes']))
+    assert scripts == []
+

@@ -51,6 +51,11 @@ class StatusKl:
     def gcode(self, script):
         self.scripts.append(script)
 
+    def request(self, method, params=None):
+        # the live limits at Klipper's defaults: objects/query of toolhead and gcode_move
+        return {'status': {'toolhead': {'max_velocity': 500.0, 'minimum_cruise_ratio': 0.5},
+                           'gcode_move': {'speed_factor': 1.0}}}
+
     def gcode_output(self, script):
         return []
 
@@ -186,6 +191,90 @@ def test_current_checks_inside_a_rung_and_ends_with_the_motors_off(monkeypatch):
         cur.current_tune(kl, build_parser().parse_args(['current', '--motor', 'a', '--yes']))
     assert len(strokes) == 3                     # stopped at the next stroke pair
     assert gantry_released(kl.scripts[-1], cycle=True)
+    assert_cruise_ratio_lifted_and_put_back(kl.scripts)
+
+
+def assert_cruise_ratio_lifted_and_put_back(scripts):
+    """The strokes brake as hard as they accelerate, and the configured ratio comes back
+    even after a stop."""
+    lifted = scripts.index('SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0')
+    first_stroke = next(i for i, script in enumerate(scripts) if script.count('\nG1 ') == 1)
+    assert lifted < first_stroke < scripts.index('SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0.5')
+
+
+def test_envelope_lifts_the_cruise_ratio_and_puts_it_back_after_a_stop(monkeypatch):
+    import chopper_autotune.envelope as env
+    kl = StatusKl()
+    monkeypatch.setattr(env, 'detect_hardware', lambda kl_, axis, accel=False: hardware(kl_))
+    monkeypatch.setattr(env, 'Referee', lambda *a: SimpleNamespace(calibrate=lambda: None,
+                                                                     slipped=lambda: 0.0))
+    monkeypatch.setattr(env, 'enter_spreadcycle', lambda kl_, hw, restores=False: None)
+    monkeypatch.setattr(env, 'exit_spreadcycle', lambda kl_, hw: None)
+    real_gcode = kl.gcode
+    strokes = []
+
+    def gcode(script):
+        real_gcode(script)
+        if script.count('\nG1 ') == 1 and script.startswith('G1 '):
+            strokes.append(script)
+            if len(strokes) == 4:                # the driver warns within the speed ladder
+                kl.status_map = HOT_X
+    kl.gcode = gcode
+    with pytest.raises(DriverTooHot):
+        env.envelope(kl, build_parser().parse_args(['envelope', '--motor', 'a', '--yes']))
+    assert_cruise_ratio_lifted_and_put_back(kl.scripts)
+
+
+def test_envelope_runs_only_the_rungs_its_strokes_reach(tmp_path, monkeypatch, capsys):
+    # cartesian at 1000 mm/s2: a 50 mm stroke peaks at 224 mm/s, the ladder stops at 200
+    import re
+
+    import chopper_autotune.envelope as env
+    kl = StatusKl()
+    monkeypatch.setattr(env, 'detect_hardware', lambda kl_, axis, accel=False: Hardware(
+        kl=kl_, stepper='stepper_x', driver=tmc.DRIVERS['2240'], accel_chip='adxl345',
+        kinematics='cartesian', axis_span=400, center=(200, 200), max_accel=1000, baseline={}))
+    monkeypatch.setattr(env, 'Referee', lambda *a: SimpleNamespace(calibrate=lambda: None,
+                                                                     slipped=lambda: 0.0))
+    monkeypatch.setattr(env, 'enter_spreadcycle', lambda kl_, hw, restores=False: None)
+    monkeypatch.setattr(env, 'exit_spreadcycle', lambda kl_, hw: None)
+    monkeypatch.setattr(env, 'STATE', str(tmp_path / 'envelope.json'))
+    env.envelope(kl, build_parser().parse_args(['envelope', '--motor', 'a', '--yes']))
+    feeds = {float(feed) / 60 for script in kl.scripts if script.count('\nG1 ') == 1
+             for feed in re.findall(r' F(\d+)', script)}
+    assert max(feeds) == 200 and 'the speed ladder stops at 200 mm/s' in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('skip_at, untested', [
+    (None, ['A', 'B']),         # no skip, both ladders stop at 250: the test ran out
+    (250, None),                # motor A skipped at 250: a measured limit, not a gap
+])
+def test_the_envelope_calls_a_short_ladder_untested_only_without_a_skip(tmp_path, monkeypatch,
+                                                                        capsys, skip_at, untested):
+    import json
+
+    import chopper_autotune.envelope as env
+    kl = StatusKl()
+    kl.request = lambda method, params=None: {'status': {
+        'toolhead': {'max_velocity': 200.0, 'minimum_cruise_ratio': 0.5},   # set at runtime
+        'gcode_move': {'speed_factor': 1.0}}}
+    monkeypatch.setattr(env, 'detect_hardware', lambda kl_, axis, accel=False: hardware(kl_))
+    burst = {}
+
+    def stress_burst(kl_, board, motor, vec, speed, accel, span, check=lambda: None):
+        burst.update(motor=motor, speed=speed, accel=accel)
+    monkeypatch.setattr(env, 'stress_burst', stress_burst)
+    monkeypatch.setattr(env, 'Referee', lambda *a: SimpleNamespace(
+        calibrate=lambda: None, slipped=lambda: 2.0 if skip_at and burst['motor'] == 'x'
+        and burst['accel'] == 10000 and burst['speed'] >= skip_at else 0.0))
+    monkeypatch.setattr(env, 'enter_spreadcycle', lambda kl_, hw, restores=False: None)
+    monkeypatch.setattr(env, 'exit_spreadcycle', lambda kl_, hw: None)
+    monkeypatch.setattr(env, 'STATE', str(tmp_path / 'envelope.json'))
+    env.envelope(kl, build_parser().parse_args(['envelope', '--yes']))
+    with open(tmp_path / 'envelope.json') as state:
+        assert json.load(state)['recommend'].get('untested') == untested
+    out = capsys.readouterr().out
+    assert ('untested above' in out) is bool(untested)
 
 
 def test_find_speed_ends_with_the_motors_off_after_a_thermal_stop(tmp_path, monkeypatch):

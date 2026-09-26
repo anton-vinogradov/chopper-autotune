@@ -4,6 +4,7 @@ was a 'Malformed command' on every printer. The GPL sources are fetched, never
 committed (tests/fetch_klipper_sources.sh); CI sets CHOPPER_CONTRACT=1 so a missing
 download fails instead of skipping."""
 import ast
+import collections
 import configparser
 import fnmatch
 import importlib.util
@@ -15,6 +16,7 @@ import select
 import shutil
 import socket
 import struct
+import subprocess
 import sys
 import tempfile
 import threading
@@ -27,6 +29,8 @@ import fake_klipper
 from klipper_config import CFG, named, read_like_klipper, selfcheck, settings_of
 from chopper_autotune import collect, tmc
 from chopper_autotune.belts import CAPTURE, sweep_chip, sweep_command
+from chopper_autotune.current import BELT_SPEEDS, shaper_freqs, stress_vector
+from chopper_autotune.envelope import STRESS_REPS
 from chopper_autotune.collect import ACCEL_SECTIONS, accel_command_chip, live_stealth, resolve_accel_chip
 from chopper_autotune.klippy import Klippy, KlippyError, fence_markers
 
@@ -910,3 +914,134 @@ def test_beacon_measures_under_the_chip_name_we_send(source, chip, name, options
     if last_word != accel_command_chip(settings, chip):
         with pytest.raises(gcode_module.CommandError, match='not valid for CHIP'):
             dispatch.run_script('ACCELEROMETER_MEASURE CHIP=%s NAME=y' % last_word)
+
+
+RIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'toolhead_rig.py')
+
+
+def rig(source: str, **scenario) -> dict:
+    """The stress strokes through this release's own motion planner (toolhead_rig.py)."""
+    run = subprocess.run([sys.executable, '-W', 'ignore', RIG, os.path.join(SRC, source),
+                          json.dumps(dict({'max_velocity': 500, 'center': 150}, **scenario))],
+                         capture_output=True, text=True)
+    assert run.returncode == 0, run.stderr
+    return json.loads(run.stdout)
+
+
+STROKE_CASES = [
+    # kinematics, motor, accel, span, max_velocity, the envelope's speed ladder
+    ('cartesian', 'x', 3000, 25.0, 500, (150, 200, 250, 300, 350)),
+    ('cartesian', 'x', 1000, 25.0, 500, (150, 200, 250, 300)),
+    ('corexy', 'x', 1500, 25.0, 500, (150, 250, 350)),
+    ('cartesian', 'y', 600, 15.0, 500, (100, 150, 200)),
+    ('cartesian', 'x', 3000, 25.0, 160, (150, 200)),        # max_velocity caps the head
+    ('corexy', 'y', 3000, 25.0, 200, (250, 300)),           # a belt runs sqrt2 times the head
+]
+
+
+def stroke_speeds(rung) -> 'list[float]':
+    return [stroke['speed'] for stroke in rung['strokes']]
+
+
+@pytest.mark.parametrize('source', fetched('toolhead.py'))
+@pytest.mark.parametrize('kinematics, motor, accel, span, max_velocity, speeds', STROKE_CASES)
+def test_every_rung_the_envelope_keeps_is_reached(source, kinematics, motor, accel, span,
+                                                   max_velocity, speeds):
+    # a rung the strokes never reached 'held' and topped the max_velocity advice
+    require(source)
+    from chopper_autotune.current import belt_top
+    from chopper_autotune.envelope import stroke_ladders
+    _, vec, kept, _, _ = stroke_ladders(kinematics, motor, span * 8, speeds, accel, (accel,), 0,
+                                        max_velocity)
+    result = rig(source, tool='envelope', kinematics=kinematics, motor=motor, max_accel=accel,
+                 max_velocity=max_velocity, span=span, rungs=[[speed, accel] for speed in speeds])
+    assert result['freed']['minimum_cruise_ratio'] == 0
+    assert result['restored'] == result['limits']
+    for rung in result['rungs']:
+        strokes = rung['strokes']
+        assert len(strokes) == 2 * STRESS_REPS
+        # every stroke full-length, at the rung's accel: a half one from the center peaks lower
+        assert [stroke['length'] for stroke in strokes] == pytest.approx(
+            [2 * span * math.hypot(*vec)] * len(strokes))
+        assert [stroke['accel'] for stroke in strokes] == pytest.approx([accel] * len(strokes))
+        expected = rung['speed'] if rung['speed'] in kept else belt_top(span, vec, accel, max_velocity)
+        assert stroke_speeds(rung) == pytest.approx([expected] * len(strokes), abs=0.5), rung
+
+
+@pytest.mark.parametrize('source', fetched('toolhead.py'))
+def test_every_accel_rung_the_envelope_keeps_reaches_the_probe_speed(source):
+    require(source)
+    from chopper_autotune.envelope import stroke_ladders
+    accels, probe = (300, 500, 1000, 2000), 150
+    _, _, _, kept, _ = stroke_ladders('cartesian', 'x', 400.0, (150,), 3000, accels, probe, 500)
+    assert kept == (500, 1000, 2000)
+    result = rig(source, tool='envelope', kinematics='cartesian', motor='x', max_accel=3000,
+                 span=25.0, rungs=[[probe, accel] for accel in accels])
+    for rung in result['rungs']:
+        assert [stroke['accel'] for stroke in rung['strokes']] == pytest.approx(
+            [rung['accel']] * len(rung['strokes']))
+        if rung['accel'] in kept:
+            assert stroke_speeds(rung) == pytest.approx([probe] * len(rung['strokes']), abs=0.5)
+        else:
+            assert max(stroke_speeds(rung)) < probe - 0.5
+
+
+@pytest.mark.parametrize('source', fetched('toolhead.py'))
+def test_klipper_brakes_the_strokes_early_unless_freed(source):
+    # the rig sees the reported ceiling: minimum_cruise_ratio 0.5 stops a 50 mm stroke at
+    # 3000 mm/s2 at sqrt(50 * 1500) = 274 mm/s
+    require(source)
+    result = rig(source, tool='envelope', kinematics='cartesian', motor='x', max_accel=3000,
+                 span=25.0, rungs=[[300, 3000]], free=False)
+    assert stroke_speeds(result['rungs'][0]) == pytest.approx([273.9] * 2 * STRESS_REPS, abs=0.1)
+
+
+@pytest.mark.parametrize('source', fetched('toolhead.py'))
+def test_a_speed_factor_left_from_a_print_is_undone_for_the_strokes(source):
+    require(source)
+    freed = rig(source, tool='envelope', kinematics='cartesian', motor='x', max_accel=3000,
+                span=25.0, rungs=[[200, 3000]], before=['M220 S80'])
+    assert (freed['limits']['speed_factor'], freed['freed']['speed_factor'],
+            freed['restored']['speed_factor']) == pytest.approx((0.8, 1.0, 0.8))
+    assert stroke_speeds(freed['rungs'][0]) == pytest.approx([200] * 2 * STRESS_REPS, abs=0.5)
+    left = rig(source, tool='envelope', kinematics='cartesian', motor='x', max_accel=3000,
+               span=25.0, rungs=[[200, 3000]], before=['M220 S80'], free=False)
+    assert stroke_speeds(left['rungs'][0]) == pytest.approx([160] * 2 * STRESS_REPS, abs=0.5)
+
+
+@pytest.mark.parametrize('source', fetched('toolhead.py'))
+@pytest.mark.parametrize('kinematics, accel', [('cartesian', 1000), ('corexy', 500)])
+def test_every_belt_speed_of_the_current_pattern_is_reached(source, kinematics, accel):
+    require(source)
+    result = rig(source, tool='current', kinematics=kinematics, motor='x', max_accel=accel,
+                 accel=accel, span=25.0)
+    assert [rung['speed'] for rung in result['rungs']] == list(BELT_SPEEDS)
+    length = 2 * 25.0 * math.hypot(*stress_vector(kinematics, 'x'))
+    for rung in result['rungs']:
+        strokes = rung['strokes']
+        assert stroke_speeds(rung) == pytest.approx([rung['speed']] * len(strokes), abs=0.5)
+        assert [stroke['length'] for stroke in strokes] == pytest.approx([length] * len(strokes))
+        assert [stroke['accel'] for stroke in strokes] == pytest.approx([accel] * len(strokes))
+
+
+@pytest.mark.parametrize('source', fetched('input_shaper.py'))
+def test_the_input_shaper_frequencies_come_back_as_klipper_reports_them(source):
+    """SET_INPUT_SHAPER without parameters reports each axis; free_strokes reads the
+    frequencies from that report to put them back after the strokes."""
+    require(source)
+    with open(os.path.join(SRC, source, 'input_shaper.py')) as module:
+        tree = ast.parse(module.read())
+    classes = [node for node in tree.body if isinstance(node, ast.ClassDef)
+               and node.name in ('InputShaperParams', 'AxisInputShaper')]
+    namespace = {'collections': collections}
+    exec(compile(ast.Module(body=classes, type_ignores=[]), 'input_shaper.py', 'exec'), namespace)
+    printed = []
+    for axis, freq in (('x', 40.0), ('y', 0.0)):
+        params = namespace['InputShaperParams'].__new__(namespace['InputShaperParams'])
+        params.axis, params.shaper_type, params.shaper_freq, params.damping_ratio = axis, 'mzv', freq, 0.1
+        shaper = namespace['AxisInputShaper'].__new__(namespace['AxisInputShaper'])
+        shaper.axis, shaper.params = axis, params
+        shaper.report(types.SimpleNamespace(respond_info=printed.append))
+    kl = types.SimpleNamespace(gcode_output=lambda script: ['// ' + line for line in printed])
+    assert shaper_freqs(kl) == {'x': '40.000', 'y': '0.000'}
+
