@@ -1123,6 +1123,8 @@ MACRO_LINES = [
     ('CHOPPER_ANALYZE HTML="/home/pi/it\'s.html"', ["HTML=/home/pi/it's.html"]),
     ('CHOPPER_ANALYZE HTML=\'say "hi".html\'', ['HTML=say "hi".html']),
     ('CHOPPER_BELTS MU=', ['MU=']),
+    # a backslash before a quote, and a ';' inside the quotes
+    (r"""CHOPPER_ANALYZE HTML='a\\"b;c\\\\d'""", [r'HTML=a\\"b;c\\\\d']),
     ('CHOPPER_STATUS', []),
 ]
 

@@ -164,3 +164,12 @@ def test_demo_refuses_a_default_the_driver_would_mask(value, problem, capsys):
         build_parser().parse_args(['demo', '--default', value])
     assert problem in capsys.readouterr().err
 
+
+@pytest.mark.parametrize('argv', [['APP=1', 'DATASET=x'], ['S='], ['--app']])
+def test_no_abbreviation_passes_for_apply_or_save(argv):
+    # analyze.sh detaches on APPLY/SAVE spelled out: an abbreviation would run the apply
+    # synchronously, under RUN_SHELL_COMMAND, and hang Klipper's G-code queue
+    parser = build_parser()
+    with pytest.raises(SystemExit):
+        parser.parse_args(_gcode_args(['analyze'] + argv, boolean_flags(parser)))
+

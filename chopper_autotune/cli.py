@@ -326,6 +326,9 @@ def build_parser() -> argparse.ArgumentParser:
     env.add_argument('--socket', default=None)
     env.add_argument('--dry-run', action='store_true')
     env.add_argument('-y', '--yes', action='store_true')
+    for command in sub.choices.values():
+        # APP=1 would pass for --apply here, while analyze.sh detaches on APPLY only
+        command.allow_abbrev = False
     return parser
 
 
