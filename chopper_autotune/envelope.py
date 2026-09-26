@@ -318,13 +318,9 @@ def envelope(kl: Klippy, args) -> int:
                     lambda a: stress_burst(kl, board, m, vec, args.accel_probe_speed, a, span, guard.check)
                     or guard.check() or skips(ref.slipped()),
                     lambda a, sk: report(a, sk, 'mm/s2'))
-            except BaseException:
-                # run_restore swallows a second Stop during the way back: only on the way out
+            finally:
                 run_restore(lambda: kl.gcode('M204 S%.0f' % board.max_accel),
                             lambda mm=m: exit_spreadcycle(kl, hw[mm]))
-                raise
-            kl.gcode('M204 S%.0f' % board.max_accel)   # a Stop here still stops the run
-            exit_spreadcycle(kl, hw[m])
             print(' => speed: %s' % verdict(s_hold, s_skip, 'mm/s'))
             print(' => accel: %s' % verdict(a_hold, a_skip, 'mm/s2'))
             achieved[label] = {'speed': ceiling_label(s_hold, s_skip),

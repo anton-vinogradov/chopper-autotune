@@ -448,8 +448,18 @@ def test_apply_enables_the_motor_before_its_registers(enable_pins, shared, capsy
     mk = FakeMoonraker({}, settings=dict({'stepper_x': {}}, **settings))
     run_apply(mk, 'stepper_x', tmc.Chopper(2, 3, 5, 0))
     assert mk.scripts[0] == 'SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=1'
-    assert all(script.startswith('SET_TMC_FIELD') for script in mk.scripts[1:])
+    assert mk.scripts[1].startswith('SET_TMC_FIELD')
     assert ('no enable pin of its own' in capsys.readouterr().out) is shared
+    # APPLY runs detached: the warning reaches the console too, not just the log
+    assert (mk.scripts[-1].startswith('M118 WARNING: stepper_x has no enable pin')) is shared
+
+
+def test_apply_refuses_while_printing():
+    from chopper_autotune.analyze import run_apply
+    mk = FakeMoonraker({}, printing=True, settings={'stepper_x': {}})
+    with pytest.raises(SystemExit, match='busy printing'):
+        run_apply(mk, 'stepper_x', tmc.Chopper(2, 3, 5, 0))
+    assert mk.scripts == []
 
 
 def test_restore_defaults_resets_both_drivers_of_a_pair():

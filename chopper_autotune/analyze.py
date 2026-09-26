@@ -328,13 +328,20 @@ def run_apply(mk, stepper: str, chopper: tmc.Chopper):
     """Set a combo live (SET_TMC_FIELD), not persisted. The motor goes on first, in a
     request of its own (see collect.wake_stepper): toff written to a motor Klipper counts
     as off energizes it, and Klipper's own enable would then put its config toff back."""
+    if mk.is_printing():
+        raise SystemExit('printer is busy printing, not touching the drivers')
     refuse_twin_write(mk, stepper)
     mk.gcode('SET_STEPPER_ENABLE STEPPER=%s ENABLE=1' % stepper)
     mk.set_tmc_fields(stepper, chopper.fields())
     if shares_enable(mk.settings(), stepper):
-        print('WARNING: %s has no enable pin of its own: at the next motors off and on Klipper '
-              'puts toff back to the config value and keeps the other applied registers; SAVE=1 '
-              'keeps the whole set' % stepper)
+        warning = ('WARNING: %s has no enable pin of its own: at the next motors off and on '
+                   'Klipper puts toff back to the config value and keeps the other applied '
+                   'registers; SAVE=1 keeps the whole set' % stepper)
+        print(warning)
+        try:
+            mk.gcode('M118 ' + warning)             # APPLY runs detached: the log alone is unseen
+        except Exception:
+            pass
 
 
 def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]', extruder_state: 'dict | None' = None):

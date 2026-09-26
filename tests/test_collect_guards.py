@@ -12,9 +12,19 @@ def test_run_restore_runs_every_step(capsys):
     def boom():
         raise SystemExit(143)
 
-    run_restore(lambda: order.append('registers'), boom, lambda: order.append('home'))
-    assert order == ['registers', 'home']
+    # a Stop swallowed on a run's success path still ends the run, after every step
+    with pytest.raises(SystemExit) as stop:
+        run_restore(lambda: order.append('registers'), boom, lambda: order.append('home'))
+    assert order == ['registers', 'home'] and stop.value.code == 143
     assert 'restore step failed' in capsys.readouterr().out
+    # on the way out already, the exception in flight keeps its own cause
+    with pytest.raises(ValueError):
+        try:
+            raise ValueError('the run failed')
+        finally:
+            run_restore(boom)
+    # a refusal (a string exit) of one step is no Stop: the run succeeded
+    run_restore(lambda: (_ for _ in ()).throw(SystemExit('Z not homed')))
 
 
 class FakeKl:
