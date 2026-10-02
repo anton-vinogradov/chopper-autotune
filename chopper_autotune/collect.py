@@ -828,6 +828,19 @@ def run_restore(*steps):
         raise stop
 
 
+def accepted_commands(kl: Klippy) -> 'set[str] | None':
+    """The G-code commands Klipper takes right now (the gcode object's status): an unknown
+    one is no error there, it only prints 'Unknown command', so a channel cannot find out
+    by failing. Without [respond] there is no RESPOND or M118, without [display_status]
+    no M117, and after a shutdown only what runs then (M118 and RESPOND, not M117).
+    None when it cannot be read: then every channel is tried."""
+    try:
+        status = kl.request('objects/query', {'objects': {'gcode': ['commands']}})
+        return set(status['status']['gcode']['commands'])
+    except Exception:
+        return None
+
+
 class Screen:
     """Progress to the display via M117 (display_status -> KlipperScreen / LCD / web
     header) and to the console via a prefixed RESPOND (Mainsail / Fluidd / KlipperScreen
@@ -838,19 +851,22 @@ class Screen:
     panel and swallow touch input (e.g. the Stop button). A non-`echo:` prefix still
     shows in every console but raises no popup.
 
-    The display is only written when display_status exists; the console is attempted
-    regardless and self-disables if the printer has no [respond]. Either channel
-    disables itself on error so a missing one never stops a run.
+    Each channel is used only where Klipper takes its command (accepted_commands), and
+    disables itself on error so a missing one never stops a run. A stage of a longer run
+    (`popup=False`: the speed scan and the register search inside CHOPPER_TUNE) ends in
+    the console without a popup: the motors still have work to do.
     """
 
-    CONSOLE_PREFIX = 'Chopper: '
+    CONSOLE_PREFIX = 'Chopper:'                     # RESPOND puts the space in itself
 
     INTERVAL_SEC = 5.0
 
-    def __init__(self, kl: Klippy, display: bool):
+    def __init__(self, kl: Klippy, display: bool, popup: bool = True):
         self.kl = kl
-        self.display = display
-        self.console = True
+        commands = accepted_commands(kl)
+        self.display = display and (commands is None or 'M117' in commands)
+        self.console = commands is None or 'RESPOND' in commands
+        self.popup = popup and (commands is None or 'M118' in commands)
         self.last = 0.0
 
     def update(self, text: str, force: bool = False):
@@ -862,14 +878,20 @@ class Screen:
         if self.display:
             self.display = self._send('M117 %s' % text)
         if self.console:
-            self.console = self._send('RESPOND PREFIX="%s" MSG="%s"' % (self.CONSOLE_PREFIX, text))
+            self.console = self._send('RESPOND PREFIX="%s" MSG="%s"' % (
+                self.CONSOLE_PREFIX, console_text(text)))
 
     def final(self, text: str):
-        """End-of-run verdict: the status line as usual PLUS a KlipperScreen popup (M118's
-        `echo:` raises one). Popups are banned for progress — mid-run they cover the panel
-        and its Stop button — but a single one is right when the run is over."""
-        self.update(text, force=True)
-        self._send('M118 %s' % text)
+        """End-of-run verdict: the display line PLUS a KlipperScreen popup (M118's `echo:`
+        raises one), which is the console line too. Popups are banned for progress —
+        mid-run they cover the panel and its Stop button — but one is right at the end."""
+        if self.display:
+            self.display = self._send('M117 %s' % text)
+        if self.popup:
+            self._send('M118 %s' % console_safe(text))
+        elif self.console:
+            self.console = self._send('RESPOND PREFIX="%s" MSG="%s"' % (
+                self.CONSOLE_PREFIX, console_text(text)))
 
     def _send(self, command: str) -> bool:
         # the display is a best-effort channel: no failure of it may kill a run
@@ -878,6 +900,18 @@ class Screen:
             return True
         except Exception:
             return False
+
+
+def console_text(text: str) -> str:
+    """A display text as RESPOND's MSG: without the tool's name the prefix already gives,
+    and with no double quote, which would end MSG."""
+    return console_safe(re.sub(r'^Chopper:?\s+', '', text)).replace('"', "'")
+
+
+def console_safe(text: str) -> str:
+    """A console line every console shows: KlipperScreen's reads it as Pango markup and
+    drops a line a '<' or '&' makes invalid."""
+    return text.replace('<', '\u2039').replace('&', 'and')
 
 
 def eta_text(seconds: float) -> str:
@@ -1175,7 +1209,11 @@ def run_grid(kl: Klippy, hw: Hardware, ds: Dataset, args, plan, travel: float, a
             eta = remaining * (time.monotonic() - started) / (ok + failed)
             screen.update('Chopper %d%% %d/%d ETA %s'
                           % (100 * index // len(plan), index, len(plan), eta_text(eta)))
-    screen.final('Chopper grid done: %d ok, %d failed' % (ok, failed))
+    done_text = 'Chopper grid done: %d ok, %d failed' % (ok, failed)
+    if args.validate:
+        screen.update(done_text, force=True)        # the validation still moves the motors
+    else:
+        screen.final(done_text)
     return ok, failed
 
 
@@ -1256,7 +1294,7 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
                               'failed' if score == float('inf') else '%.1f%s' % (score, note)))
         if score != float('inf'):
             # without the bound the counter reads as endless (field: run stopped by hand)
-            screen.update('Chopper %s cand %d of <=%d: %.0f'
+            screen.update('Chopper %s cand %d of max %d: %.0f'
                           % (hw.motor, len(cache), budget, score))
         return score
 
@@ -1320,7 +1358,7 @@ def run_collect(args) -> int:
         kl.close()
 
 
-def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
+def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
     args.source = 'csv' if args.csv else 'stream'
     if args.trim is None:
         args.trim = 0.25 if args.csv else 0.1
@@ -1430,7 +1468,7 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
     park(kl, hw)
     started = time.time()
     before_move = make_parker(kl, hw, guard)
-    screen = Screen(kl, hw.display)
+    screen = Screen(kl, hw.display, popup)
     try:
         measure_baseline(hw, ds, args, done)       # the noise floor: motors still off
         enter_spreadcycle(kl, hw)

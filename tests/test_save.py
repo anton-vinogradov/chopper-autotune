@@ -41,15 +41,19 @@ def test_updated_config_errors():
 
 
 class FakeMoonraker:
-    def __init__(self, files, printing=False, settings=None):
+    def __init__(self, files, printing=False, settings=None, commands=None):
         self.files = dict(files)
         self.printing = printing
         self.config_settings = settings or {}
+        self.commands = commands
         self.uploads = []
         self.scripts = []
 
     def settings(self):
         return self.config_settings
+
+    def accepted_commands(self):
+        return self.commands
 
     def is_printing(self):
         return self.printing
@@ -452,6 +456,28 @@ def test_apply_enables_the_motor_before_its_registers(enable_pins, shared, capsy
     assert ('no enable pin of its own' in capsys.readouterr().out) is shared
     # APPLY runs detached: the warning reaches the console too, not just the log
     assert (mk.scripts[-1].startswith('M118 WARNING: stepper_x has no enable pin')) is shared
+
+
+def test_apply_sends_its_warning_only_where_klipper_takes_m118(capsys):
+    # without [respond] the M118 drew an 'Unknown command' line and a KlipperScreen error
+    from chopper_autotune.analyze import run_apply
+    mk = FakeMoonraker({}, settings={'stepper_x': {}}, commands={'M117', 'SET_TMC_FIELD'})
+    run_apply(mk, 'stepper_x', tmc.Chopper(2, 3, 5, 0))
+    assert 'no enable pin of its own' in capsys.readouterr().out
+    assert not any(script.startswith('M118') for script in mk.scripts)
+
+
+def test_moonraker_reads_the_commands_klipper_takes(monkeypatch):
+    from chopper_autotune.moonraker import Moonraker, MoonrakerError
+    mk = Moonraker('http://x')
+    monkeypatch.setattr(mk, '_request', lambda method, path, params=None: {
+        'status': {'gcode': {'commands': {'M117': {}, 'RESPOND': {}}}}})
+    assert mk.accepted_commands() == {'M117', 'RESPOND'}
+
+    def down(method, path, params=None):
+        raise MoonrakerError('cannot reach Moonraker')
+    monkeypatch.setattr(mk, '_request', down)
+    assert mk.accepted_commands() is None
 
 
 def test_apply_refuses_while_printing():

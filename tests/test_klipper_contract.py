@@ -379,7 +379,7 @@ PARSER_CASES = [
     'ECHO CHOPPER-7-BEGIN',
     'ECHO X=1 # a comment',
     'ECHO A="x',
-    'RESPOND PREFIX="Chopper: " MSG="heating to 200C"',
+    'RESPOND PREFIX="Chopper:" MSG="heating to 200C"',
     'DUMP_TMC STEPPER=stepper_x REGISTER=GCONF',
     'DUMP_TMC stepper_x',
     'SET_TMC_FIELD STEPPER=stepper_x FIELD=toff VALUE=3',
@@ -1140,4 +1140,95 @@ def test_a_macro_line_reaches_the_tool_as_typed(source, line, argv):
     dispatch.run_script(line)
     assert [started[1:] for started in Popen.started] == [argv], (source, console)
     assert not [text for text in console if text.startswith('!!')], console
+
+
+class ConsoleConfig:
+    """[respond] / [display_status] with nothing set: every option at its default."""
+
+    def __init__(self, printer):
+        self.printer = printer
+
+    def get_printer(self):
+        return self.printer
+
+    def getchoice(self, option, choices, default=None):
+        return choices[default]
+
+    def get(self, option, default=None):
+        return default
+
+    def getboolean(self, option, default=None):
+        return default
+
+
+SHUTDOWN_MESSAGE = ("TMC 'stepper_x' reports error: GSTAT: 00000002 drv_err=1(ErrorShutdown!)\n"
+                    'Once the underlying issue is corrected, use the "FIRMWARE_RESTART"\n'
+                    'command to reset the firmware, reload the config, and restart the host software.\n'
+                    'Printer is shutdown')
+
+
+def console_printer(source: str, respond: bool, display: bool, shutdown: bool = False):
+    """This release's own gcode.py with or without its respond.py and display_status.py,
+    ready or shut down; our client's view of it (gcode/script, objects/query of gcode)."""
+    gcode_module = load_gcode(source)
+    printer = Printer()
+    printer.command_error = gcode_module.CommandError
+    dispatch = gcode_module.GCodeDispatch(printer)
+    printer.objects['gcode'] = dispatch
+    console = []
+    dispatch.register_output_handler(console.append)
+    status = None
+    if respond:
+        load_klippy(source, 'respond').load_config(ConsoleConfig(printer))
+    if display:
+        status = load_klippy(source, 'display_status').load_config(ConsoleConfig(printer))
+    printer.send_event('klippy:ready')
+    if shutdown:
+        printer.get_state_message = lambda: (SHUTDOWN_MESSAGE, 'shutdown')
+        printer.send_event('klippy:shutdown')
+    del console[:]
+
+    def gcode(script):
+        try:
+            dispatch.run_script(script)
+        except gcode_module.CommandError as why:     # webhooks answers with an error
+            raise KlippyError('gcode/script failed: %s' % why)
+    kl = types.SimpleNamespace(gcode=gcode, connect=lambda: kl, close=lambda: None,
+                               request=lambda method, params: {'status': {'gcode': {
+                                   'commands': dispatch.get_status(0.)['commands']}}})
+    return kl, console, status
+
+
+@pytest.mark.parametrize('source', fetched('respond.py'))
+@pytest.mark.parametrize('respond, display', [(True, True), (True, False), (False, True),
+                                              (False, False)])
+def test_the_screen_writes_only_where_klipper_takes_it(source, respond, display):
+    # an unknown command is no error in Klipper: without [respond] every update printed
+    # 'Unknown command', and a quote in a text ended RESPOND's MSG
+    require(source)
+    kl, console, status = console_printer(source, respond, display)
+    screen = collect.Screen(kl, True)
+    screen.update('Chopper 42% 17/40 ETA 1:05', force=True)
+    screen.update('WARNING: a "quoted" note (issue #129)', force=True)
+    screen.final('Tune done: A 2/3/5/0 -42%')
+    assert not [line for line in console if 'Unknown command' in line or line.startswith('!!')]
+    # one space after the prefix, no 'Chopper: Chopper', one console line for the verdict
+    assert console == (["Chopper: 42% 17/40 ETA 1:05", "Chopper: WARNING: a 'quoted' note (issue #129)",
+                        'echo: Tune done: A 2/3/5/0 -42%'] if respond else [])
+    if display:
+        assert status.message == 'Tune done: A 2/3/5/0 -42%'
+
+
+@pytest.mark.parametrize('source', fetched('respond.py'))
+def test_a_failure_after_a_shutdown_reaches_the_console_alone(source, monkeypatch):
+    # Klipper in shutdown takes M118, not M117: a refused M117 reprinted the whole state
+    require(source)
+    import chopper_autotune.klippy as klippy_mod
+    from chopper_autotune.cli import announce_failure
+    kl, console, _ = console_printer(source, True, True, shutdown=True)
+    monkeypatch.delenv('CHOPPER_SYNC', raising=False)
+    monkeypatch.setattr(klippy_mod, 'Klippy', lambda path: kl)
+    monkeypatch.setattr(klippy_mod, 'find_socket', lambda explicit=None: '<sock>')
+    announce_failure(types.SimpleNamespace(socket=None), 'tune FAILED: Klipper shut down')
+    assert console == ['echo: tune FAILED: Klipper shut down']
 

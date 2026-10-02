@@ -400,7 +400,7 @@ def envelope(kl: Klippy, args) -> int:
                   % (rec['print_accel'], crisp, rec['limited_by']))
         else:
             print('(no [input_shaper] found — run SHAPER_CALIBRATE for the print-accel guidance)')
-        finale += ' · %s vel<=%d acc<=%dk print<=%.1fk' % (
+        finale += ' · %s max vel %d acc %dk print %.1fk' % (
             'tested' if untested else 'set', rec['max_velocity'], rec['max_accel'] / 1000,
             (rec['print_accel'] or 0) / 1000)
     if finale and note:

@@ -153,6 +153,10 @@ def test_a_failure_reaches_the_console_even_when_the_display_is_refused(monkeypa
                "drv_err=1(ErrorShutdown!)): the run stops here; fix the cause, then FIRMWARE_RESTART")
     announce_failure(type('A', (), {'socket': None})(), message)
     assert sent == ['M118 ' + message, 'M117 ' + message[:120]]
+    # KlipperScreen's console reads the line as Pango markup: a '<' would drop it
+    sent.clear()
+    announce_failure(type('A', (), {'socket': None})(), 'collect FAILED: 3 < 4 & more')
+    assert sent == ['M118 collect FAILED: 3 \u2039 4 and more', 'M117 collect FAILED: 3 < 4 & more']
 
 
 @pytest.mark.parametrize('value, problem', [('2,16,5,0', 'toff out of range'),

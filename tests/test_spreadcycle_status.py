@@ -70,14 +70,14 @@ def test_screen_sends_display_and_console_throttled():
     screen.update('one')
     screen.update('two')                      # throttled away
     screen.update('three', force=True)
-    assert kl.scripts == ['M117 one', 'RESPOND PREFIX="Chopper: " MSG="one"',
-                          'M117 three', 'RESPOND PREFIX="Chopper: " MSG="three"']
+    assert kl.scripts == ['M117 one', 'RESPOND PREFIX="Chopper:" MSG="one"',
+                          'M117 three', 'RESPOND PREFIX="Chopper:" MSG="three"']
 
 
 def test_screen_console_only_without_display():
     kl = FakeKlippy()
     Screen(kl, display=False).update('go', force=True)
-    assert kl.scripts == ['RESPOND PREFIX="Chopper: " MSG="go"']
+    assert kl.scripts == ['RESPOND PREFIX="Chopper:" MSG="go"']
 
 
 def test_screen_channels_self_disable_on_error():
@@ -257,3 +257,48 @@ def test_an_unreadable_mode_falls_back_to_the_autotune_goal():
         hw = SimpleNamespace(driver=driver, stepper=stepper, stealth=configured, autotune=goal)
         resolve_stealth(kl, hw)
         assert hw.stealth == expected, (goal, stepper)
+
+
+def test_screen_uses_only_the_commands_klipper_takes():
+    # an unknown command is no error: without [respond] every update printed 'Unknown command'
+    from types import SimpleNamespace
+
+    from chopper_autotune.collect import Screen
+    for commands, sent in (({'M117'}, ['M117 a', 'M117 b']),
+                           ({'RESPOND'}, ['RESPOND PREFIX="Chopper:" MSG="a"',
+                                          'RESPOND PREFIX="Chopper:" MSG="b"']),
+                           (set(), [])):
+        scripts = []
+        kl = SimpleNamespace(gcode=scripts.append, request=lambda method, params, c=commands: {
+            'status': {'gcode': {'commands': {name: {} for name in c}}}})
+        screen = Screen(kl, True)
+        screen.update('a', force=True)
+        screen.final('b')                           # no M118 there: the console line instead
+        assert scripts == sent
+
+
+def test_a_stage_of_a_longer_run_ends_without_a_popup():
+    from types import SimpleNamespace
+
+    from chopper_autotune.collect import Screen
+    scripts = []
+    kl = SimpleNamespace(gcode=scripts.append, request=lambda method, params: {
+        'status': {'gcode': {'commands': {'M117': {}, 'M118': {}, 'RESPOND': {}}}}})
+    Screen(kl, True, popup=False).final('Chopper: resonance 58 mm/s')
+    assert scripts == ['M117 Chopper: resonance 58 mm/s',
+                       'RESPOND PREFIX="Chopper:" MSG="resonance 58 mm/s"']
+
+
+def test_console_lines_stay_valid_markup():
+    # KlipperScreen's console reads a line as Pango markup and drops one a '<' breaks
+    from types import SimpleNamespace
+
+    from chopper_autotune.collect import Screen
+    for commands, line in (({'RESPOND'}, 'RESPOND PREFIX="Chopper:" MSG="cand 1 \u2039 9 and \'x\'"'),
+                           ({'M118'}, 'M118 Chopper: cand 1 \u2039 9 and "x"')):
+        scripts = []
+        kl = SimpleNamespace(gcode=scripts.append, request=lambda method, params, c=commands: {
+            'status': {'gcode': {'commands': {name: {} for name in c}}}})
+        Screen(kl, False).final('Chopper: cand 1 < 9 & "x"')
+        assert scripts == [line]
+

@@ -99,7 +99,7 @@ def run_tune(args) -> int:
             print('=== Motor %s ===' % motor_label(axis))
             speed = args.speed
             if speed is None:
-                code, recommended = scan(kl, scan_args(args, axis))
+                code, recommended = scan(kl, scan_args(args, axis), popup=False)
                 worst = max(worst, code)
                 if args.dry_run:
                     print('(descent plan below assumes SPEED=%d until the scan runs)'
@@ -109,7 +109,7 @@ def run_tune(args) -> int:
                     raise SystemExit('no clear resonance peak on motor %s; tune it manually '
                                      'via CHOPPER_FIND_SPEED + CHOPPER_COLLECT' % motor_label(axis))
                 speed = Range(recommended, recommended)
-            code, root = collect(kl, collect_args(args, axis, speed, seed_root))
+            code, root = collect(kl, collect_args(args, axis, speed, seed_root), popup=False)
             worst = max(worst, code)
             if root:
                 winners.append(winner_of(root, args.audible_weight))
