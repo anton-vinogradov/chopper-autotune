@@ -97,7 +97,8 @@ def test_the_self_check_runs_at_every_start():
     fileconfig = read_like_klipper(CFG)
     section = 'delayed_gcode chopper_autotune_selfcheck'
     assert float(fileconfig.get(section, 'initial_duration')) > 0     # 0 never runs
-    assert fileconfig.get(section, 'gcode').strip() == '_CHOPPER_SELFCHECK'
+    # the check itself, not a macro it calls: the console got a nested macro's error twice
+    assert '_CHOPPER_REPLACED NAMES=' in fileconfig.get(section, 'gcode')
 
 
 class Label:

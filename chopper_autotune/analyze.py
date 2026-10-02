@@ -85,12 +85,13 @@ def rank(aggregates: 'list[dict]', driver: tmc.Driver, hearing: tmc.Hearing) -> 
 
 
 def print_table(ranked: 'list[dict]', top: int):
-    print('%4s %4s %5s %6s %5s %5s %10s %8s %3s %6s %7s %s'
+    # rank flush left: Klipper's console strips the leading spaces of every line
+    print('%-4s %4s %5s %6s %5s %5s %10s %8s %3s %6s %8s %s'
           % ('rank', 'tbl', 'toff', 'hstrt', 'hend', 'tpfd', 'magnitude', 'spread', 'n',
              'clicks', 'f_chop', ''))
     for position, a in enumerate(ranked[:top], 1):
         c = a['chopper']
-        print('%4d %4d %5d %6d %5d %5s %10.1f %8.1f %3d %6d %5.1fkHz %s'
+        print('%-4d %4d %5d %6d %5d %5s %10.1f %8.1f %3d %6d %5.1fkHz %s'
               % (position, c.tbl, c.toff, c.hstrt, c.hend,
                  c.tpfd if c.tpfd is not None else '-',
                  a['magnitude'], a['spread'], a['n'], a.get('clicks', 0),
