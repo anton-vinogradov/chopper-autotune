@@ -213,7 +213,7 @@ because there is nothing to gain.
 **Jul 8 — the blind spot.** That flatness (also the rule at 1.0 A generally)
 means the tuner's vibration objective is nearly flat, so the descent had picked
 motor A's `0/8/3/15` — effective hysteresis 16 (the datasheet edge) and 21 kHz
-(barely ultrasonic) — essentially at random. It does not click, but it is exactly
+by the estimate of the day — essentially at random. It does not click, but it is exactly
 the edge our own practical rules say to avoid.
 
 **Jul 8 — the fix, automatic (not a user choice).** `tmc.edge_penalty()` adds a
@@ -221,7 +221,9 @@ small tie-breaker toward safe configs: a chopper frequency comfortably above the
 audible band, and interior hysteresis. Weighted ≤10 %, so any real vibration win
 overrides it; it only decides when the field is flat. The re-tune then moved
 motor A off the edge on its own — `0/8/3/15` (h16, 21 kHz) → `0/2/4/7` (h9,
-65 kHz); motor B stayed at its already-interior `1/6/4/0` (PR #53).
+65 kHz); motor B stayed at its already-interior `1/6/4/0` (PR #53). These are the
+estimates of the day, 12 + 32·TOFF clocks per slow decay; by the datasheets'
+24 + 32·TOFF they are upper bounds of 20.3 and 57.7 kHz ([#157](https://github.com/anton-vinogradov/chopper-autotune/issues/157)).
 
 **Jul 8 — the motion envelope [measured].** A skip-threshold sweep in speed and
 acceleration (the same endstop referee, at the saved 1.0 A) found **no skip on

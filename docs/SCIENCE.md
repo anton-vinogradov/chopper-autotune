@@ -47,12 +47,12 @@ One spreadCycle chopper cycle **[datasheet]**:
   the low-frequency shake that causes ringing in prints and tracks motor losses.
   The ear peaks at 2–5 kHz, a band the sensor is blind to — hence
   “vibration ≠ perceived loudness” (see the scoring caveat in the README) **[measured]**.
-- The chopper itself (20–80 kHz) is far beyond the sensor; its frequency is
+- The chopper itself (tens of kHz) is far beyond the sensor; its frequency is
   *computed* from the registers instead and penalised when audible. The computed
   value is an upper bound: it takes the on phase and the fast decay at their shortest,
   one blank time each, and on a real motor both last longer, the more so the higher
   the hysteresis. A TMC2209 still whined at 26.8 kHz of the estimate ([#157](https://github.com/anton-vinogradov/chopper-autotune/issues/157)). The
-  audible limit is therefore a setting (`AUDIBLE_KHZ`, 20 kHz by default).
+  audible limit is therefore a setting (`AUDIBLE_KHZ`, 30 kHz by default).
 - Per-move score = **median** magnitude: robust against sample noise, but
   **blind to rare transients** — a config can win the median while producing
   audible clicks (see below) **[measured]**.

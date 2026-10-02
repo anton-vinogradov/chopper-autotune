@@ -467,7 +467,7 @@ def run_save_latest(args) -> int:
     the motors were tuned separately (Tune A, Tune B) or together (Tune both)."""
     from .collect import autotune_goal, autotune_refusal, measured_under_autotune, motor_label, rail_twins
     from .extruder import load_winner_state
-    from .tune import winner_of
+    from .tune import NothingInaudible, winner_of
     mk = Moonraker(args.url)
     seen, items, skipped, settings = set(), [], [], None
     for path in reversed(dataset_dirs()):
@@ -490,6 +490,11 @@ def run_save_latest(args) -> int:
                 continue
             try:
                 manifest, combo = winner_of(str(path), args)
+            except NothingInaudible as reason:
+                seen.add(axis)
+                skipped.append(str(reason))
+                print('motor %s: NOT saving %s: %s' % (motor_label(axis), Path(path).name, reason))
+                continue
             except SystemExit as reason:
                 # an aborted-at-start dataset has no measurements — fall back to an
                 # older complete one instead of blocking Save entirely
@@ -517,6 +522,8 @@ def run_save_latest(args) -> int:
         extruder_skip = autotune_refusal(extruder_state['driver'], 'extruder', settings)
     elif extruder_state and extruder_state.get('autotune'):
         extruder_skip = measured_under_autotune(extruder_state['driver'], 'extruder')
+    elif extruder_state:
+        extruder_skip = inaudible_refusal(extruder_state, tmc.Hearing.of(args))
     if extruder_skip:
         skipped.append(extruder_skip)
         print('extruder: NOT saving the stored winner: %s' % extruder_skip)
@@ -528,6 +535,14 @@ def run_save_latest(args) -> int:
         raise SystemExit(skipped[0] if skipped else 'no tuning datasets to save — run CHOPPER_TUNE first')
     run_save(mk, items, extruder_state)
     return 0
+
+
+def inaudible_refusal(state: dict, hearing: tmc.Hearing) -> 'str | None':
+    """Why a stored extruder winner the hearing skips is not saved, or None."""
+    if hearing.skips(tmc.Chopper(**state['fields']), tmc.DRIVERS[state['driver']]):
+        return ('it runs below %g kHz (SKIP_AUDIBLE): re-run CHOPPER_EXTRUDER with this '
+                'AUDIBLE_KHZ' % (hearing.limit_hz / 1000))
+    return None
 
 
 def spearman(xs: 'list[float]', ys: 'list[float]') -> float:

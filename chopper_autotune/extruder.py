@@ -232,9 +232,12 @@ def extruder_tune(kl: Klippy, args) -> int:
         state = load_winner_state()
         if not state:
             raise SystemExit('no stored extruder winner — run CHOPPER_EXTRUDER first')
-        from .analyze import _persist, refuse_unloadable, updated_config
+        from .analyze import _persist, inaudible_refusal, refuse_unloadable, updated_config
         from .moonraker import Moonraker
         refuse_unloadable(state['driver'], 'extruder', state['fields'])
+        why = inaudible_refusal(state, tmc.Hearing.of(args))
+        if why:
+            raise SystemExit('the stored extruder winner %s: %s' % (state['fields'], why))
         refuse_autotune_save(kl.settings(), state['driver'], 'extruder')
         if state.get('autotune'):
             raise SystemExit(measured_under_autotune(state['driver'], 'extruder'))

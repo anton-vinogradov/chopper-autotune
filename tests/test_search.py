@@ -98,7 +98,7 @@ def test_simulate_on_synthetic_grid(tmp_path, capsys):
 
 def test_seed_start_picks_penalized_best_and_adapts_tpfd(tmp_path):
     ds = Dataset.create(tmp_path / 'seed', {})
-    quiet = {'tbl': 0, 'toff': 8, 'hstrt': 7, 'hend': 5, 'tpfd': 4}     # 20.3 kHz
+    quiet = {'tbl': 0, 'toff': 4, 'hstrt': 7, 'hend': 5, 'tpfd': 4}     # 35.7 kHz
     whiny = {'tbl': 3, 'toff': 8, 'hstrt': 7, 'hend': 5, 'tpfd': 4}     # 18.8 kHz, audible
     for name, fields, magnitude in (('a', quiet, 1000.0), ('b', whiny, 900.0)):
         ds.append({'id': name, 'kind': 'move', 'status': 'ok', **fields,
@@ -106,7 +106,7 @@ def test_seed_start_picks_penalized_best_and_adapts_tpfd(tmp_path):
 
     # audible 900 * 1.5 loses to quiet 1000; tpfd stripped for a driver without it
     best = seed_start(ds, DRIVER, tmc.Hearing(weight=0.5))
-    assert best == tmc.Chopper(0, 8, 7, 5)
+    assert best == tmc.Chopper(0, 4, 7, 5)
     # for a TPFD-capable driver the seed keeps tpfd, and a small weight flips the winner
     best5160 = seed_start(ds, tmc.DRIVERS['5160'], tmc.Hearing(weight=0.05))
     assert best5160 == tmc.Chopper(3, 8, 7, 5, tpfd=4)
@@ -198,8 +198,8 @@ def test_edge_tiebreaker_prefers_safe_when_vibration_ties():
         penalized_score(edge, [891.0], DRIVER, tmc.Hearing())      # safe wins despite being louder
 
     # same total hysteresis, higher chopper frequency wins the tie
-    low_freq = tmc.Chopper(0, 8, 6, 12)      # h16, 20 kHz
-    high_freq = tmc.Chopper(0, 6, 6, 12)     # h16, 26 kHz
+    low_freq = tmc.Chopper(0, 5, 6, 12)      # h16, 30 kHz
+    high_freq = tmc.Chopper(0, 4, 6, 12)     # h16, 36 kHz
     assert penalized_score(high_freq, [890.0], DRIVER, tmc.Hearing()) < \
         penalized_score(low_freq, [884.0], DRIVER, tmc.Hearing())
 

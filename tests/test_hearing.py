@@ -85,8 +85,8 @@ def test_a_limit_no_combo_of_the_ranges_reaches_is_refused():
 
 def test_the_caution_band_starts_at_the_limit():
     quiet = tmc.Chopper(3, 4, 0, 0)                 # 31.3 kHz
-    assert tmc.edge_penalty(quiet, DRIVER, tmc.Hearing()) == 0
-    assert tmc.edge_penalty(quiet, DRIVER, tmc.Hearing(limit_hz=30000)) > 0
+    assert tmc.edge_penalty(quiet, DRIVER, tmc.Hearing(limit_hz=20000)) == 0
+    assert tmc.edge_penalty(quiet, DRIVER, tmc.Hearing()) > 0
 
 
 def test_the_command_line_hears_first_then_the_dataset_then_the_defaults():
@@ -95,8 +95,18 @@ def test_the_command_line_hears_first_then_the_dataset_then_the_defaults():
     recorded = tmc.Hearing(31000, 1.0, True).manifest_fields()
     assert tmc.Hearing.of(line(), recorded) == tmc.Hearing(31000, 1.0, True)
     assert tmc.Hearing.of(line(khz=25.0, skip=False), recorded) == tmc.Hearing(25000, 1.0, False)
-    assert tmc.Hearing.of(line(weight=0.5, skip=True)) == tmc.Hearing(20000, 0.5, True)
+    assert tmc.Hearing.of(line(weight=0.5, skip=True)) == tmc.Hearing(30000, 0.5, True)
     assert tmc.Hearing.of(line()) == tmc.Hearing()
+    # a dataset from before the limit was recorded was heard at 20 kHz
+    assert tmc.Hearing.of(line(), {'audible_weight': 0.25, 'skip_audible': True}) \
+        == tmc.Hearing(20000, 0.25, True)
+
+
+def test_the_default_limit_penalizes_the_whine_of_157():
+    # 30 kHz of the estimate: 3/5/0/0 (26.8 kHz, a whine) is penalized, 3/4/0/0 (31.3) not
+    hearing = tmc.Hearing()
+    assert hearing.audible(tmc.Chopper(3, 5, 0, 0), DRIVER)
+    assert not hearing.audible(tmc.Chopper(3, 4, 0, 0), DRIVER)
 
 
 @pytest.mark.parametrize('flag, value', [('--audible-khz', '0'), ('--audible-khz', '-5'),
@@ -241,3 +251,50 @@ def test_a_recorded_winner_the_hearing_skips_is_neither_recommended_nor_saved(tm
     _, winner = tune.winner_of(str(ds.root), build_parser().parse_args(['save', *told]))
     assert winner == tmc.Chopper(3, 4, 0, 0)
     assert tune.winner_of(str(ds.root))[1] == tmc.Chopper(3, 7, 0, 0)
+
+
+def save_latest(monkeypatch, tmp_path, argv, extruder_state=None):
+    """CHOPPER_SAVE over the datasets in tmp_path; what it hands run_save, or None."""
+    from types import SimpleNamespace
+
+    from chopper_autotune import analyze
+    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: sorted(tmp_path.iterdir()))
+    monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: extruder_state)
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: SimpleNamespace(settings=lambda: {}))
+    saved = {}
+    monkeypatch.setattr(analyze, 'run_save', lambda mk, items, extruder_state=None: saved.update(
+        items=items, extruder=extruder_state))
+    analyze.run_save_latest(build_parser().parse_args(['save', *argv]))
+    return saved
+
+
+def motor_dataset(root, winner: tmc.Chopper, measured: 'list[tmc.Chopper]'):
+    ds = Dataset.create(root, {'axis': 'x', 'search': 'descent', 'driver': '2209',
+                               'stepper': 'stepper_x', 'trim': 0.1, 'winner': winner.fields()})
+    for index, combo in enumerate(measured):
+        ds.append({'id': str(index), 'kind': 'move', 'status': 'ok', **combo.fields(),
+                   'score': {'median_magnitude': 1000.0}})
+
+
+def test_save_never_falls_back_to_an_older_run_when_the_hearing_skips_the_newest(
+        monkeypatch, tmp_path, capsys):
+    # the newest run measured only below 31 kHz: an older run is no answer to that
+    motor_dataset(tmp_path / '01_old', tmc.Chopper(0, 2, 4, 7), [tmc.Chopper(0, 2, 4, 7)])
+    motor_dataset(tmp_path / '02_new', tmc.Chopper(3, 5, 0, 0),
+                  [tmc.Chopper(3, toff, 0, 0) for toff in range(5, 9)])
+    with pytest.raises(SystemExit, match=r'02_new runs at 31 kHz or above \(SKIP_AUDIBLE\)'):
+        save_latest(monkeypatch, tmp_path, ['--audible-khz', '31', '--skip-audible'])
+    out = capsys.readouterr().out
+    assert 'NOT saving 02_new' in out and '01_old' not in out
+
+
+def test_save_and_save_last_keep_an_extruder_winner_the_hearing_skips(monkeypatch, tmp_path):
+    from chopper_autotune import extruder
+    whining = {'driver': '2209', 'fields': {'tbl': 3, 'toff': 7, 'hstrt': 0, 'hend': 0}}
+    assert save_latest(monkeypatch, tmp_path, [], whining)['extruder'] == whining
+    with pytest.raises(SystemExit, match=r'runs below 30 kHz \(SKIP_AUDIBLE\)'):
+        save_latest(monkeypatch, tmp_path, ['--skip-audible'], whining)
+    monkeypatch.setattr(extruder, 'load_winner_state', lambda: whining)
+    with pytest.raises(SystemExit, match=r'stored extruder winner .* runs below 30 kHz'):
+        extruder.extruder_tune(None, build_parser().parse_args(['extruder', '--save-last',
+                                                                '--skip-audible']))

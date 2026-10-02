@@ -57,9 +57,9 @@ Besides the default full-grid sweep, `--search descent` (`SEARCH=descent`) runs 
 
 The accelerometer cannot hear the chopper (ADXL345 samples at 3.2 kHz), but the chopper frequency is *computable* from the registers and the driver clock. That makes the classic "low vibration but nasty audible whine" trade-off automatic: a candidate whose chopper frequency is below the audible limit gets a penalty (`AUDIBLE_WEIGHT`, 25% by default), and with `SKIP_AUDIBLE=1` it is never tried or recommended.
 
-The frequency is an upper bound. A spreadCycle cycle has two slow decays, an on phase and a fast decay. The estimate counts the slow decays in full (24 + 32·`TOFF` clocks each by the datasheets, 12 + 32·`TOFF` on a TMC2660), but the on phase and the fast decay only at their shortest, one blank time each. On a real motor both last longer, the more so the higher the hysteresis, so the real chopper runs lower: the datasheets put the slow decays at 30–70% of the cycle. The default limit, 20 kHz of the estimate, therefore catches only the worst whines. If the winner whines for you, raise the limit (`AUDIBLE_KHZ`) and skip what is below it. In [#157](https://github.com/anton-vinogradov/chopper-autotune/issues/157), a TMC2209 with 17HS16-2004S1 motors still whined at 26.8 kHz of the estimate and was quiet at 31.3 kHz: `CHOPPER_TUNE AUDIBLE_KHZ=31 SKIP_AUDIBLE=1` tunes such a printer. That limit was found with `HSTRT` and `HEND` at 0, and a winner with more hysteresis runs lower, so listen to the winner too. A penalty alone is not enough there: the quiet combo measured 30% more vibration than the whining one, and the penalty adds only 25%.
+The frequency is an upper bound. A spreadCycle cycle has two slow decays, an on phase and a fast decay. The estimate counts the slow decays in full (24 + 32·`TOFF` clocks each by the datasheets, 12 + 32·`TOFF` on a TMC2660), but the on phase and the fast decay only at their shortest, one blank time each. On a real motor both last longer, the more so the higher the hysteresis, so the real chopper runs lower: the datasheets put the slow decays at 30–70% of the cycle. The default limit is 30 kHz of the estimate. It comes from [#157](https://github.com/anton-vinogradov/chopper-autotune/issues/157): a TMC2209 with 17HS16-2004S1 motors still whined at 26.8 kHz of the estimate and was quiet at 31.3 kHz. Below the limit a combo only gets the penalty, and one that measures enough less vibration still wins: in #157 the quiet combo measured 30% more vibration than the whining one, and the penalty adds only 25%. If the winner whines for you, skip what is below the limit (`SKIP_AUDIBLE=1`) and raise the limit if you need to: `CHOPPER_TUNE AUDIBLE_KHZ=31 SKIP_AUDIBLE=1` tunes the printer of #157. That limit was found with `HSTRT` and `HEND` at 0, and a winner with more hysteresis runs lower, so listen to the winner too.
 
-**It optimises vibration, not perceived loudness.** Sampling at 3.2 kHz, the accelerometer only sees vibration up to ~1.6 kHz — the low-frequency growl/resonance that causes ringing in prints, shakes the frame and tracks motor efficiency and heat. Your ear hears much higher (peak sensitivity ~2–5 kHz), a band the sensor is blind to. So "−N% vibration" means less *measured* low-frequency vibration; it usually but not always sounds quieter — a config can shake the toolhead less yet emit a higher-pitched hiss the ear reads as louder (not the chopper's whine: that one is the chopper frequency's matter, above). Optimising true acoustic loudness would need a microphone.
+**It optimises vibration, not perceived loudness.** Sampling at 3.2 kHz, the accelerometer only sees vibration up to ~1.6 kHz — the low-frequency growl/resonance that causes ringing in prints, shakes the frame and tracks motor efficiency and heat. Your ear hears much higher (peak sensitivity ~2–5 kHz), a band the sensor is blind to. So "−N% vibration" means less *measured* low-frequency vibration; it usually but not always sounds quieter — a config can shake the toolhead less yet emit a higher-pitched hiss the ear reads as louder (not the chopper's whine: the chopper frequency above covers that). Optimising true acoustic loudness would need a microphone.
 
 **It refuses clicky winners.** The per-move median is blind to rare transients: a config can win the median while audibly clicking (measured — the datasheet-edge winner clicked ~2× per one-second move at ~65× the median). Every capture therefore also counts clicks over the whole move, with a hardware-calibrated threshold (15× the move median: real clicks measure 22–69×, threshold noise stays under ~13×), and one click per move costs as much as doubling the vibration.
 
@@ -220,7 +220,7 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 | `SPEED` | auto | skip the resonance scan and tune at this speed (mm/s) |
 | `SAVE` | `0` | write the winners into the Klipper config (backup first) and restart |
 | `ITERATIONS` | `1` | repeats per candidate — raise on noisy mechanics |
-| `AUDIBLE_KHZ` | `20` | estimated chopper frequency, kHz, below which a combo counts as audible; raise it if the winner still whines ([why](#datasheet-driven-scoring-not-just-measurement)) |
+| `AUDIBLE_KHZ` | `30` | estimated chopper frequency, kHz, below which a combo counts as audible; raise it if the winner still whines ([why](#datasheet-driven-scoring-not-just-measurement)) |
 | `AUDIBLE_WEIGHT` | `0.25` | score penalty for an audible combo |
 | `SKIP_AUDIBLE` | `0` | never try or recommend an audible combo, instead of just penalizing it |
 | `DRY_RUN` | `0` | print the plan and ETA, do not move anything |
@@ -247,7 +247,7 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 | `TBL` / `TOFF` / `HSTRT` / `HEND` | `0:3` / `1:8` / `0:7` / `0:15` | register ranges (`lo:hi` or a single value) |
 | `TPFD` | off | TPFD range, TMC2240/5160 only |
 | `SEED_FROM` | — | start the descent from another dataset's winner (fast second motor) |
-| `AUDIBLE_KHZ` / `AUDIBLE_WEIGHT` / `SKIP_AUDIBLE` | `20` / `0.25` / `0` | the audible limit, its penalty, and skipping instead, as in `CHOPPER_TUNE` |
+| `AUDIBLE_KHZ` / `AUDIBLE_WEIGHT` / `SKIP_AUDIBLE` | `30` / `0.25` / `0` | the audible limit, its penalty, and skipping instead, as in `CHOPPER_TUNE` |
 | `ITERATIONS` | `1` | repeats per combination |
 | `VALIDATE` | `3` | re-measure top N candidates with extra runs before recommending (`0` = off) |
 | `MEASURE_TIME` | `1.25` | cruise seconds per move |
@@ -315,7 +315,7 @@ Python 3.9+ on the printer host. The klippy API socket for orchestration and sam
 - [x] Two-run design: `collect` (hardware, resumable dataset) / `analyze` (offline, replayable)
 - [x] Measurement primitive over the klippy API socket (registers → `FORCE_MOVE` → streamed samples)
 - [x] Grid sweep with datasheet constraints, TPFD included on TMC2240/5160
-- [x] Chopper-frequency model (an upper bound) and audible-range penalty, the limit the user's
+- [x] Chopper-frequency model (an upper bound) and audible-range penalty, with a user-set limit
 - [x] Web-console macros (`CHOPPER_COLLECT`/`CHOPPER_ANALYZE`), installer, Moonraker update_manager
 - [x] Streaming capture with exact cruise-phase slicing (`--csv` fallback)
 - [x] Hardware validation on a real printer (CoreXY, TMC2209, ADXL345: streaming and CSV paths agree)

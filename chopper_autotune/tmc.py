@@ -8,7 +8,10 @@ from typing import Optional
 BLANK_TIME_CLOCKS = (16, 24, 36, 54)
 # TMC2208/2209 use a different blank-time table than the rest of the family
 BLANK_TIME_CLOCKS_220X = (16, 24, 32, 40)
-AUDIBLE_LIMIT_HZ = 20000.0
+# of the estimate, an upper bound: in #157 a whine stopped between 26.8 and 31.3 kHz
+AUDIBLE_LIMIT_HZ = 30000.0
+# what every run heard with before the limit was recorded (#157)
+RECORDED_LIMIT_BEFORE_HZ = 20000.0
 AUDIBLE_WEIGHT = 0.25
 # from the audible limit up to this multiple of it the chopper is ultrasonic but with
 # little margin; a config is nudged toward more headroom when nothing else distinguishes it
@@ -159,11 +162,12 @@ class Hearing:
         """From the command line; what it leaves out comes from the run that recorded
         a dataset (`recorded`, its manifest), then from the defaults."""
         recorded = recorded or {}
+        limit = RECORDED_LIMIT_BEFORE_HZ if recorded else AUDIBLE_LIMIT_HZ
 
         def pick(name: str, default):
             value = getattr(args, name, None)
             return value if value is not None else recorded.get(name, default)
-        return cls(pick('audible_khz', AUDIBLE_LIMIT_HZ / 1000) * 1000,
+        return cls(pick('audible_khz', limit / 1000) * 1000,
                    pick('audible_weight', AUDIBLE_WEIGHT), bool(pick('skip_audible', False)))
 
     def audible(self, c: Chopper, driver: Driver) -> bool:

@@ -51,6 +51,11 @@ def collect_args(args, axis: str, speed: Range, seed_from: 'str | None'):
     return sub_args(args, argv)
 
 
+class NothingInaudible(SystemExit):
+    """A dataset with measurements, every one of which the hearing skips: an older
+    dataset of the motor is no answer to it."""
+
+
 def winner_of(root: str, args=None) -> 'tuple[dict, tmc.Chopper]':
     """The motor's result in a dataset: the winner its run recorded, unless the hearing
     (the command line's, then the run's) skips it; else a re-rank with that hearing."""
@@ -67,7 +72,12 @@ def winner_of(root: str, args=None) -> 'tuple[dict, tmc.Chopper]':
                              saved.get('tpfd'))
         if tmc.validate(winner, driver) is None and not hearing.skips(winner, driver):
             return manifest, winner
-    ranked = rank(aggregate(ds, False, manifest.get('trim') or 0.1), driver, hearing)
+    aggregates = aggregate(ds, False, manifest.get('trim') or 0.1)
+    ranked = rank(aggregates, driver, hearing)
+    if not ranked and aggregates and hearing.skip:
+        raise NothingInaudible('nothing measured in %s runs at %g kHz or above (SKIP_AUDIBLE): '
+                               're-run CHOPPER_TUNE with this AUDIBLE_KHZ'
+                               % (root, hearing.limit_hz / 1000))
     if not ranked:
         raise SystemExit('no successful measurements in %s' % root)
     return manifest, ranked[0]['chopper']
