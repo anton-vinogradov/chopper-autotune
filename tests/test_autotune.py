@@ -76,11 +76,12 @@ def test_a_live_spreadcycle_is_autotunes_doing_not_a_killed_run():
 def test_a_dataset_resumes_only_under_the_same_autotune_state():
     manifest = {'speeds': [58], 'accel': 1000.0, 'measure_time': 1.25, 'autotune': 'performance'}
     check_resume(manifest, [58], 1000.0, 1.25, 'performance')
-    # the action first, within the display's 120 characters; 'off' instead of None
+    # the action first, within what the display shows; 'off' instead of None
+    from chopper_autotune.collect import failure_display
     with pytest.raises(SystemExit) as refused:
         check_resume(manifest, [58], 1000.0, 1.25, None)
-    shown = ('collect FAILED: %s' % refused.value.code)[:120]
-    assert shown.startswith('collect FAILED: refusing to resume: klipper_tmc_autotune was '
+    shown = failure_display('collect FAILED: %s' % refused.value.code)
+    assert shown.startswith('FAIL refusing to resume: klipper_tmc_autotune was '
                             'performance, now off; start a new dataset')
     with pytest.raises(SystemExit, match='was off, now auto'):
         check_resume(dict(manifest, autotune=None), [58], 1000.0, 1.25, 'auto')
@@ -158,7 +159,7 @@ def test_the_recommendation_header_follows_autotune(tmp_path, monkeypatch, capsy
         ds.append({'id': 'a_%d' % direction, 'kind': 'move', 'status': 'ok',
                    **tmc.Chopper(0, 2, 4, 7).fields(), 'tpfd': None,
                    'score': {'median_magnitude': 1000.0, 'clicks': 0}})
-    hw = SimpleNamespace(driver=tmc.DRIVERS[driver], stepper='stepper_x', autotune=autotune)
+    hw = SimpleNamespace(driver=tmc.DRIVERS[driver], stepper='stepper_x', autotune=autotune, motor='A')
     report_winner(hw, ds, SimpleNamespace(trim=0.1, audible_weight=0.25),
-                  SimpleNamespace(final=lambda text: None), top=5)
+                  SimpleNamespace(final=lambda text, short=None: None), top=5)
     assert header in capsys.readouterr().out

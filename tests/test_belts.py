@@ -354,7 +354,7 @@ def sweep_run(monkeypatch, tmp_path, tester, dry_run=False, sections=(), console
     settings = dict({section.lower(): {} for section in sections},
                     resonance_tester=dict(tester, probe_points=[[100, 100, 20]]))
     hw = SimpleNamespace(kinematics='limited_corexy', accel_chip=resolve_accel_chip(settings, 'x'),
-                         display=False)
+                         display=True)
     scripts = []
     kl = SimpleNamespace(settings=lambda: settings, homed_axes=lambda: 'xyz', gcode=scripts.append,
                          gcode_output=lambda script: scripts.append(script) or replies(console),
@@ -453,7 +453,7 @@ def pluck_session(monkeypatch, home=None, hot_at=None):
                          subscribe_accel=lambda chip: None, print_time=lambda: 10.0,
                          wait_for_sample=lambda t: None,
                          samples_between=lambda a, b: [[a + i * 0.001, 0, 0, 0] for i in range(6000)])
-    hw = SimpleNamespace(kl=kl, center=(150.0, 150.0), display=False, accel_chip='adxl345')
+    hw = SimpleNamespace(kl=kl, center=(150.0, 150.0), display=True, accel_chip='adxl345')
     dwells = lambda: [i for i, e in enumerate(events) if isinstance(e, str) and re.match(r'G4 P\d+', e)]
     return events, dwells, lambda: belts_mod.pluck_mode(kl, hw, SimpleNamespace(dry_run=False, plucks=2))
 
@@ -530,7 +530,7 @@ def test_show_refuses_an_unhomed_z_before_enabling_anything(monkeypatch):
     settings = {'safe_z_home': {'z_hop': 10.0}, 'tmc2240 stepper_x': {}, 'tmc2240 stepper_y': {}}
     kl = SimpleNamespace(settings=lambda: settings, homed_axes=lambda: '', gcode=scripts.append)
     monkeypatch.setattr(belts_mod, 'detect_hardware', lambda kl, motor, accel: SimpleNamespace(
-        kinematics='corexy', display=False))
+        kinematics='corexy', display=True))
     monkeypatch.setattr(belts_mod, 'refuse_if_printing', lambda kl: None)
     monkeypatch.setattr(belts_mod, 'Screen', lambda kl, display: SimpleNamespace(
         update=lambda *a, **k: None, final=lambda *a: None))
@@ -557,7 +557,7 @@ def test_show_on_a_hot_driver_hands_the_motors_over(monkeypatch):
     kl = SimpleNamespace(settings=lambda: {}, homed_axes=lambda: 'xyz', gcode=events.append)
     monkeypatch.setattr(belts_mod, 'ThermalGuard', Guard)
     monkeypatch.setattr(belts_mod, 'detect_hardware', lambda kl, motor, accel: SimpleNamespace(
-        kinematics='corexy', display=False))
+        kinematics='corexy', display=True))
     monkeypatch.setattr(belts_mod, 'refuse_if_printing', lambda kl: None)
     monkeypatch.setattr(belts_mod, 'release_gantry', lambda kl: events.append('release'))
     monkeypatch.setattr(belts_mod, 'Screen', lambda kl, display: SimpleNamespace(

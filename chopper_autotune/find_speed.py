@@ -169,7 +169,8 @@ def run_sweep(hw, ds: Dataset, args, plan: 'list[tuple[int, float]]', accel: flo
         if magnitudes:
             print('[%d/%d] %d mm/s: median %.1f' % (index, len(plan), speed,
                                                     sum(magnitudes) / len(magnitudes)))
-        screen.update('Chopper speed scan %d/%d' % (index, len(plan)))
+        screen.update('Chopper speed scan %d/%d' % (index, len(plan)),
+                      short='%s speed %d/%d' % (hw.motor, index, len(plan)))
     return failed
 
 
@@ -317,7 +318,8 @@ def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None]':
         print('Resonance peaks: %s'
               % ', '.join('%d mm/s (magnitude %.0f)' % curve[i] for i in peaks))
         print('\nRecommended: CHOPPER_COLLECT MOTOR=%s SPEED=%d' % (hw.motor, recommended))
-        screen.final('Chopper: resonance %d mm/s' % recommended)
+        screen.final('Chopper: resonance %d mm/s' % recommended,
+                     '%s peak %d mm/s' % (hw.motor, recommended))
     else:
         top = max(curve, key=lambda point: point[1])
         print('No clear resonance peaks; highest magnitude %.0f at %d mm/s. '

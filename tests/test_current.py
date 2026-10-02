@@ -212,8 +212,9 @@ def test_the_pattern_refuses_what_its_strokes_cannot_carry(monkeypatch, max_acce
     with pytest.raises(SystemExit) as refused:
         cur.current_tune(kl, build_parser().parse_args(['current', '--motor', 'a', '--yes']))
     assert str(refused.value.code).startswith(refusal) and scripts == []
-    # the action reaches the display, which keeps 120 characters of '<command> FAILED: ...'
-    assert ('current FAILED: %s' % refused.value.code)[:120].startswith('current FAILED: raise ')
+    # the action reaches the display: its first words on a 16-character LCD row
+    from chopper_autotune.collect import failure_display
+    assert failure_display('current FAILED: %s' % refused.value.code)[:16].startswith('FAIL raise ')
 
 
 @pytest.mark.parametrize('settings, answers, freed, restored', [

@@ -153,7 +153,9 @@ def descent(hw, kl, driver, speed: float, hearing: tmc.Hearing, screen: Screen,
                                            clicks_per_move=float(clicks))
             screen.update('Chopper E cand %d%s: %.0f'
                           % (len(cache), ' of max %d' % budget if budget else '',
-                             cache[combo]))
+                             cache[combo]),
+                          short='E %d%s %.0f' % (len(cache), '/%d' % budget if budget else '',
+                                                 cache[combo]))
         return cache[combo]
 
     # the E descent never sweeps tpfd, so its stock is spelled without it — a carried
@@ -183,7 +185,8 @@ def extruder_show(kl: Klippy, args, driver: tmc.Driver, baseline_regs: dict,
     try:
         # the heater goes on INSIDE the try — a SIGTERM during the long heat-up must
         # still reach the heater off in the finally
-        screen.update('Chopper E show: heating to %.0fC' % temp, force=True)
+        screen.update('Chopper E show: heating to %.0fC' % temp, force=True,
+                      short='E heat %.0fC' % temp)
         kl.gcode(heat_script(temp))
         kl.gcode('TEMPERATURE_WAIT SENSOR=extruder MINIMUM=%.0f' % (temp - 3))
         wake_stepper(kl, 'extruder')
@@ -198,7 +201,8 @@ def extruder_show(kl: Klippy, args, driver: tmc.Driver, baseline_regs: dict,
             for label, fields in (('defaults', tmc.stock_chopper(driver, False).fields()),
                                   ('tuned', baseline_regs)):
                 kl.gcode(tmc.set_fields_script('extruder', fields))
-                screen.update('E %d/2: %s' % (round_no, label.upper()), force=True)
+                screen.update('E %d/2: %s' % (round_no, label.upper()), force=True,
+                              short='E %d/2 %s' % (round_no, label.upper()))
                 print(' round %d: %s (%s)' % (round_no, label, fields))
                 magnitude, _ = measure(hw, speed)
                 magnitudes[label].append(magnitude)
@@ -207,7 +211,8 @@ def extruder_show(kl: Klippy, args, driver: tmc.Driver, baseline_regs: dict,
         t = sum(magnitudes['tuned']) / len(magnitudes['tuned'])
         from .demo import write_state
         write_state('extruder', tmc.baseline_chopper(baseline_regs, default=driver.default), d / t)
-        screen.final('Extruder: %.1fx less vibration (%.0f -> %.0f)' % (d / t, d, t))
+        screen.final('Extruder: %.1fx less vibration (%.0f -> %.0f)' % (d / t, d, t),
+                     'E %.1fx less vib' % (d / t))
     finally:
         run_restore(
             # the motor on before any register write (wake_stepper): a stop during the heat-up
@@ -296,7 +301,7 @@ def extruder_tune(kl: Klippy, args) -> int:
     try:
         # the heater goes on INSIDE the try: heating is the longest wait of the whole
         # run, and a SIGTERM/Ctrl-C there must still reach the heater off in the finally
-        screen.update('Chopper E: heating to %.0fC' % temp, force=True)
+        screen.update('Chopper E: heating to %.0fC' % temp, force=True, short='E heat %.0fC' % temp)
         print('Heating hotend to %.0fC...' % temp)
         kl.gcode(heat_script(temp))
         kl.gcode('TEMPERATURE_WAIT SENSOR=extruder MINIMUM=%.0f' % (temp - 3))
@@ -320,7 +325,7 @@ def extruder_tune(kl: Klippy, args) -> int:
                 magnitude, _ = measure(hw, v)
                 curve.append((v, magnitude))
                 print('  %4.1f mm/s: %.0f' % (v, magnitude))
-                screen.update('Chopper E scan %.0f mm/s' % v)
+                screen.update('Chopper E scan %.0f mm/s' % v, short='E scan %.0f mm/s' % v)
             speed = resonant_speed(curve)
             top = max(m for _, m in curve)
             flat = top < 1.5 * statistics.median(m for _, m in curve)
@@ -354,7 +359,8 @@ def extruder_tune(kl: Klippy, args) -> int:
         print('[tmc%s extruder]' % driver_name)
         for key, value in winner.fields().items():
             print('driver_%s: %d' % (key, value))
-        screen.final('Chopper E: %s score %.0f' % (winner.label(), rescored[winner]))
+        screen.final('Chopper E: %s score %.0f' % (winner.label(), rescored[winner]),
+                     'E %s' % winner.compact())
 
         if args.save:
             from .analyze import _persist, refuse_unloadable, updated_config

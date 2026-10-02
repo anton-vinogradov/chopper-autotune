@@ -244,7 +244,7 @@ def test_showcase_alternates_and_announces(monkeypatch, capsys):
     args = demo_args(rounds=2, repeats=1)
 
     results = _showcase(kl, hw, args, None, configs, 58, 70.0, 1000,
-                        lambda d, t: None, Screen(kl, display=False))
+                        lambda d, t: None, Screen(kl, display=True))
 
     # 2 rounds x 2 configs x 1 repeat x 2 directions
     assert len(played) == 8

@@ -106,7 +106,7 @@ def test_extruder_descent_measures_live_and_caches(monkeypatch):
             pass
 
     class FakeScreen:
-        def update(self, text, force=False):
+        def update(self, text, force=False, short=None):
             pass
 
     winner, cache = ex.descent(None, FakeKl(), ex.tmc.DRIVERS['2209'], 5.0, tmc.Hearing(), FakeScreen())
@@ -130,7 +130,7 @@ def test_extruder_descent_never_measures_what_the_hearing_skips(monkeypatch):
 
     monkeypatch.setattr(ex, 'measure', fake_measure)
     winner, _ = ex.descent(None, SimpleNamespace(gcode=sent.append), driver, 5.0, hearing,
-                           SimpleNamespace(update=lambda text, force=False: None))
+                           SimpleNamespace(update=lambda text, force=False, short=None: None))
     assert measured and not any(hearing.audible(combo, driver) for combo in measured)
     assert not hearing.audible(winner, driver)
 
@@ -242,7 +242,7 @@ def test_an_early_stop_enables_the_extruder_before_putting_registers_back(monkey
     kl = SimpleNamespace(settings=lambda: {'tmc2209 extruder': {'driver_toff': 3}, 'extruder': {}},
                          gcode=gcode, subscribe_accel=lambda chip: None)
     monkeypatch.setattr(extruder_mod, 'detect_hardware', lambda kl, axis: SimpleNamespace(
-        accel_chip='adxl345', display=False))
+        accel_chip='adxl345', display=True))
     monkeypatch.setattr(extruder_mod, 'refuse_if_printing', lambda kl: None)
     monkeypatch.setattr(extruder_mod, 'Screen', lambda kl, display: SimpleNamespace(
         update=lambda *a, **k: None, final=lambda *a: None))

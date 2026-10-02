@@ -13,6 +13,27 @@ def current_klipper(request, monkeypatch):
         monkeypatch.setattr(collect, 'require_current_klipper', lambda kl: None)
 
 
+@pytest.fixture(autouse=True)
+def lcd_row(monkeypatch):
+    """Every display text the tools hand the Screen in any test fits a 16-character LCD
+    row, the display on or off: a run with the display off hid one that did not."""
+    update, final = collect.Screen.update, collect.Screen.final
+
+    def fits(text):
+        shown = collect.display_text(text)
+        assert len(shown) <= collect.LCD_WIDTH, shown
+
+    def checked_update(screen, text, force=False, short=None):
+        fits(short or text)
+        return update(screen, text, force, short)
+
+    def checked_final(screen, text, short=None):
+        fits(short or text)
+        return final(screen, text, short)
+    monkeypatch.setattr(collect.Screen, 'update', checked_update)
+    monkeypatch.setattr(collect.Screen, 'final', checked_final)
+
+
 def pytest_configure(config):
     config.addinivalue_line('markers', 'version_gate: runs the real Klipper version check')
 

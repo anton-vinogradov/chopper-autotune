@@ -364,7 +364,7 @@ def test_the_extruder_tune_remembers_its_hearing_and_save_last_uses_it(monkeypat
                          gcode=lambda script: None, gcode_output=lambda script: [],
                          subscribe_accel=lambda chip: None)
     monkeypatch.setattr(extruder, 'detect_hardware', lambda kl, axis: SimpleNamespace(
-        accel_chip='adxl345', display=False))
+        accel_chip='adxl345', display=True))
     monkeypatch.setattr(extruder, 'refuse_if_printing', lambda kl: None)
     monkeypatch.setattr(extruder, 'Screen', lambda kl, display: SimpleNamespace(
         update=lambda *a, **k: None, final=lambda *a: None))

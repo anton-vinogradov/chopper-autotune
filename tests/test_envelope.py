@@ -152,7 +152,7 @@ def test_the_ladders_drop_the_rungs_a_stroke_cannot_reach(capsys):
     assert speeds == (150,) and short == (
         'the strokes stop at 160 mm/s (max_velocity 160 (set at runtime; printer.cfg has 300), '
         'accel 1500): raise max_velocity to 300 and ACCEL to 1800 to reach 300')
-    # the action first: the display keeps 120 characters of '<command> FAILED: ...'
+    # the action first: the display shows its first characters (failure_display)
     with pytest.raises(SystemExit, match='^raise ACCEL to 500 or more: motor A runs under 142'):
         stroke_ladders('cartesian', 'x', 400.0, (150, 200), 400, (400,), 100, 500)
     with pytest.raises(SystemExit, match='^raise max_velocity to 150 or more: motor A runs under 121'):

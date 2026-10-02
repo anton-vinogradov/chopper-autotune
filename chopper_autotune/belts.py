@@ -218,7 +218,7 @@ def identify_belt(kl: Klippy, hw, motor: str, screen: Screen, cycles: int = 4):
     span = min(40.0, hw.axis_span / 6)
     label = motor_label(motor)
     print('Jogging belt %s so you can see which one it is, then releasing the motors...' % label)
-    screen.update('Belt %s — the moving one' % label, force=True)
+    screen.update('Belt %s — the moving one' % label, force=True, short='Belt %s moves' % label)
     kl.gcode('G90\nG1 X%.1f Y%.1f F6000\nM400' % (cx, cy))
     moves = []
     for _ in range(cycles):
@@ -263,7 +263,8 @@ def belts(kl: Klippy, args) -> int:
         except BaseException:
             run_restore(lambda: release_gantry(kl))    # a failure or Stop: motors off too
             raise
-        screen.final('Motors off — belt %s is the one that moved' % motor_label(motor))
+        screen.final('Motors off — belt %s is the one that moved' % motor_label(motor),
+                     'Belt %s moved' % motor_label(motor))
         return 0                                     # leaves the motors off on purpose
 
     if not args.sweep:                              # the pluck tension test is the default
@@ -307,7 +308,7 @@ def belts(kl: Klippy, args) -> int:
             axis = '%g,%g' % vec
             for stale in capture_files(CAPTURE % label):
                 os.remove(stale)
-            screen.update('Chopper belts: exciting %s' % label, force=True)
+            screen.update('Chopper belts: exciting %s' % label, force=True, short='Belt %s sweep' % label)
             print(' exciting belt %s (head diagonal %s)...' % (label, axis))
             started = time.time() - CAPTURE_MTIME_SLACK_SEC
             try:
@@ -348,7 +349,9 @@ def belts(kl: Klippy, args) -> int:
         # (SHOW=) point at a motor when needed
         release_gantry(kl)
         message += ' · motors off'
-    screen.final(message)
+    lower = 'A' if peaks['A'] < peaks['B'] else 'B'
+    screen.final(message, '%s %.0f/%.0f' % ('Diag ok' if gap_pct(peaks['A'], peaks['B']) < args.tolerance
+                                           else '%s lower' % lower, peaks['A'], peaks['B']))
     print('\nIf you adjust a belt, change it a LITTLE and re-run: the per-belt delta tells '
           'you whether the response follows the tension at all. After any mechanical change, '
           're-run CHOPPER_TUNE — the chopper optimum is measured against the mechanics you '
@@ -589,8 +592,8 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
     guard = ThermalGuard(kl, kl.settings())
     screen = Screen(kl, hw.display)
 
-    def cue(text):
-        screen.update(text, force=True)
+    def cue(text, short):
+        screen.update(text, force=True, short=short)
         print('>> %s' % text, flush=True)
 
     def hold(ms):
@@ -602,13 +605,13 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
     def measure_belt(label, ambient, rot):
         tries = []
         for attempt in range(1, args.plucks + 1):
-            cue('Ready: belt %s in 3s' % label)
+            cue('Ready: belt %s in 3s' % label, 'Belt %s in 3s' % label)
             hold(3000)
-            cue('PLUCK belt %s now! (listening 5s...)' % label)
+            cue('PLUCK belt %s now! (listening 5s...)' % label, 'PLUCK %s NOW!' % label)
             _, samples = capture_stream(hw, 'G4 P5000', 4.8, guard.check)
             tones = pluck_tones(samples, ambient=ambient, rot=rot)
             if not tones:
-                cue('Belt %s: nothing heard — again' % label)
+                cue('Belt %s: nothing heard — again' % label, '%s: none, again' % label)
                 print('   belt %s try %d: nothing heard' % (label, attempt))
                 continue
             tries.append(tones)
@@ -623,11 +626,11 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
                       % (label, strongest['freq'], strongest['tries'], strongest['cls']))
                 if strongest['tries'] >= 2 and attempt >= 2:
                     return tone_families(tries)
-            cue('Belt %s heard — once more' % label)
+            cue('Belt %s heard — once more' % label, '%s heard, again' % label)
         fams = tone_families(tries)
         if fams:
             return fams
-        cue('FAILED: belt %s gave no stable tone' % label)         # the display must say why
+        cue('FAILED: belt %s gave no stable tone' % label, '%s no tone: FAIL' % label)    # the display must say why
         raise SystemExit('belt %s: no two agreeing plucks in %d tries — pluck harder, '
                          'mid-span, and re-run' % (label, args.plucks))
 
@@ -697,13 +700,15 @@ def pluck_mode(kl: Klippy, hw, args) -> int:
         print('At SPAN=%.0f cm: T_A ~ %.0f N, T_B ~ %.0f N' % (args.span, ta, tb))
     if abs(tension_gap) < args.tolerance * 2:        # tolerance is in freq %; tension ~ 2x
         message = 'Belts matched: A %.0f / B %.0f Hz (tension %+.0f%%)' % (fa, fb, tension_gap)
+        short = 'Matched %.0f/%.0f' % (fa, fb)
     else:
         looser = 'A' if fa < fb else 'B'
         message = 'Belt %s looser: A %.0f / B %.0f Hz (tension %+.0f%%)' % (looser, fa, fb,
                                                                             tension_gap)
+        short = '%s looser %.0f%%' % (looser, abs(tension_gap))
     print(message)
     save_state(fa, fb)
-    screen.final(message + ' \u00b7 motors off')
+    screen.final(message + ' \u00b7 motors off', short)
     print('\nThis is the transverse string mode — the one that IS tension (f ~ sqrt(T)); '
           'equal spans compare directly. After adjusting, re-run to confirm the move.')
     return 0

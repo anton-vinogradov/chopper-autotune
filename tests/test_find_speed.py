@@ -215,3 +215,41 @@ def test_failures_of_the_extended_range_count_too(stub_printer, monkeypatch):
     # the curve rises past 120, and every faster move fails
     with pytest.raises(SystemExit, match='motor A: the speed scan failed on 40 of 142 moves'):
         scan_failing(stub_printer, monkeypatch, failing_every=10 ** 6, rising=True, fails_above=120)
+
+
+def test_a_map_with_many_peaks_names_on_the_display_those_that_fit(stub_printer, monkeypatch):
+    # the conftest guard holds every M117 to a 16-character LCD row
+    import chopper_autotune.find_speed as find_speed
+    from chopper_autotune import resonance_map
+    from chopper_autotune.cli import build_parser
+
+    def move(hw, ds, args, record, speed, cruise, travel, direction, accel, before_move):
+        record.update(status='ok', score={'median_magnitude': 1000.0 + 600 * (speed // 10 % 2)})
+        ds.append(record)
+        return record
+    monkeypatch.setattr(find_speed, 'measure_move', move)
+    monkeypatch.setattr(resonance_map, 'save_state', lambda *args: None)
+    assert resonance_map.resonance_map(stub_printer.kl(), build_parser().parse_args(
+        ['map', '--axis', 'x', '--yes', '--no-raw'])) == 0
+    shown = [line[len('M117 '):] for line in stub_printer.log if line.startswith('M117 A pk')]
+    assert shown and shown[-1].count(',') >= 2
+
+
+def test_a_map_asked_about_a_print_speed_answers_it_on_the_display(stub_printer, monkeypatch):
+    # PRINT_SPEED asks whether that speed rings: the answer is what the display keeps
+    import re
+
+    import chopper_autotune.find_speed as find_speed
+    from chopper_autotune import resonance_map
+    from chopper_autotune.cli import build_parser
+
+    def move(hw, ds, args, record, speed, cruise, travel, direction, accel, before_move):
+        record.update(status='ok', score={'median_magnitude': 1000.0 + 600 * (speed // 10 % 2)})
+        ds.append(record)
+        return record
+    monkeypatch.setattr(find_speed, 'measure_move', move)
+    monkeypatch.setattr(resonance_map, 'save_state', lambda *args: None)
+    resonance_map.resonance_map(stub_printer.kl(), build_parser().parse_args(
+        ['map', '--axis', 'x', '--yes', '--no-raw', '--print-speed', '50']))
+    shown = [line[len('M117 '):] for line in stub_printer.log if line.startswith('M117 ')]
+    assert re.match(r'^A 50( ok|>\d)', shown[-1]), shown[-1]

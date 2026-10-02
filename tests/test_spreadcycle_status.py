@@ -284,8 +284,8 @@ def test_a_stage_of_a_longer_run_ends_without_a_popup():
     scripts = []
     kl = SimpleNamespace(gcode=scripts.append, request=lambda method, params: {
         'status': {'gcode': {'commands': {'M117': {}, 'M118': {}, 'RESPOND': {}}}}})
-    Screen(kl, True, popup=False).final('Chopper: resonance 58 mm/s')
-    assert scripts == ['M117 Chopper: resonance 58 mm/s',
+    Screen(kl, True, popup=False).final('Chopper: resonance 58 mm/s', 'A peak 58 mm/s')
+    assert scripts == ['M117 A peak 58 mm/s',
                        'RESPOND PREFIX="Chopper:" MSG="resonance 58 mm/s"']
 
 
@@ -299,6 +299,6 @@ def test_console_lines_stay_valid_markup():
         scripts = []
         kl = SimpleNamespace(gcode=scripts.append, request=lambda method, params, c=commands: {
             'status': {'gcode': {'commands': {name: {} for name in c}}}})
-        Screen(kl, False).final('Chopper: cand 1 < 9 & "x"')
+        Screen(kl, False).final('Chopper: cand 1 < 9 & "x"', 'A 1/9')
         assert scripts == [line]
 
