@@ -390,8 +390,8 @@ def test_rank_never_recommends_a_combo_klipper_would_not_load():
     from chopper_autotune.analyze import rank
     rows = [{'chopper': tmc.Chopper(2, 4, 7, 9), 'magnitude': 10.0, 'n': 2},    # raw 16
             {'chopper': tmc.Chopper(2, 4, 7, 8), 'magnitude': 50.0, 'n': 2}]
-    assert [r['chopper'] for r in rank(rows, tmc.DRIVERS['2660'], 0.25)] == [tmc.Chopper(2, 4, 7, 8)]
-    assert len(rank(rows, tmc.DRIVERS['2209'], 0.25)) == 2
+    assert [r['chopper'] for r in rank(rows, tmc.DRIVERS['2660'], tmc.Hearing())] == [tmc.Chopper(2, 4, 7, 8)]
+    assert len(rank(rows, tmc.DRIVERS['2209'], tmc.Hearing())) == 2
 
 
 def test_run_save_latest_skips_a_stale_extruder_winner(monkeypatch, capsys):

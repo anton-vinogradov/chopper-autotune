@@ -123,18 +123,21 @@ CLICK_WEIGHT = 1.0
 
 
 def penalized_score(combo: tmc.Chopper, magnitudes: 'list[float]', driver: tmc.Driver,
-                    audible_weight: float, clicks_per_move: float = 0.0) -> float:
+                    hearing: tmc.Hearing, clicks_per_move: float = 0.0) -> float:
+    if hearing.skips(combo, driver):
+        return float('inf')
     # mean across moves (see analyze.aggregate): direction asymmetry is signal
     magnitude = statistics.mean(magnitudes)
-    if tmc.is_audible(combo, driver):
-        magnitude *= 1 + audible_weight
+    if hearing.audible(combo, driver):
+        magnitude *= 1 + hearing.weight
     # the edge penalty is a tie-breaker toward safe configs (chopper-frequency margin,
     # interior hysteresis) — small enough that any real vibration win overrides it, so
     # it decides only when the field is flat (e.g. the ladder at a low run current)
-    return magnitude * (1 + CLICK_WEIGHT * clicks_per_move) * (1 + tmc.edge_penalty(combo, driver))
+    return magnitude * (1 + CLICK_WEIGHT * clicks_per_move) \
+        * (1 + tmc.edge_penalty(combo, driver, hearing))
 
 
-def seed_start(ds: Dataset, driver: tmc.Driver, audible_weight: float) -> tmc.Chopper:
+def seed_start(ds: Dataset, driver: tmc.Driver, hearing: tmc.Hearing) -> tmc.Chopper:
     """Best combo of a previously collected dataset, adapted to the target driver.
 
     Used to start the descent for one motor from the winner of another: the seed
@@ -143,8 +146,7 @@ def seed_start(ds: Dataset, driver: tmc.Driver, audible_weight: float) -> tmc.Ch
     history = dataset_history(ds, driver)
     if not history:
         raise SystemExit('no successful measurements in the seed dataset %s' % ds.root)
-    best = min(history, key=lambda combo: penalized_score(combo, history[combo], driver,
-                                                          audible_weight))
+    best = min(history, key=lambda combo: penalized_score(combo, history[combo], driver, hearing))
     if not driver.has_tpfd and best.tpfd is not None:
         best = replace(best, tpfd=None)
     return best
@@ -155,8 +157,10 @@ def run_simulate(args) -> int:
     ds = Dataset.open(args.dataset)
     manifest = ds.manifest()
     driver = tmc.DRIVERS[manifest['driver']]
-    lookup = {combo: penalized_score(combo, mags, driver, args.audible_weight)
-              for combo, mags in dataset_history(ds, driver).items()}
+    hearing = tmc.Hearing.of(args, manifest)
+    lookup = {combo: penalized_score(combo, mags, driver, hearing)
+              for combo, mags in dataset_history(ds, driver).items()
+              if not hearing.skips(combo, driver)}
     if not lookup:
         raise SystemExit('no register measurements in %s — simulate needs a grid dataset'
                          % args.dataset)
@@ -177,6 +181,8 @@ def run_simulate(args) -> int:
     missing = set()
 
     def evaluate(combo: tmc.Chopper) -> float:
+        if hearing.skips(combo, driver):
+            return float('inf')
         if combo not in lookup:
             # a dataset collected under narrower ranges (or the old raw<=16 rule)
             # cannot answer for this combo — steer the replay away from it

@@ -32,6 +32,28 @@ def _motor(text: str) -> str:
     return {'a': 'x', 'b': 'y', 'ab': 'xy'}.get(text.lower(), text.lower())
 
 
+def _khz(text: str) -> float:
+    value = float(text)
+    if not 0 < value < float('inf'):
+        raise argparse.ArgumentTypeError('expected a chopper frequency in kHz, e.g. 30')
+    return value
+
+
+def add_hearing(parser: argparse.ArgumentParser, recorded: bool = False):
+    """The same hearing options on every command that ranks registers. A command that
+    reads a dataset (`recorded`) hears by default as the dataset's run did."""
+    default = 'default: as the dataset was collected, else %s' if recorded else 'default %s'
+    parser.add_argument('--audible-khz', type=_khz, default=None,
+                        help='estimated chopper frequency in kHz below which a combo counts as '
+                             'audible (%s); the estimate runs above the real frequency, so raise '
+                             'it if you still hear a whine' % (default % ('%g' % (tmc.AUDIBLE_LIMIT_HZ / 1000))))
+    parser.add_argument('--audible-weight', type=float, default=None,
+                        help='score penalty for an audible combo (%s)' % (default % tmc.AUDIBLE_WEIGHT))
+    parser.add_argument('--skip-audible', action='store_true',
+                        help='never try or recommend an audible combo, instead of just penalizing it'
+                             + (' (default: as the dataset was collected)' if recorded else ''))
+
+
 def _gcode_args(argv: 'list[str]', boolean_flags: 'frozenset[str]') -> 'list[str]':
     """Translate Klipper-style KEY=VALUE params (as passed by RUN_SHELL_COMMAND) into CLI flags."""
     out = []
@@ -89,7 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     u.add_argument('--save', action='store_true',
                    help='write the winners into the Klipper config (with backups) and restart')
     u.add_argument('--iterations', type=int, default=1)
-    u.add_argument('--audible-weight', type=float, default=0.25)
+    add_hearing(u)
     u.add_argument('--accel', type=float, default=None)
     u.add_argument('--no-raw', action='store_true')
     u.add_argument('--csv', action='store_true')
@@ -113,16 +135,13 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument('--tpfd', type=Range.parse, default=None, help='TPFD range (TMC2240/5160 only)')
     c.add_argument('--search', choices=('grid', 'descent'), default='grid',
                    help='grid = full sweep; descent = coordinate descent per AN-001, minutes instead of hours')
-    c.add_argument('--audible-weight', type=float, default=0.25,
-                   help='descent objective penalty for audible chopper frequency')
+    add_hearing(c)
     c.add_argument('--seed-from', default=None,
                    help='start the descent from the best config of a previous dataset '
                         '(fast second axis: every candidate is still measured on this one)')
     c.add_argument('--iterations', type=int, default=1, help='repeats per combination, default 1')
     c.add_argument('--validate', type=int, default=3,
                    help='re-measure top N candidates with extra runs before recommending (0 = off)')
-    c.add_argument('--skip-audible', action='store_true',
-                   help='exclude combinations with an audible chopper frequency instead of just penalizing them')
     c.add_argument('--measure-time', type=float, default=1.25, help='cruise time per move in seconds')
     c.add_argument('--accel', type=float, default=None, help='acceleration, default printer max_accel / 10')
     c.add_argument('--trim', type=float, default=None,
@@ -224,7 +243,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     s = sub.add_parser('simulate', help='replay the descent strategy against a recorded grid dataset')
     s.add_argument('dataset')
-    s.add_argument('--audible-weight', type=float, default=0.25)
+    add_hearing(s, recorded=True)
 
     t = sub.add_parser('status', help='progress of the most recent (or given) dataset')
     t.add_argument('dataset', nargs='?', default=None)
@@ -236,7 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
     m.add_argument('dataset_a')
     m.add_argument('dataset_b')
     m.add_argument('--top', type=int, default=10)
-    m.add_argument('--audible-weight', type=float, default=0.25)
+    add_hearing(m, recorded=True)
 
     a = sub.add_parser('analyze', help='rank configurations from a dataset, report, optionally apply')
     a.add_argument('dataset', nargs='?', default=None,
@@ -244,8 +263,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument('--dataset', dest='dataset_opt', default=None,
                    help='same as the positional argument, for DATASET= macro params')
     a.add_argument('--top', type=int, default=15, help='rows in the console table')
-    a.add_argument('--audible-weight', type=float, default=0.25,
-                   help='score penalty for chopper frequency in the audible range')
+    add_hearing(a, recorded=True)
     a.add_argument('--trim', type=float, default=0.25)
     a.add_argument('--recompute', action='store_true', help='recompute metrics from raw csv')
     a.add_argument('--html', default=None, help='report path, default <dataset>/report.html')
@@ -256,7 +274,7 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument('--url', default='http://127.0.0.1:7125')
 
     sv = sub.add_parser('save', help='save the latest tuning result for each motor into the config')
-    sv.add_argument('--audible-weight', type=float, default=0.25)
+    add_hearing(sv, recorded=True)
     sv.add_argument('--url', default='http://127.0.0.1:7125')
 
     rs = sub.add_parser('restore', help="roll back the tool's config changes")
@@ -299,7 +317,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help='skip the resonance scan and descend at this filament speed (mm/s)')
     e.add_argument('--min-speed', type=int, default=1, help='scan start, filament mm/s')
     e.add_argument('--max-speed', type=int, default=12, help='scan end, filament mm/s')
-    e.add_argument('--audible-weight', type=float, default=0.25)
+    add_hearing(e)
     e.add_argument('--save', action='store_true',
                    help='write the winner into [tmcXXXX extruder] (backup first) and restart')
     e.add_argument('--save-last', action='store_true',

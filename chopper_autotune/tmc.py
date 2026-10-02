@@ -9,9 +9,10 @@ BLANK_TIME_CLOCKS = (16, 24, 36, 54)
 # TMC2208/2209 use a different blank-time table than the rest of the family
 BLANK_TIME_CLOCKS_220X = (16, 24, 32, 40)
 AUDIBLE_LIMIT_HZ = 20000.0
-# below this the chopper is ultrasonic but with little margin; a config is nudged
-# toward more headroom when nothing else distinguishes it
-CAUTION_FREQ_HZ = 30000.0
+AUDIBLE_WEIGHT = 0.25
+# from the audible limit up to this multiple of it the chopper is ultrasonic but with
+# little margin; a config is nudged toward more headroom when nothing else distinguishes it
+CAUTION_RATIO = 1.5
 HYST_CAP = 16.0                 # datasheet max effective hysteresis
 FREQ_MARGIN_WEIGHT = 0.05       # tie-breaker only: a real vibration win always overrides
 HYST_EDGE_WEIGHT = 0.05
@@ -140,8 +141,39 @@ def chopper_freq_hz(c: Chopper, driver: Driver) -> float:
     return driver.fclk_hz / clocks
 
 
-def is_audible(c: Chopper, driver: Driver) -> bool:
-    return chopper_freq_hz(c, driver) < AUDIBLE_LIMIT_HZ
+@dataclass(frozen=True)
+class Hearing:
+    """Which chopper frequencies count as audible, and what that costs a combo: `weight`
+    scales its score up, `skip` keeps it out of the run and out of the ranking. The
+    limit applies to the first-order estimate, which runs above the real frequency, so
+    an ear that hears the default limit's winners needs a higher limit (#157)."""
+    limit_hz: float = AUDIBLE_LIMIT_HZ
+    weight: float = AUDIBLE_WEIGHT
+    skip: bool = False
+
+    @classmethod
+    def of(cls, args=None, recorded: 'Optional[dict]' = None) -> 'Hearing':
+        """From the command line; what it leaves out comes from the run that recorded
+        a dataset (`recorded`, its manifest), then from the defaults."""
+        recorded = recorded or {}
+
+        def pick(name: str, default: float) -> float:
+            value = getattr(args, name, None)
+            return value if value is not None else recorded.get(name, default)
+        return cls(pick('audible_khz', AUDIBLE_LIMIT_HZ / 1000) * 1000,
+                   pick('audible_weight', AUDIBLE_WEIGHT),
+                   bool(getattr(args, 'skip_audible', False) or recorded.get('skip_audible')))
+
+    def audible(self, c: Chopper, driver: Driver) -> bool:
+        return chopper_freq_hz(c, driver) < self.limit_hz
+
+    def skips(self, c: Chopper, driver: Driver) -> bool:
+        return self.skip and self.audible(c, driver)
+
+    def manifest_fields(self) -> dict:
+        """What a dataset records, for of() to read back."""
+        return {'audible_khz': self.limit_hz / 1000, 'audible_weight': self.weight,
+                'skip_audible': self.skip}
 
 
 def effective_hysteresis(c: Chopper) -> int:
@@ -149,7 +181,7 @@ def effective_hysteresis(c: Chopper) -> int:
     return (c.hstrt + 1) + (c.hend - 3)
 
 
-def edge_penalty(c: Chopper, driver: Driver) -> float:
+def edge_penalty(c: Chopper, driver: Driver, hearing: Hearing) -> float:
     """A small preference — used as a tie-breaker in the score — for configs away from
     two edges: a chopper frequency comfortably above the audible band, and interior
     hysteresis (further from the datasheet cap = less current ripple/heat, no latent
@@ -157,9 +189,10 @@ def edge_penalty(c: Chopper, driver: Driver) -> float:
     difference overrides it; it only decides when the measurement is otherwise flat
     (e.g. the whole hysteresis ladder is nearly flat at a low run current)."""
     freq = chopper_freq_hz(c, driver)
+    caution = hearing.limit_hz * CAUTION_RATIO
     penalty = 0.0
-    if AUDIBLE_LIMIT_HZ <= freq < CAUTION_FREQ_HZ:
-        penalty += FREQ_MARGIN_WEIGHT * (CAUTION_FREQ_HZ - freq) / (CAUTION_FREQ_HZ - AUDIBLE_LIMIT_HZ)
+    if hearing.limit_hz <= freq < caution:
+        penalty += FREQ_MARGIN_WEIGHT * (caution - freq) / (caution - hearing.limit_hz)
     penalty += HYST_EDGE_WEIGHT * max(0, effective_hysteresis(c)) / HYST_CAP
     return penalty
 

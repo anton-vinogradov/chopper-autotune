@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from . import tmc
 from .collect import (Range, Screen, autotune_advice, autotune_goal, collect, driver_of,
-                      motor_label, refuse_autotune_save, refuse_multi_motor)
+                      motor_label, refuse_autotune_save, refuse_multi_motor, refuse_unhearable)
 from .dataset import Dataset
 from .find_speed import scan
 from .klippy import Klippy, find_socket
@@ -40,14 +40,20 @@ def scan_args(args, axis: str):
 def collect_args(args, axis: str, speed: Range, seed_from: 'str | None'):
     argv = ['collect', '--axis', axis, '--speed', '%d:%d' % (speed.lo, speed.hi),
             '--search', 'descent', '--tpfd', '0:15',
-            '--audible-weight', str(args.audible_weight),
             '--iterations', str(args.iterations), '--yes']
+    for flag, value in (('--audible-khz', args.audible_khz), ('--audible-weight', args.audible_weight)):
+        if value is not None:
+            argv += [flag, repr(value)]
+    if args.skip_audible:
+        argv.append('--skip-audible')
     if seed_from:
         argv += ['--seed-from', seed_from]
     return sub_args(args, argv)
 
 
-def winner_of(root: str, audible_weight: float) -> 'tuple[dict, tmc.Chopper]':
+def winner_of(root: str, args=None) -> 'tuple[dict, tmc.Chopper]':
+    """The motor's result in a dataset; a re-rank, when the run recorded no winner, hears
+    as the command line says, then as the run did."""
     from .analyze import aggregate, rank
     ds = Dataset.open(root)
     manifest = ds.manifest()
@@ -60,7 +66,8 @@ def winner_of(root: str, audible_weight: float) -> 'tuple[dict, tmc.Chopper]':
                              saved.get('tpfd'))
         if tmc.validate(winner, driver) is None:
             return manifest, winner
-    ranked = rank(aggregate(ds, False, manifest.get('trim') or 0.1), driver, audible_weight)
+    ranked = rank(aggregate(ds, False, manifest.get('trim') or 0.1), driver,
+                  tmc.Hearing.of(args, manifest))
     if not ranked:
         raise SystemExit('no successful measurements in %s' % root)
     return manifest, ranked[0]['chopper']
@@ -85,6 +92,12 @@ def run_tune(args) -> int:
         return autotune_goal(settings, manifest['stepper']) is not None
 
     refuse_multi_motor(settings, args.axis)
+    for axis in axes:
+        # say it now, not after the speed scan
+        name = driver_of(settings, 'stepper_' + axis)
+        if name:
+            search = collect_args(args, axis, Range(1, 1), None)
+            refuse_unhearable(tmc.DRIVERS[name], search.tbl, search.toff, tmc.Hearing.of(search))
     if args.save:
         # say it now, not after twenty minutes of tuning
         for axis in axes:
@@ -112,7 +125,7 @@ def run_tune(args) -> int:
             code, root = collect(kl, collect_args(args, axis, speed, seed_root), popup=False)
             worst = max(worst, code)
             if root:
-                winners.append(winner_of(root, args.audible_weight))
+                winners.append(winner_of(root, args))
                 roots[winners[-1][0]['stepper']] = root
                 seed_root = root
 

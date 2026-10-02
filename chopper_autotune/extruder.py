@@ -19,7 +19,7 @@ from . import tmc
 from .collect import (Range, Screen, autotune_advice, autotune_goal, autotune_stealth, autotune_tag,
                       capture_stream, detect_hardware, live_chopper, live_stealth,
                       measured_under_autotune, refuse_autotune_save, refuse_if_printing,
-                      run_restore, unexpected_stealth, wake_stepper)
+                      refuse_unhearable, run_restore, unexpected_stealth, wake_stepper)
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
 from .metrics import transients, vibration_score
@@ -133,7 +133,7 @@ def measure(hw, speed: float) -> 'tuple[float, int]':
 FIELD_RANGES = (Range(0, 3), Range(1, 8), Range(0, 7), Range(0, 15))   # tbl/toff/hstrt/hend
 
 
-def descent(hw, kl, driver, speed: float, audible_weight: float, screen: Screen,
+def descent(hw, kl, driver, speed: float, hearing: tmc.Hearing, screen: Screen,
             rounds: int = 2, budget: 'int | None' = None) -> 'tuple[tmc.Chopper, dict]':
     """Multi-start coordinate descent (search.py — the same engine as the axis tune:
     joint tbl+toff phase and spanning hend seeds, closing the measured toff x hend
@@ -142,10 +142,12 @@ def descent(hw, kl, driver, speed: float, audible_weight: float, screen: Screen,
     cache = {}
 
     def evaluate(combo):
+        if combo not in cache and hearing.skips(combo, driver):
+            cache[combo] = float('inf')
         if combo not in cache:
             kl.gcode(tmc.set_fields_script('extruder', combo.fields()))
             magnitude, clicks = measure(hw, speed)
-            cache[combo] = penalized_score(combo, [magnitude], driver, audible_weight,
+            cache[combo] = penalized_score(combo, [magnitude], driver, hearing,
                                            clicks_per_move=float(clicks))
             screen.update('Chopper E cand %d%s: %.0f'
                           % (len(cache), ' of max %d' % budget if budget else '',
@@ -263,6 +265,8 @@ def extruder_tune(kl: Klippy, args) -> int:
         refuse_if_printing(kl)
         return extruder_show(kl, args, driver, baseline_regs, stealth, temp)
     speeds = [float(v) for v in range(args.min_speed, args.max_speed + 1)]
+    hearing = tmc.Hearing.of(args)
+    refuse_unhearable(driver, FIELD_RANGES[0], FIELD_RANGES[1], hearing)   # before the heat-up
 
     budget = descent_budget(driver, *FIELD_RANGES, None)
     print('Extruder chopper tune: tmc%s, current registers %s' % (
@@ -319,19 +323,18 @@ def extruder_tune(kl: Klippy, args) -> int:
                   % (speed, '  (weak peak — the field may be flat here)' if flat else ''))
 
         print('Register descent at %.1f mm/s...' % speed)
-        winner, cache = descent(hw, kl, driver, speed, args.audible_weight, screen,
+        winner, cache = descent(hw, kl, driver, speed, hearing, screen,
                                 budget=budget)
 
         # winner's curse guard: re-measure the descent's top few before recommending
-        top = sorted(cache, key=cache.get)[:VALIDATE_TOP]
+        top = sorted((c for c in cache if cache[c] != float('inf')), key=cache.get)[:VALIDATE_TOP]
         rescored = {}
         for combo in top:
             kl.gcode(tmc.set_fields_script('extruder', combo.fields()))
             scores = []
             for _ in range(2):
                 magnitude, clicks = measure(hw, speed)
-                scores.append(penalized_score(combo, [magnitude], driver,
-                                              args.audible_weight, float(clicks)))
+                scores.append(penalized_score(combo, [magnitude], driver, hearing, float(clicks)))
             rescored[combo] = statistics.mean(scores)
             print('  validate %s: %.0f' % (combo.label(), rescored[combo]))
         winner = min(rescored, key=rescored.get)

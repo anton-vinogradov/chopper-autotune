@@ -68,15 +68,17 @@ def aggregate(ds: Dataset, recompute: bool, trim_fraction: float) -> 'list[dict]
     } for key, values in groups.items()]
 
 
-def rank(aggregates: 'list[dict]', driver: tmc.Driver, audible_weight: float) -> 'list[dict]':
+def rank(aggregates: 'list[dict]', driver: tmc.Driver, hearing: tmc.Hearing) -> 'list[dict]':
     """Best first. Combos this driver's config cannot hold (a TMC2660 hysteresis sum
-    measured before the limit existed) are left out: nothing may recommend them."""
+    measured before the limit existed) and the audible ones the hearing skips are left
+    out: nothing may recommend them."""
     from .search import penalized_score
-    aggregates = [a for a in aggregates if tmc.validate(a['chopper'], driver) is None]
+    aggregates = [a for a in aggregates if tmc.validate(a['chopper'], driver) is None
+                  and not hearing.skips(a['chopper'], driver)]
     for a in aggregates:
         a['chopper_freq_hz'] = tmc.chopper_freq_hz(a['chopper'], driver)
-        a['audible'] = tmc.is_audible(a['chopper'], driver)
-        a['score'] = penalized_score(a['chopper'], [a['magnitude']], driver, audible_weight,
+        a['audible'] = hearing.audible(a['chopper'], driver)
+        a['score'] = penalized_score(a['chopper'], [a['magnitude']], driver, hearing,
                                      a.get('clicks', 0) / a['n'])
     aggregates.sort(key=lambda a: a['score'])
     return aggregates
@@ -95,7 +97,7 @@ def print_table(ranked: 'list[dict]', top: int):
                  a['chopper_freq_hz'] / 1000, 'audible!' if a['audible'] else ''))
 
 
-def tbl_toff_matrix(ranked: 'list[dict]', driver: tmc.Driver):
+def tbl_toff_matrix(ranked: 'list[dict]', driver: tmc.Driver, hearing: tmc.Hearing):
     """Median magnitude per (tbl, toff) cell, with the analytic chopper frequency."""
     tbls = sorted({a['chopper'].tbl for a in ranked})
     toffs = sorted({a['chopper'].toff for a in ranked})
@@ -107,10 +109,9 @@ def tbl_toff_matrix(ranked: 'list[dict]', driver: tmc.Driver):
         z_row, text_row = [], []
         for toff in toffs:
             values = groups.get((tbl, toff))
-            freq = tmc.chopper_freq_hz(tmc.Chopper(tbl, toff, 0, 0), driver) if values else None
             z_row.append(statistics.median(values) if values else None)
-            text_row.append('%.0f%s' % (z_row[-1], '!' if freq < tmc.AUDIBLE_LIMIT_HZ else '')
-                            if values else '')
+            audible = hearing.audible(tmc.Chopper(tbl, toff, 0, 0), driver)
+            text_row.append('%.0f%s' % (z_row[-1], '!' if audible else '') if values else '')
         z.append(z_row)
         text.append(text_row)
     return tbls, toffs, z, text
@@ -129,12 +130,13 @@ def hyst_matrix(ranked: 'list[dict]', tbl: int, toff: int):
     return hstrts, hends, z
 
 
-def write_report(ranked: 'list[dict]', driver: tmc.Driver, title: str, path: str, top: int = 30):
+def write_report(ranked: 'list[dict]', driver: tmc.Driver, hearing: tmc.Hearing, title: str,
+                 path: str, top: int = 30):
     import plotly.graph_objects as go
     heat = {'colorscale': 'RdYlGn', 'reversescale': True, 'colorbar': {'title': 'magnitude'}}
     figures = []
 
-    tbls, toffs, z, text = tbl_toff_matrix(ranked, driver)
+    tbls, toffs, z, text = tbl_toff_matrix(ranked, driver, hearing)
     fig = go.Figure(go.Heatmap(x=['toff %d' % o for o in toffs], y=['tbl %d' % t for t in tbls],
                                z=z, text=text, texttemplate='%{text}', **heat))
     fig.update_layout(title='chopper frequency landscape: median magnitude per tbl/toff '
@@ -172,7 +174,7 @@ def write_report(ranked: 'list[dict]', driver: tmc.Driver, title: str, path: str
                 'size': 5, 'opacity': 0.5},
         hovertext=[a['chopper'].label() for a in ranked],
     ))
-    fig.add_vline(x=tmc.AUDIBLE_LIMIT_HZ / 1000, line_dash='dash', line_color='#d62728')
+    fig.add_vline(x=hearing.limit_hz / 1000, line_dash='dash', line_color='#d62728')
     fig.update_layout(title='vibration vs chopper frequency (left of the line is audible)',
                       xaxis_title='chopper frequency, kHz', yaxis_title='median magnitude',
                       height=420)
@@ -487,7 +489,7 @@ def run_save_latest(args) -> int:
                 print('motor %s: NOT saving %s: %s' % (motor_label(axis), Path(path).name, skipped[-1]))
                 continue
             try:
-                manifest, combo = winner_of(str(path), args.audible_weight)
+                manifest, combo = winner_of(str(path), args)
             except SystemExit as reason:
                 # an aborted-at-start dataset has no measurements — fall back to an
                 # older complete one instead of blocking Save entirely
@@ -557,13 +559,16 @@ def run_compare(args) -> int:
     sides = []
     for path in (args.dataset_a, args.dataset_b):
         ds = Dataset.open(path)
-        driver = tmc.DRIVERS[ds.manifest()['driver']]
+        manifest = ds.manifest()
+        driver = tmc.DRIVERS[manifest['driver']]
         aggregates = aggregate(ds, False, 0.25)
         if not aggregates:
             raise SystemExit('no successful measurements in %s' % path)
-        ranked = rank(aggregates, driver, args.audible_weight)
+        hearing = tmc.Hearing.of(args, manifest)
+        ranked = rank(aggregates, driver, hearing)
         if not ranked:
-            raise SystemExit('no measured combination in %s fits the tmc%s limits' % (path, driver.name))
+            raise SystemExit('no measured combination in %s fits the tmc%s limits%s'
+                             % (path, driver.name, ' and SKIP_AUDIBLE' if hearing.skip else ''))
         winner = ranked[0]
         sides.append({'path': path, 'winner': winner,
                       'magnitudes': {a['chopper']: a['magnitude'] for a in aggregates}})
@@ -635,7 +640,7 @@ def run_status(args) -> int:
                           Range(*ranges['hstrt']), Range(*ranges['hend']),
                           Range(*ranges['tpfd']) if ranges.get('tpfd') else None,
                           manifest.get('speeds', [0]),
-                          manifest.get('skip_audible', False))
+                          tmc.Hearing.of(recorded=manifest))
         total = (len(plan) * manifest.get('iterations', 1) * 2
                  + manifest.get('validate', 0) * VALIDATE_EXTRA_ITERATIONS
                  * len(manifest.get('speeds', [0])) * 2)
@@ -655,12 +660,18 @@ def run_analyze(args) -> int:
     aggregates = aggregate(ds, args.recompute, args.trim)
     if not aggregates:
         raise SystemExit('no successful measurements in %s' % dataset)
-    ranked = rank(aggregates, driver, args.audible_weight)
-    if len(ranked) < len(aggregates):
+    hearing = tmc.Hearing.of(args, manifest)
+    ranked = rank(aggregates, driver, hearing)
+    unloadable = sum(1 for a in aggregates if tmc.validate(a['chopper'], driver) is not None)
+    if unloadable:
         print('%d measured combos are left out: Klipper would not load them on tmc%s'
-              % (len(aggregates) - len(ranked), driver.name))
+              % (unloadable, driver.name))
+    if len(aggregates) - unloadable > len(ranked):
+        print('%d measured combos are left out: their chopper runs below %g kHz (SKIP_AUDIBLE)'
+              % (len(aggregates) - unloadable - len(ranked), hearing.limit_hz / 1000))
     if not ranked:
-        raise SystemExit('no measured combination in %s fits the tmc%s limits' % (dataset, driver.name))
+        raise SystemExit('no measured combination in %s fits the tmc%s limits%s'
+                         % (dataset, driver.name, ' and SKIP_AUDIBLE' if hearing.skip else ''))
 
     print('%s: %d configurations, driver tmc%s on %s\n'
           % (dataset, len(ranked), driver.name, manifest['stepper']))
@@ -668,7 +679,7 @@ def run_analyze(args) -> int:
 
     if not args.no_html:
         path = args.html or str(Path(dataset) / 'report.html')
-        write_report(ranked, driver, 'tmc%s %s' % (driver.name, manifest['stepper']), path)
+        write_report(ranked, driver, hearing, 'tmc%s %s' % (driver.name, manifest['stepper']), path)
         print('\nReport: %s' % path)
 
     best = ranked[0]

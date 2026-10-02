@@ -30,8 +30,8 @@ def test_chopper_freq_estimate():
     assert tmc.chopper_freq_hz(tmc.Chopper(0, 8, 0, 0), driver) == pytest.approx(12e6 / (2 * (16 + 12 + 256)))
     assert (tmc.chopper_freq_hz(tmc.Chopper(0, 3, 0, 0), driver)
             > tmc.chopper_freq_hz(tmc.Chopper(0, 8, 0, 0), driver))
-    assert tmc.is_audible(tmc.Chopper(0, 10, 0, 0), driver)
-    assert not tmc.is_audible(tmc.Chopper(0, 5, 0, 0), driver)
+    assert tmc.Hearing().audible(tmc.Chopper(0, 10, 0, 0), driver)
+    assert not tmc.Hearing().audible(tmc.Chopper(0, 5, 0, 0), driver)
 
 
 def test_blank_times_are_per_driver():

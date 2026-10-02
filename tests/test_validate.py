@@ -148,7 +148,7 @@ def test_validate_recommends_only_from_validated_set(tmp_path, monkeypatch):
                  set(), lambda d, t: None, Screen(kl, display=False))
 
     from chopper_autotune.analyze import aggregate, rank
-    ranked = rank(aggregate(ds, False, 0.1), tmc.DRIVERS['2209'], 0.25)
+    ranked = rank(aggregate(ds, False, 0.1), tmc.DRIVERS['2209'], tmc.Hearing())
     validated = {a['chopper'] for a in ranked if a['n'] > 2}
     # the untouched lucky seeds still top the whole-grid ranking
     assert ranked[0]['chopper'] not in validated

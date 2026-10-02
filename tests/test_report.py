@@ -17,7 +17,7 @@ def make_ranked():
         magnitude = 500 + 300 * abs(o - 6) + 50 * abs(hs - 4) + 20 * abs(he - 8)
         aggregates.append({'chopper': combo, 'magnitude': float(magnitude),
                            'spread': 30.0, 'n': 2})
-    return rank(aggregates, DRIVER, audible_weight=0.25)
+    return rank(aggregates, DRIVER, tmc.Hearing())
 
 
 def test_rank_prefers_clean_over_slightly_quieter_clicky(tmp_path, capsys):
@@ -32,7 +32,7 @@ def test_rank_prefers_clean_over_slightly_quieter_clicky(tmp_path, capsys):
             (tmc.Chopper(2, 1, 5, 3), 1227.0, 0))):
         ds.append({'id': 'm%d' % i, 'kind': 'move', 'status': 'ok', **combo.fields(),
                    'score': {'median_magnitude': magnitude, 'clicks': clicks}})
-    ranked = rank(aggregate(ds, False, 0.1), DRIVER, audible_weight=0.25)
+    ranked = rank(aggregate(ds, False, 0.1), DRIVER, tmc.Hearing())
     assert ranked[0]['chopper'] == tmc.Chopper(2, 1, 5, 3)          # clean wins
     assert ranked[1]['clicks'] == 11
     print_table(ranked, 5)
@@ -42,7 +42,7 @@ def test_rank_prefers_clean_over_slightly_quieter_clicky(tmp_path, capsys):
 
 def test_tbl_toff_matrix_medians_and_audible_mark():
     ranked = make_ranked()
-    tbls, toffs, z, text = tbl_toff_matrix(ranked, DRIVER)
+    tbls, toffs, z, text = tbl_toff_matrix(ranked, DRIVER, tmc.Hearing())
     assert tbls == [0, 1, 2, 3]
     assert toffs == list(range(2, 9))
     # magnitude does not depend on tbl in the synthetic surface
@@ -66,7 +66,7 @@ def test_write_report_produces_all_sections(tmp_path):
     pytest.importorskip('plotly')
     ranked = make_ranked()
     path = tmp_path / 'report.html'
-    write_report(ranked, DRIVER, 'tmc2209 stepper_x', str(path))
+    write_report(ranked, DRIVER, tmc.Hearing(), 'tmc2209 stepper_x', str(path))
     html = path.read_text()
     assert html.count('<div') >= 4
     assert 'chopper frequency landscape' in html

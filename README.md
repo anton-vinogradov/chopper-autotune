@@ -25,7 +25,7 @@
 - **Measured on *your* hardware, not guessed.** Every candidate is scored from real toolhead-accelerometer data on your motors, belts and supply voltage — not computed from a database.
 - **Real numbers.** On the reference printer (CoreXY, TMC2209): ~2× less measured vibration than Klipper defaults at the resonance speed, zero audible clicks — and the tuned chopper survives the worst-case torque test at **2.5× less current** than the default one. That margin let us drop `run_current` 1.8 → 1.0 A: motors 3.2× cooler, at the quietest state the rig has ever measured.
 - **What tuning spreadCycle is for.** Lower measured vibration and — the part nobody advertises — **torque margin**: on the reference rig the tuned chopper holds the worst-case stress at 0.42 A where the default needs ~1.1 A. Margin you can spend on a lower, cooler run current; `CHOPPER_CURRENT` measures exactly how much. It targets *vibration*, not perceived loudness — see the [caveat](#datasheet-driven-scoring-not-just-measurement).
-- **Won't trade silence for a whine — or for clicks.** The chopper frequency is derived from the registers, so configs that would slip into the audible band are penalised automatically; and every measurement counts transient clicks, so a "quiet on average, clicking in fact" config cannot win either.
+- **Won't trade silence for a whine — or for clicks.** The chopper frequency is derived from the registers, so configs that would slip into the audible band are penalised automatically, or with `SKIP_AUDIBLE=1` never tried; if the winner still whines for you, raise the limit (`AUDIBLE_KHZ`, see below). And every measurement counts transient clicks, so a "quiet on average, clicking in fact" config cannot win either.
 - **Built for a real printer.** Resumable runs, live progress on the KlipperScreen, a config backup before anything is written, and a `--csv` fallback if streaming misbehaves.
 
 ## The problem
@@ -55,9 +55,11 @@ Besides the default full-grid sweep, `--search descent` (`SEARCH=descent`) runs 
 
 ### Datasheet-driven scoring, not just measurement
 
-The accelerometer cannot hear the chopper (ADXL345 samples at 3.2 kHz), but the chopper frequency is *computable* from the registers and the driver clock. That makes the classic "low vibration but nasty audible whine" trade-off automatic: candidates whose chopper frequency falls into the audible range get penalized analytically (`--audible-weight`).
+The accelerometer cannot hear the chopper (ADXL345 samples at 3.2 kHz), but the chopper frequency is *computable* from the registers and the driver clock. That makes the classic "low vibration but nasty audible whine" trade-off automatic: a candidate whose chopper frequency is below the audible limit gets a penalty (`AUDIBLE_WEIGHT`, 25% by default), and with `SKIP_AUDIBLE=1` it is never tried or recommended.
 
-**It optimises vibration, not perceived loudness.** Sampling at 3.2 kHz, the accelerometer only sees vibration up to ~1.6 kHz — the low-frequency growl/resonance that causes ringing in prints, shakes the frame and tracks motor efficiency and heat. Your ear hears much higher (peak sensitivity ~2–5 kHz), a band the sensor is blind to. So "−N% vibration" means less *measured* low-frequency vibration; it usually but not always sounds quieter — a config can shake the toolhead less yet emit a higher-pitched hiss the ear reads as louder (no whine, since the chopper itself is ultrasonic). Optimising true acoustic loudness would need a microphone.
+The frequency is an estimate. It counts the blank time and the slow decay, but not the fast decay and the rest of the on time, so the real chopper runs lower; how much lower depends on the motor and the supply voltage. So the limit, `AUDIBLE_KHZ`, applies to the estimate: 20 kHz by default. If the winner still whines for you, raise the limit and skip what is below it. In [#157](https://github.com/anton-vinogradov/chopper-autotune/issues/157), a TMC2209 with 17HS16-2004S1 motors still whined at 28.3 kHz of the estimate and was quiet at 33.3 kHz: `CHOPPER_TUNE AUDIBLE_KHZ=33 SKIP_AUDIBLE=1` tunes such a printer. A penalty alone is not enough there: the quiet combo measured 30% more vibration than the whining one, and the penalty adds only 25%.
+
+**It optimises vibration, not perceived loudness.** Sampling at 3.2 kHz, the accelerometer only sees vibration up to ~1.6 kHz — the low-frequency growl/resonance that causes ringing in prints, shakes the frame and tracks motor efficiency and heat. Your ear hears much higher (peak sensitivity ~2–5 kHz), a band the sensor is blind to. So "−N% vibration" means less *measured* low-frequency vibration; it usually but not always sounds quieter — a config can shake the toolhead less yet emit a higher-pitched hiss the ear reads as louder (not the chopper's whine: the audible limit above keeps that out). Optimising true acoustic loudness would need a microphone.
 
 **It refuses clicky winners.** The per-move median is blind to rare transients: a config can win the median while audibly clicking (measured — the datasheet-edge winner clicked ~2× per one-second move at ~65× the median). Every capture therefore also counts clicks over the whole move, with a hardware-calibrated threshold (15× the move median: real clicks measure 22–69×, threshold noise stays under ~13×), and one click per move costs as much as doubling the vibration.
 
@@ -218,7 +220,9 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 | `SPEED` | auto | skip the resonance scan and tune at this speed (mm/s) |
 | `SAVE` | `0` | write the winners into the Klipper config (backup first) and restart |
 | `ITERATIONS` | `1` | repeats per candidate — raise on noisy mechanics |
-| `AUDIBLE_WEIGHT` | `0.25` | penalty multiplier for audible chopper frequency |
+| `AUDIBLE_KHZ` | `20` | estimated chopper frequency, kHz, below which a combo counts as audible; raise it if the winner still whines ([why](#datasheet-driven-scoring-not-just-measurement)) |
+| `AUDIBLE_WEIGHT` | `0.25` | score penalty for an audible combo |
+| `SKIP_AUDIBLE` | `0` | never try or recommend an audible combo, instead of just penalizing it |
 | `DRY_RUN` | `0` | print the plan and ETA, do not move anything |
 
 **CHOPPER_FIND_SPEED** — resonance speed scan on stock registers (the tuned ones are set aside for the sweep and restored afterwards).
@@ -243,8 +247,7 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 | `TBL` / `TOFF` / `HSTRT` / `HEND` | `0:3` / `1:8` / `0:7` / `0:15` | register ranges (`lo:hi` or a single value) |
 | `TPFD` | off | TPFD range, TMC2240/5160 only |
 | `SEED_FROM` | — | start the descent from another dataset's winner (fast second motor) |
-| `SKIP_AUDIBLE` | `0` | exclude audibly-whining combos instead of just penalizing them |
-| `AUDIBLE_WEIGHT` | `0.25` | descent-objective penalty for audible chopper frequency |
+| `AUDIBLE_KHZ` / `AUDIBLE_WEIGHT` / `SKIP_AUDIBLE` | `20` / `0.25` / `0` | the audible limit, its penalty, and skipping instead, as in `CHOPPER_TUNE` |
 | `ITERATIONS` | `1` | repeats per combination |
 | `VALIDATE` | `3` | re-measure top N candidates with extra runs before recommending (`0` = off) |
 | `MEASURE_TIME` | `1.25` | cruise seconds per move |
@@ -261,7 +264,7 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 |---|---|---|
 | `DATASET` | latest | dataset directory to analyze |
 | `TOP` | `15` | rows in the console table |
-| `AUDIBLE_WEIGHT` | `0.25` | ranking penalty for audible chopper frequency |
+| `AUDIBLE_KHZ` / `AUDIBLE_WEIGHT` / `SKIP_AUDIBLE` | as collected | the audible limit, its penalty, and skipping instead, as in `CHOPPER_TUNE`; by default the dataset is ranked the way its run ranked it |
 | `RECOMPUTE` | `0` | recompute metrics from raw samples instead of stored scores |
 | `HTML` / `NO_HTML` | `<dataset>/report.html` | report path / skip the report |
 | `APPLY` | `0` | apply the winner live via `SET_TMC_FIELD` (until Klipper restarts; on a motor without an enable pin of its own, toff returns to the config value at the next motors off and on) |
@@ -283,7 +286,7 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 
 **CHOPPER_BELTS SWEEP=1** — the **diagonal response comparison**, kept as a *structural-change diagnostic*, not a tension gauge: it excites each belt's diagonal with Klipper's swept-sine `TEST_RESONANCES` and reports the response frequencies, the gap, and the per-belt change since the previous run. **Measured caveat:** a persistent gap can be structural asymmetry — on the reference rig a heavy overtension moved the response by 0 Hz — so it never orders "tighten belt X", and if nothing moved since the last run it says so. Use it to notice mechanics drifting over time; use the pluck (default) for tension. Needs `[resonance_tester]`; CoreXY/H-bot only. Parameters: `MIN_FREQ`, `MAX_FREQ`, `HZ_PER_SEC`, `TOLERANCE`.
 
-**CHOPPER_EXTRUDER** — tune the **extruder's** chopper. On a direct-drive head the E motor sits right next to the accelerometer, and its chopper matters exactly where the A/B motors' does: at the mid-band resonance (measured: filament 5 mm/s rang 3× above the neighbours and separated register configs by 27 %; off-resonance the field is flat). **Heats the hotend first** (default `TEMP=200` — right for PLA and its composites, workable for PETG; ABS owners pass `TEMP=240`) so the loaded filament can move — no unloading. The motion is a net-zero oscillation of a few mm of filament (never chews one spot, never drags melt into the cold zone; `FORCE_MOVE` bypasses Klipper's cold-extrusion guard, so the tool enforces its own). Flow: resonance scan over filament speeds on stock registers → the same multi-start register descent the axis tune uses, at the peak → top-3 validation → `SAVE=1` writes `[tmcXXXX extruder]` (backup first); the winner is also remembered, so `SAVE_LAST=1` persists it later **without re-running the heated tune**. The heater is switched off on every exit path. `DEMO=1` plays Klipper defaults against the saved registers at the E resonance so you can hear the difference (heats too). Parameters: `TEMP`, `SPEED`, `MIN_SPEED`, `MAX_SPEED`, `AUDIBLE_WEIGHT`, `SAVE`, `SAVE_LAST`, `DEMO`, `DRY_RUN`.
+**CHOPPER_EXTRUDER** — tune the **extruder's** chopper. On a direct-drive head the E motor sits right next to the accelerometer, and its chopper matters exactly where the A/B motors' does: at the mid-band resonance (measured: filament 5 mm/s rang 3× above the neighbours and separated register configs by 27 %; off-resonance the field is flat). **Heats the hotend first** (default `TEMP=200` — right for PLA and its composites, workable for PETG; ABS owners pass `TEMP=240`) so the loaded filament can move — no unloading. The motion is a net-zero oscillation of a few mm of filament (never chews one spot, never drags melt into the cold zone; `FORCE_MOVE` bypasses Klipper's cold-extrusion guard, so the tool enforces its own). Flow: resonance scan over filament speeds on stock registers → the same multi-start register descent the axis tune uses, at the peak → top-3 validation → `SAVE=1` writes `[tmcXXXX extruder]` (backup first); the winner is also remembered, so `SAVE_LAST=1` persists it later **without re-running the heated tune**. The heater is switched off on every exit path. `DEMO=1` plays Klipper defaults against the saved registers at the E resonance so you can hear the difference (heats too). Parameters: `TEMP`, `SPEED`, `MIN_SPEED`, `MAX_SPEED`, `AUDIBLE_KHZ`, `AUDIBLE_WEIGHT`, `SKIP_AUDIBLE`, `SAVE`, `SAVE_LAST`, `DEMO`, `DRY_RUN`.
 
 **CHOPPER_STOP** — abort a running tuning/show job; the tool restores the registers, leaves spreadCycle and re-homes before it exits.
 

@@ -48,7 +48,10 @@ One spreadCycle chopper cycle **[datasheet]**:
   The ear peaks at 2–5 kHz, a band the sensor is blind to — hence
   “vibration ≠ perceived loudness” (see the scoring caveat in the README) **[measured]**.
 - The chopper itself (20–80 kHz) is far beyond the sensor; its frequency is
-  *computed* from the registers instead and penalised when audible.
+  *computed* from the registers instead and penalised when audible. The computed
+  value leaves out the fast decay and the rest of the on time, so it runs above the
+  real frequency: a TMC2209 still whined at 28.3 kHz of the estimate ([#157](https://github.com/anton-vinogradov/chopper-autotune/issues/157)). The
+  audible limit is therefore a setting (`AUDIBLE_KHZ`, 20 kHz by default).
 - Per-move score = **median** magnitude: robust against sample noise, but
   **blind to rare transients** — a config can win the median while producing
   audible clicks (see below) **[measured]**.
