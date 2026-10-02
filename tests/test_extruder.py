@@ -55,8 +55,8 @@ def test_winner_state_round_trips(tmp_path, monkeypatch):
     assert load_winner_state() is None
     save_winner_state('2209', tmc.Chopper(3, 7, 6, 0))
     state = load_winner_state()
-    assert state == {'driver': '2209',
-                     'fields': {'tbl': 3, 'toff': 7, 'hstrt': 6, 'hend': 0}}
+    assert state == {'driver': '2209', 'fields': {'tbl': 3, 'toff': 7, 'hstrt': 6, 'hend': 0},
+                     **tmc.Hearing().manifest_fields()}
 
 
 def test_extruder_demo_arg_translates():

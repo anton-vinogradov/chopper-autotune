@@ -97,9 +97,10 @@ def test_the_command_line_hears_first_then_the_dataset_then_the_defaults():
     assert tmc.Hearing.of(line(khz=25.0, skip=False), recorded) == tmc.Hearing(25000, 1.0, False)
     assert tmc.Hearing.of(line(weight=0.5, skip=True)) == tmc.Hearing(30000, 0.5, True)
     assert tmc.Hearing.of(line()) == tmc.Hearing()
-    # a dataset from before the limit was recorded was heard at 20 kHz
+    # a dataset from before the limit was recorded was heard at 20 kHz; its skip went by the
+    # estimate of the day, so it is not applied again by this one
     assert tmc.Hearing.of(line(), {'audible_weight': 0.25, 'skip_audible': True}) \
-        == tmc.Hearing(20000, 0.25, True)
+        == tmc.Hearing(20000, 0.25, False)
 
 
 def test_the_default_limit_penalizes_the_whine_of_157():
@@ -282,7 +283,8 @@ def test_save_never_falls_back_to_an_older_run_when_the_hearing_skips_the_newest
     motor_dataset(tmp_path / '01_old', tmc.Chopper(0, 2, 4, 7), [tmc.Chopper(0, 2, 4, 7)])
     motor_dataset(tmp_path / '02_new', tmc.Chopper(3, 5, 0, 0),
                   [tmc.Chopper(3, toff, 0, 0) for toff in range(5, 9)])
-    with pytest.raises(SystemExit, match=r'02_new runs at 31 kHz or above \(SKIP_AUDIBLE\)'):
+    with pytest.raises(SystemExit, match=r'^motor A: re-run CHOPPER_TUNE with AUDIBLE_KHZ=31: '
+                                         r'SKIP_AUDIBLE skips all of 02_new$'):
         save_latest(monkeypatch, tmp_path, ['--audible-khz', '31', '--skip-audible'])
     out = capsys.readouterr().out
     assert 'NOT saving 02_new' in out and '01_old' not in out
@@ -290,7 +292,8 @@ def test_save_never_falls_back_to_an_older_run_when_the_hearing_skips_the_newest
 
 def test_save_and_save_last_keep_an_extruder_winner_the_hearing_skips(monkeypatch, tmp_path):
     from chopper_autotune import extruder
-    whining = {'driver': '2209', 'fields': {'tbl': 3, 'toff': 7, 'hstrt': 0, 'hend': 0}}
+    whining = {'driver': '2209', 'fields': {'tbl': 3, 'toff': 7, 'hstrt': 0, 'hend': 0},
+               **tmc.Hearing().manifest_fields()}
     assert save_latest(monkeypatch, tmp_path, [], whining)['extruder'] == whining
     with pytest.raises(SystemExit, match=r'runs below 30 kHz \(SKIP_AUDIBLE\)'):
         save_latest(monkeypatch, tmp_path, ['--skip-audible'], whining)
@@ -298,3 +301,81 @@ def test_save_and_save_last_keep_an_extruder_winner_the_hearing_skips(monkeypatc
     with pytest.raises(SystemExit, match=r'stored extruder winner .* runs below 30 kHz'):
         extruder.extruder_tune(None, build_parser().parse_args(['extruder', '--save-last',
                                                                 '--skip-audible']))
+
+
+def test_a_run_from_before_keeps_its_recorded_winner(tmp_path, capsys):
+    # an old SKIP_AUDIBLE=1 run skipped by 12 + 32 * TOFF: its winner 2/8/4/4 ran at 20.0 kHz
+    # then, 19.2 kHz by the datasheets now; neither SAVE nor ANALYZE drops it after the fact
+    ds = Dataset.create(tmp_path / 'old', {'axis': 'x', 'search': 'descent', 'driver': '2209',
+                                           'stepper': 'stepper_x', 'trim': 0.1,
+                                           'audible_weight': 0.25, 'skip_audible': True,
+                                           'winner': tmc.Chopper(2, 8, 4, 4).fields()})
+    for index, (combo, magnitude) in enumerate([(tmc.Chopper(2, 8, 4, 4), 900.0),
+                                                (tmc.Chopper(2, 6, 4, 4), 950.0)]):
+        ds.append({'id': str(index), 'kind': 'move', 'status': 'ok', **combo.fields(),
+                   'score': {'median_magnitude': magnitude}})
+    assert tune.winner_of(str(ds.root), build_parser().parse_args(['save']))[1] \
+        == tmc.Chopper(2, 8, 4, 4)
+    run_analyze(build_parser().parse_args(['analyze', str(ds.root), '--no-html']))
+    out = capsys.readouterr().out
+    assert 'left out' not in out and 'driver_TOFF: 8' in out
+
+
+def test_save_says_when_the_hearing_replaces_a_recorded_winner(tmp_path, capsys):
+    ds = reported_dataset(tmp_path, tmc.Hearing(), winner=tmc.Chopper(3, 7, 0, 0))
+    tune.winner_of(str(ds.root), build_parser().parse_args(['save', '--audible-khz', '31',
+                                                            '--skip-audible']))
+    assert ('The winner recorded in d, tbl3_toff7_hstrt0_hend0, runs below 31 kHz '
+            '(SKIP_AUDIBLE)') in capsys.readouterr().out
+
+
+def test_an_extruder_winner_hears_as_its_tune_did(monkeypatch, tmp_path):
+    fields = {'tbl': 3, 'toff': 7, 'hstrt': 0, 'hend': 0}                 # 20.8 kHz
+    before = {'driver': '2209', 'fields': fields}                        # heard at 20 kHz
+    assert save_latest(monkeypatch, tmp_path, ['--skip-audible'], before)['extruder'] == before
+    tuned = dict(before, **tmc.Hearing(31000).manifest_fields())
+    with pytest.raises(SystemExit, match=r'runs below 31 kHz \(SKIP_AUDIBLE\)'):
+        save_latest(monkeypatch, tmp_path, ['--skip-audible'], tuned)
+
+
+def test_compare_says_when_the_two_sides_hear_differently(tmp_path, capsys):
+    from chopper_autotune.analyze import run_compare
+    roots = []
+    for name, hearing in (('a', tmc.Hearing(20000)), ('b', tmc.Hearing())):
+        ds = Dataset.create(tmp_path / name, {'driver': '2209', 'stepper': 'stepper_x',
+                                              **hearing.manifest_fields()})
+        for index, (fields, magnitude) in enumerate(REPORTED):
+            ds.append({'id': str(index), 'kind': 'move', 'status': 'ok',
+                       **tmc.Chopper(*fields).fields(), 'score': {'median_magnitude': magnitude}})
+        roots.append(str(ds.root))
+    run_compare(build_parser().parse_args(['compare', *roots]))
+    assert 'ranked under different hearing (A 20 kHz, weight 0.25, B 30 kHz, weight 0.25)' \
+        in capsys.readouterr().out
+    run_compare(build_parser().parse_args(['compare', *roots, '--audible-khz', '30']))
+    assert 'different hearing' not in capsys.readouterr().out
+
+
+def test_the_extruder_tune_remembers_its_hearing_and_save_last_uses_it(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from chopper_autotune import extruder
+    monkeypatch.setattr(extruder, 'STATE', str(tmp_path / 'extruder.json'))
+    kl = SimpleNamespace(settings=lambda: {'tmc2209 extruder': {}, 'extruder': {}},
+                         gcode=lambda script: None, gcode_output=lambda script: [],
+                         subscribe_accel=lambda chip: None)
+    monkeypatch.setattr(extruder, 'detect_hardware', lambda kl, axis: SimpleNamespace(
+        accel_chip='adxl345', display=False))
+    monkeypatch.setattr(extruder, 'refuse_if_printing', lambda kl: None)
+    monkeypatch.setattr(extruder, 'Screen', lambda kl, display: SimpleNamespace(
+        update=lambda *a, **k: None, final=lambda *a: None))
+    monkeypatch.setattr(extruder, 'measure', lambda hw, speed: (100.0, 0))
+    edge = tmc.Chopper(0, 5, 0, 0)                  # 30.0 kHz: heard under 31, not under 30
+    monkeypatch.setattr(extruder, 'descent', lambda *args, **kwargs: (edge, {edge: 100.0}))
+    extruder.extruder_tune(kl, build_parser().parse_args(
+        ['extruder', '--speed', '5', '--audible-khz', '31', '--yes']))
+    assert tmc.Hearing.of(recorded=extruder.load_winner_state()) == tmc.Hearing(31000)
+    # SAVE_LAST hears as the tune did, at 31 kHz, not at the default 30
+    monkeypatch.setattr('chopper_autotune.analyze._persist', lambda *args: pytest.fail('saved'))
+    with pytest.raises(SystemExit, match=r'runs below 31 kHz \(SKIP_AUDIBLE\)'):
+        extruder.extruder_tune(kl, build_parser().parse_args(['extruder', '--save-last',
+                                                              '--skip-audible']))

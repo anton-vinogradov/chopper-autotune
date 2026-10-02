@@ -163,6 +163,10 @@ class Hearing:
         a dataset (`recorded`, its manifest), then from the defaults."""
         recorded = recorded or {}
         limit = RECORDED_LIMIT_BEFORE_HZ if recorded else AUDIBLE_LIMIT_HZ
+        if 'audible_khz' not in recorded:
+            # a run from before: its skip went by the estimate of the day (12 + 32 * TOFF),
+            # by this one it would drop combos, its winner too, the run measured as inaudible
+            recorded = dict(recorded, skip_audible=False)
 
         def pick(name: str, default):
             value = getattr(args, name, None)

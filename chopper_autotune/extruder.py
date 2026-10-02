@@ -31,11 +31,13 @@ VALIDATE_TOP = 3            # re-measure the best candidates before recommending
 STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/extruder.json')
 
 
-def save_winner_state(driver_name: str, winner: tmc.Chopper, autotune: 'str | None' = None):
+def save_winner_state(driver_name: str, winner: tmc.Chopper, autotune: 'str | None' = None,
+                      hearing: tmc.Hearing = tmc.Hearing()):
     """The extruder has no dataset like the axes do; remember the winner so SAVE_LAST=1
     can persist it later without re-running the whole heated tune. autotune: the
-    klipper_tmc_autotune goal it was measured under (its CoolStep changes the current)."""
-    state = {'driver': driver_name, 'fields': winner.fields()}
+    klipper_tmc_autotune goal it was measured under (its CoolStep changes the current);
+    the hearing it was picked with, read back like a dataset's."""
+    state = {'driver': driver_name, 'fields': winner.fields(), **hearing.manifest_fields()}
     if autotune:
         state['autotune'] = autotune
     save_json(STATE, state)
@@ -235,7 +237,7 @@ def extruder_tune(kl: Klippy, args) -> int:
         from .analyze import _persist, inaudible_refusal, refuse_unloadable, updated_config
         from .moonraker import Moonraker
         refuse_unloadable(state['driver'], 'extruder', state['fields'])
-        why = inaudible_refusal(state, tmc.Hearing.of(args))
+        why = inaudible_refusal(state, tmc.Hearing.of(args, state))
         if why:
             raise SystemExit('the stored extruder winner %s: %s' % (state['fields'], why))
         refuse_autotune_save(kl.settings(), state['driver'], 'extruder')
@@ -341,7 +343,8 @@ def extruder_tune(kl: Klippy, args) -> int:
             rescored[combo] = statistics.mean(scores)
             print('  validate %s: %.0f' % (combo.label(), rescored[combo]))
         winner = min(rescored, key=rescored.get)
-        save_winner_state(driver_name, winner, autotune_tag(driver_name, autotune_goal(settings, 'extruder')))
+        save_winner_state(driver_name, winner, autotune_tag(driver_name, autotune_goal(settings, 'extruder')),
+                          hearing)
 
         print('\n=== Extruder winner ===')
         print('%s  score %.0f  (f_chop %.1f kHz, h_eff %d)'

@@ -70,14 +70,18 @@ def winner_of(root: str, args=None) -> 'tuple[dict, tmc.Chopper]':
         # instead surface an unvalidated lucky combo (winner's curse)
         winner = tmc.Chopper(saved['tbl'], saved['toff'], saved['hstrt'], saved['hend'],
                              saved.get('tpfd'))
-        if tmc.validate(winner, driver) is None and not hearing.skips(winner, driver):
-            return manifest, winner
+        if tmc.validate(winner, driver) is None:
+            if not hearing.skips(winner, driver):
+                return manifest, winner
+            print('The winner recorded in %s, %s, runs below %g kHz (SKIP_AUDIBLE): '
+                  'taking the best inaudible combo instead'
+                  % (ds.root.name, winner.label(), hearing.limit_hz / 1000))
     aggregates = aggregate(ds, False, manifest.get('trim') or 0.1)
     ranked = rank(aggregates, driver, hearing)
     if not ranked and aggregates and hearing.skip:
-        raise NothingInaudible('nothing measured in %s runs at %g kHz or above (SKIP_AUDIBLE): '
-                               're-run CHOPPER_TUNE with this AUDIBLE_KHZ'
-                               % (root, hearing.limit_hz / 1000))
+        # the action first: the display keeps 120 characters of 'save FAILED: ...'
+        raise NothingInaudible('re-run CHOPPER_TUNE with AUDIBLE_KHZ=%g: SKIP_AUDIBLE skips all of %s'
+                               % (hearing.limit_hz / 1000, ds.root.name))
     if not ranked:
         raise SystemExit('no successful measurements in %s' % root)
     return manifest, ranked[0]['chopper']

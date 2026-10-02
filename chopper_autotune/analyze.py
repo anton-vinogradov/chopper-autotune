@@ -492,7 +492,7 @@ def run_save_latest(args) -> int:
                 manifest, combo = winner_of(str(path), args)
             except NothingInaudible as reason:
                 seen.add(axis)
-                skipped.append(str(reason))
+                skipped.append('motor %s: %s' % (motor_label(axis), reason))
                 print('motor %s: NOT saving %s: %s' % (motor_label(axis), Path(path).name, reason))
                 continue
             except SystemExit as reason:
@@ -523,7 +523,7 @@ def run_save_latest(args) -> int:
     elif extruder_state and extruder_state.get('autotune'):
         extruder_skip = measured_under_autotune(extruder_state['driver'], 'extruder')
     elif extruder_state:
-        extruder_skip = inaudible_refusal(extruder_state, tmc.Hearing.of(args))
+        extruder_skip = inaudible_refusal(extruder_state, tmc.Hearing.of(args, extruder_state))
     if extruder_skip:
         skipped.append(extruder_skip)
         print('extruder: NOT saving the stored winner: %s' % extruder_skip)
@@ -535,6 +535,11 @@ def run_save_latest(args) -> int:
         raise SystemExit(skipped[0] if skipped else 'no tuning datasets to save — run CHOPPER_TUNE first')
     run_save(mk, items, extruder_state)
     return 0
+
+
+def hearing_text(hearing: tmc.Hearing) -> str:
+    return '%g kHz, weight %g%s' % (hearing.limit_hz / 1000, hearing.weight,
+                                    ', skip' if hearing.skip else '')
 
 
 def inaudible_refusal(state: dict, hearing: tmc.Hearing) -> 'str | None':
@@ -585,13 +590,18 @@ def run_compare(args) -> int:
             raise SystemExit('no measured combination in %s fits the tmc%s limits%s'
                              % (path, driver.name, ' and SKIP_AUDIBLE' if hearing.skip else ''))
         winner = ranked[0]
-        sides.append({'path': path, 'winner': winner,
+        sides.append({'path': path, 'winner': winner, 'hearing': hearing,
                       'magnitudes': {a['chopper']: a['magnitude'] for a in aggregates}})
 
     for tag, side in zip('AB', sides):
         print('%s: %s (%d combos)  winner %s -> %.1f'
               % (tag, side['path'], len(side['magnitudes']),
                  side['winner']['chopper'].label(), side['winner']['magnitude']))
+    if sides[0]['hearing'] != sides[1]['hearing']:
+        # each dataset ranks as its run heard: the winners may differ by that alone
+        print('The winners are ranked under different hearing (A %s, B %s): pass --audible-khz, '
+              '--audible-weight and --skip-audible to rank both alike'
+              % tuple(hearing_text(side['hearing']) for side in sides))
 
     a, b = sides[0]['magnitudes'], sides[1]['magnitudes']
     common = sorted(set(a) & set(b), key=a.get)

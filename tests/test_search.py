@@ -50,7 +50,7 @@ def test_descent_never_evaluates_invalid():
 
 
 def test_descent_respects_audible_penalty():
-    # magnitude improves mildly with toff, but toff >= 9 pushes f_chop below 20 kHz;
+    # magnitude improves mildly with toff, but toff >= 6 pushes f_chop below 30 kHz;
     # the doubled audible score must outweigh the small vibration gain
     def audible_trap(combo):
         magnitude = 3000.0 - 100 * combo.toff
@@ -192,10 +192,15 @@ def test_click_penalty_beats_a_small_median_win():
 def test_edge_tiebreaker_prefers_safe_when_vibration_ties():
     # flat ladder (low run current): the tie-breaker must pick the config away from
     # the edges, not one sitting at max hysteresis / near the audible chopper band
-    edge = tmc.Chopper(0, 8, 3, 15)      # h_eff 16, 20 kHz — both edges
+    edge = tmc.Chopper(0, 4, 3, 15)      # h_eff 16, 36 kHz — both edges
     safe = tmc.Chopper(2, 1, 4, 4)       # h_eff 6, 68 kHz — interior, high freq
     assert penalized_score(safe, [900.0], DRIVER, tmc.Hearing()) < \
         penalized_score(edge, [891.0], DRIVER, tmc.Hearing())      # safe wins despite being louder
+
+    # the same chopper frequency: the edge hysteresis alone loses the tie
+    edge_hysteresis = tmc.Chopper(2, 1, 3, 15)     # h_eff 16, 68 kHz
+    assert penalized_score(safe, [900.0], DRIVER, tmc.Hearing()) < \
+        penalized_score(edge_hysteresis, [891.0], DRIVER, tmc.Hearing())
 
     # same total hysteresis, higher chopper frequency wins the tie
     low_freq = tmc.Chopper(0, 5, 6, 12)      # h16, 30 kHz
