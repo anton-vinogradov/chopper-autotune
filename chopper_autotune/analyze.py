@@ -690,6 +690,10 @@ def run_analyze(args) -> int:
         if tmc.validate(validated, driver) is not None:
             print('\nThe winner recorded by the run, %s, is past the tmc%s limits: '
                   'recommending the best loadable combo instead' % (validated.label(), driver.name))
+        elif hearing.skips(validated, driver):
+            print('\nThe winner recorded by the run, %s, runs below %g kHz (SKIP_AUDIBLE): '
+                  'recommending the best inaudible combo instead'
+                  % (validated.label(), hearing.limit_hz / 1000))
         elif validated != best['chopper']:
             # recommend what the run validated, not an unvalidated re-rank topper
             print('\nUsing the validated winner recorded by the run: %s '

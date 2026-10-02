@@ -694,10 +694,11 @@ def build_plan(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range, hend: 
     return plan
 
 
-def refuse_unhearable(driver: tmc.Driver, tbl: Range, toff: Range, hearing: tmc.Hearing):
+def refuse_unhearable(driver: tmc.Driver, tbl: Range, toff: Range, hearing: tmc.Hearing,
+                      widen: bool = False):
     """TBL and TOFF alone set the chopper frequency: with SKIP_AUDIBLE and a limit no
     pair of the ranges reaches, a run would measure nothing. Say so before anything
-    moves or heats."""
+    moves or heats; `widen` when the user sets the ranges."""
     if not hearing.skip:
         return
     pairs = [tmc.Chopper(t, o, 0, 0) for t in tbl.values() for o in toff.values()]
@@ -706,8 +707,9 @@ def refuse_unhearable(driver: tmc.Driver, tbl: Range, toff: Range, hearing: tmc.
     if top < hearing.limit_hz:
         raise SystemExit('SKIP_AUDIBLE leaves nothing to try: the fastest TMC%s chopper the '
                          'TBL/TOFF ranges allow runs at %.1f kHz, below AUDIBLE_KHZ=%g. '
-                         'Lower AUDIBLE_KHZ or widen TBL/TOFF'
-                         % (driver.name, top / 1000, hearing.limit_hz / 1000))
+                         'Lower AUDIBLE_KHZ%s'
+                         % (driver.name, top / 1000, hearing.limit_hz / 1000,
+                            ' or widen TBL/TOFF' if widen else ''))
 
 
 def travel_for(speed: float, accel: float, measure_time: float) -> float:
@@ -1162,8 +1164,7 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
     recommendation is the best-ranked combo from that (validated) set — never a
     single unmeasured lucky combo that floated to the top of the whole grid."""
     from .analyze import aggregate, print_table, rank
-    aggregates = aggregate(ds, False, args.trim)
-    ranked = rank(aggregates, hw.driver, tmc.Hearing.of(args))
+    ranked = rank(aggregate(ds, False, args.trim), hw.driver, tmc.Hearing.of(args))
     if not ranked:
         print('No successful measurements — nothing to recommend')
         return None
@@ -1178,8 +1179,7 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
     # unvalidated one floats to the top of a later full re-rank
     ds.update_manifest(winner=winner['chopper'].fields())
     finale = 'Chopper: %s' % winner['chopper'].label()
-    # the stock reference counts even when the hearing keeps it out of the ranking
-    magnitudes = {entry['chopper']: entry['magnitude'] for entry in aggregates}
+    magnitudes = {entry['chopper']: entry['magnitude'] for entry in ranked}
     stock = tmc.stock_chopper(hw.driver, getattr(args, 'tpfd', None) is not None)
     reference = magnitudes.get(stock)
     if reference and winner['chopper'] != stock:
@@ -1335,7 +1335,7 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
     for combo in finalists:
         measure_candidate(combo, VALIDATE_EXTRA_ITERATIONS, first_iteration=args.iterations)
 
-    if stock not in history:
+    if stock not in history and not hearing.skips(stock, hw.driver):
         # the improvement report needs the stock reference; the descent's spanning
         # seeds usually visit it, this covers the runs where they did not (~10 s)
         print('Measuring the Klipper-default reference for the improvement report')
@@ -1394,7 +1394,7 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
     if args.seed_from and args.search != 'descent':
         print('Warning: --seed-from only affects --search descent, ignoring')
     hearing = tmc.Hearing.of(args)
-    refuse_unhearable(hw.driver, args.tbl, args.toff, hearing)
+    refuse_unhearable(hw.driver, args.tbl, args.toff, hearing, widen=True)
 
     speeds = list(args.speed.values())
     if min(speeds) <= 0:
@@ -1477,9 +1477,10 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
         if 'autotune' not in ds.manifest():
             # a dataset from before the tool recorded it: the rest is measured now
             ds.update_manifest(autotune=autotune_tag(hw.driver.name, hw.autotune))
-        # the hearing changes no measurement, only what this run tries and recommends:
-        # the dataset keeps the one its recorded winner was picked with
-        ds.update_manifest(**hearing.manifest_fields())
+        # the hearing changes no measurement, only what this run tries and recommends: a
+        # winner the old one picked is not this run's, until this run records its own
+        if tmc.Hearing.of(recorded=ds.manifest()) != hearing:
+            ds.update_manifest(winner=None, improvement=None, **hearing.manifest_fields())
     done = ds.done_ids()
     if done:
         print('Resuming %s: %d measurements already present' % (root, len(done)))

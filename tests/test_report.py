@@ -48,7 +48,7 @@ def test_tbl_toff_matrix_medians_and_audible_mark():
     # magnitude does not depend on tbl in the synthetic surface
     column = toffs.index(6)
     assert z[0][column] == z[3][column] == min(z[0])
-    # tbl3/toff8 -> f_chop 14.9 kHz, must carry the audible mark
+    # tbl3/toff8 -> f_chop 18.8 kHz, must carry the audible mark
     assert text[3][toffs.index(8)].endswith('!')
     assert not text[0][toffs.index(2)].endswith('!')
 

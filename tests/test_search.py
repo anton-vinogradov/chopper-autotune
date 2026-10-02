@@ -98,8 +98,8 @@ def test_simulate_on_synthetic_grid(tmp_path, capsys):
 
 def test_seed_start_picks_penalized_best_and_adapts_tpfd(tmp_path):
     ds = Dataset.create(tmp_path / 'seed', {})
-    quiet = {'tbl': 0, 'toff': 8, 'hstrt': 7, 'hend': 5, 'tpfd': 4}     # 21.1 kHz
-    whiny = {'tbl': 3, 'toff': 8, 'hstrt': 7, 'hend': 5, 'tpfd': 4}     # 18.6 kHz, audible
+    quiet = {'tbl': 0, 'toff': 8, 'hstrt': 7, 'hend': 5, 'tpfd': 4}     # 20.3 kHz
+    whiny = {'tbl': 3, 'toff': 8, 'hstrt': 7, 'hend': 5, 'tpfd': 4}     # 18.8 kHz, audible
     for name, fields, magnitude in (('a', quiet, 1000.0), ('b', whiny, 900.0)):
         ds.append({'id': name, 'kind': 'move', 'status': 'ok', **fields,
                    'score': {'median_magnitude': magnitude}})
@@ -192,14 +192,14 @@ def test_click_penalty_beats_a_small_median_win():
 def test_edge_tiebreaker_prefers_safe_when_vibration_ties():
     # flat ladder (low run current): the tie-breaker must pick the config away from
     # the edges, not one sitting at max hysteresis / near the audible chopper band
-    edge = tmc.Chopper(0, 8, 3, 15)      # h_eff 16, 21 kHz — both edges
-    safe = tmc.Chopper(2, 1, 4, 4)       # h_eff 6, 79 kHz — interior, high freq
+    edge = tmc.Chopper(0, 8, 3, 15)      # h_eff 16, 20 kHz — both edges
+    safe = tmc.Chopper(2, 1, 4, 4)       # h_eff 6, 68 kHz — interior, high freq
     assert penalized_score(safe, [900.0], DRIVER, tmc.Hearing()) < \
         penalized_score(edge, [891.0], DRIVER, tmc.Hearing())      # safe wins despite being louder
 
     # same total hysteresis, higher chopper frequency wins the tie
-    low_freq = tmc.Chopper(0, 8, 6, 12)      # h16, 21 kHz
-    high_freq = tmc.Chopper(0, 6, 6, 12)     # h16, 27 kHz
+    low_freq = tmc.Chopper(0, 8, 6, 12)      # h16, 20 kHz
+    high_freq = tmc.Chopper(0, 6, 6, 12)     # h16, 26 kHz
     assert penalized_score(high_freq, [890.0], DRIVER, tmc.Hearing()) < \
         penalized_score(low_freq, [884.0], DRIVER, tmc.Hearing())
 

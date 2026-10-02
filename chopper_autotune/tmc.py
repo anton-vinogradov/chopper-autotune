@@ -73,13 +73,17 @@ class Driver:
     # Klipper refuses the config at load above this raw hstrt + hend (tmc2660.py only):
     # a saved winner past it would keep Klipper from starting
     hysteresis_raw_max: int = 18
+    # one slow decay lasts this + 32 * TOFF clocks: 24 in the TMC2208/2209/2130/5160
+    # datasheets, 12 in the TMC2660's
+    slow_decay_clocks: int = 24
 
 
 DRIVERS = {
     '2130': Driver('2130', 13.2e6, False, ('en_pwm_mode', 0, 1), default=KLIPPER_DEFAULT_2130),
     '2208': Driver('2208', 12.0e6, False, ('en_spreadcycle', 1, 0), BLANK_TIME_CLOCKS_220X),
     '2209': Driver('2209', 12.0e6, False, ('en_spreadcycle', 1, 0), BLANK_TIME_CLOCKS_220X),
-    '2660': Driver('2660', 15.0e6, False, default=KLIPPER_DEFAULT_2660, hysteresis_raw_max=15),
+    '2660': Driver('2660', 15.0e6, False, default=KLIPPER_DEFAULT_2660, hysteresis_raw_max=15,
+                   slow_decay_clocks=12),
     '2240': Driver('2240', 12.5e6, True, ('en_pwm_mode', 0, 1), default=KLIPPER_DEFAULT_TPFD),
     '5160': Driver('5160', 12.0e6, True, ('en_pwm_mode', 0, 1), default=KLIPPER_DEFAULT_TPFD),
 }
@@ -132,12 +136,11 @@ def validate(c: Chopper, driver: 'Optional[Driver]' = None) -> Optional[str]:
 
 
 def chopper_freq_hz(c: Chopper, driver: Driver) -> float:
-    """First-order spreadCycle estimate: one phase = blank + slow decay, two phases per cycle.
-
-    Fast decay and hysteresis time are ignored, so the real frequency is somewhat
-    lower; accurate enough to flag combos falling into the audible range.
-    """
-    clocks = 2 * (driver.blank_times[c.tbl] + 12 + 32 * c.toff)
+    """An upper bound of the spreadCycle frequency: a cycle of two slow decays, with the
+    on phase and the fast decay at their shortest, one blank time each. Both last longer
+    on a real motor, the more so the higher the hysteresis, so the real frequency is
+    lower: the datasheets put the slow decay at 30-70% of the cycle (#157)."""
+    clocks = 2 * (driver.blank_times[c.tbl] + driver.slow_decay_clocks + 32 * c.toff)
     return driver.fclk_hz / clocks
 
 
@@ -145,8 +148,8 @@ def chopper_freq_hz(c: Chopper, driver: Driver) -> float:
 class Hearing:
     """Which chopper frequencies count as audible, and what that costs a combo: `weight`
     scales its score up, `skip` keeps it out of the run and out of the ranking. The
-    limit applies to the first-order estimate, which runs above the real frequency, so
-    an ear that hears the default limit's winners needs a higher limit (#157)."""
+    limit applies to chopper_freq_hz, an upper bound of the real frequency, so an ear
+    that hears the default limit's winners needs a higher limit (#157)."""
     limit_hz: float = AUDIBLE_LIMIT_HZ
     weight: float = AUDIBLE_WEIGHT
     skip: bool = False
@@ -157,12 +160,11 @@ class Hearing:
         a dataset (`recorded`, its manifest), then from the defaults."""
         recorded = recorded or {}
 
-        def pick(name: str, default: float) -> float:
+        def pick(name: str, default):
             value = getattr(args, name, None)
             return value if value is not None else recorded.get(name, default)
         return cls(pick('audible_khz', AUDIBLE_LIMIT_HZ / 1000) * 1000,
-                   pick('audible_weight', AUDIBLE_WEIGHT),
-                   bool(getattr(args, 'skip_audible', False) or recorded.get('skip_audible')))
+                   pick('audible_weight', AUDIBLE_WEIGHT), bool(pick('skip_audible', False)))
 
     def audible(self, c: Chopper, driver: Driver) -> bool:
         return chopper_freq_hz(c, driver) < self.limit_hz

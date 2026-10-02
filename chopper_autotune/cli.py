@@ -39,19 +39,28 @@ def _khz(text: str) -> float:
     return value
 
 
+def _weight(text: str) -> float:
+    # a negative weight would reward the whine, a NaN one breaks the sort
+    value = float(text)
+    if not 0 <= value < float('inf'):
+        raise argparse.ArgumentTypeError('expected a penalty of 0 or more, e.g. 0.25')
+    return value
+
+
 def add_hearing(parser: argparse.ArgumentParser, recorded: bool = False):
     """The same hearing options on every command that ranks registers. A command that
     reads a dataset (`recorded`) hears by default as the dataset's run did."""
     default = 'default: as the dataset was collected, else %s' if recorded else 'default %s'
+    limit = '%g' % (tmc.AUDIBLE_LIMIT_HZ / 1000)
     parser.add_argument('--audible-khz', type=_khz, default=None,
                         help='estimated chopper frequency in kHz below which a combo counts as '
                              'audible (%s); the estimate runs above the real frequency, so raise '
-                             'it if you still hear a whine' % (default % ('%g' % (tmc.AUDIBLE_LIMIT_HZ / 1000))))
-    parser.add_argument('--audible-weight', type=float, default=None,
+                             'it if you still hear a whine' % (default % limit))
+    parser.add_argument('--audible-weight', type=_weight, default=None,
                         help='score penalty for an audible combo (%s)' % (default % tmc.AUDIBLE_WEIGHT))
-    parser.add_argument('--skip-audible', action='store_true',
-                        help='never try or recommend an audible combo, instead of just penalizing it'
-                             + (' (default: as the dataset was collected)' if recorded else ''))
+    parser.add_argument('--skip-audible', action=argparse.BooleanOptionalAction, default=None,
+                        help='never try or recommend an audible combo, instead of just penalizing it '
+                             '(%s)' % (default % 'off'))
 
 
 def _gcode_args(argv: 'list[str]', boolean_flags: 'frozenset[str]') -> 'list[str]':
@@ -67,7 +76,11 @@ def _gcode_args(argv: 'list[str]', boolean_flags: 'frozenset[str]') -> 'list[str
             value = match.group(2).lower()
             if value in TRUE_VALUES:
                 out.append(flag)
-            elif value not in ('0', 'false', 'no', 'off', 'n', ''):
+            elif value in ('0', 'false', 'no', 'off', 'n', ''):
+                # SKIP_AUDIBLE=0 says no to what a dataset recorded, not just nothing
+                if '--no-' + flag[2:] in boolean_flags:
+                    out.append('--no-' + flag[2:])
+            else:
                 # silently treating e.g. DRY_RUN=Y as "off" would move the printer
                 raise SystemExit('%s: expected a boolean like 1/0, got %r'
                                  % (match.group(1), match.group(2)))
@@ -77,13 +90,13 @@ def _gcode_args(argv: 'list[str]', boolean_flags: 'frozenset[str]') -> 'list[str
 
 
 def boolean_flags(parser: argparse.ArgumentParser) -> 'frozenset[str]':
-    """All store_true option strings across subcommands, so KEY=1 macro params map to flags."""
+    """All on/off option strings across subcommands, so KEY=1 macro params map to flags."""
     flags = set()
     subactions = [action for action in parser._actions
                   if isinstance(action, argparse._SubParsersAction)]
     for subparser in subactions[0].choices.values():
         for action in subparser._actions:
-            if isinstance(action, argparse._StoreTrueAction):
+            if isinstance(action, (argparse._StoreTrueAction, argparse.BooleanOptionalAction)):
                 flags.update(action.option_strings)
     return frozenset(flags)
 

@@ -67,6 +67,6 @@ def test_build_plan_skip_audible():
     quiet = build_plan(DRIVER, *ranges, None, [58], tmc.Hearing(skip=True))
     assert len(quiet) < len(full)
     assert all(not tmc.Hearing().audible(combo, DRIVER) for combo, _ in quiet)
-    # tbl3/toff8 (19.5 kHz on the 2209 blank table) is in the full plan but not the quiet one
+    # tbl3/toff8 (18.8 kHz on the 2209 blank table) is in the full plan but not the quiet one
     assert any(c == tmc.Chopper(3, 8, 4, 4) for c, _ in full)
     assert all(c != tmc.Chopper(3, 8, 4, 4) for c, _ in quiet)

@@ -52,22 +52,22 @@ def collect_args(args, axis: str, speed: Range, seed_from: 'str | None'):
 
 
 def winner_of(root: str, args=None) -> 'tuple[dict, tmc.Chopper]':
-    """The motor's result in a dataset; a re-rank, when the run recorded no winner, hears
-    as the command line says, then as the run did."""
+    """The motor's result in a dataset: the winner its run recorded, unless the hearing
+    (the command line's, then the run's) skips it; else a re-rank with that hearing."""
     from .analyze import aggregate, rank
     ds = Dataset.open(root)
     manifest = ds.manifest()
     saved = manifest.get('winner')
     driver = tmc.DRIVERS[manifest['driver']]
+    hearing = tmc.Hearing.of(args, manifest)
     if saved:
         # the validated recommendation recorded by the run; a full re-rank could
         # instead surface an unvalidated lucky combo (winner's curse)
         winner = tmc.Chopper(saved['tbl'], saved['toff'], saved['hstrt'], saved['hend'],
                              saved.get('tpfd'))
-        if tmc.validate(winner, driver) is None:
+        if tmc.validate(winner, driver) is None and not hearing.skips(winner, driver):
             return manifest, winner
-    ranked = rank(aggregate(ds, False, manifest.get('trim') or 0.1), driver,
-                  tmc.Hearing.of(args, manifest))
+    ranked = rank(aggregate(ds, False, manifest.get('trim') or 0.1), driver, hearing)
     if not ranked:
         raise SystemExit('no successful measurements in %s' % root)
     return manifest, ranked[0]['chopper']

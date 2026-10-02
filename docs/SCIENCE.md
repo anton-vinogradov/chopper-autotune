@@ -37,7 +37,7 @@ One spreadCycle chopper cycle **[datasheet]**:
 | register | physical knob | effect |
 | --- | --- | --- |
 | `TBL` | comparator blank time after each switch | too short → false triggers on the spike; too long → blind window, coarse regulation |
-| `TOFF` | slow-decay duration | sets the chopper frequency: `f ≈ fclk / (2·(blank + 12 + 32·TOFF))` (first order, as in `tmc.py`); small `TOFF` = fast inaudible chopper, big `TOFF` = slow chopper that can drop into the audible band |
+| `TOFF` | slow-decay duration | sets the chopper frequency: `f ≤ fclk / (2·(blank + 24 + 32·TOFF))` (12 instead of 24 on a TMC2660; an upper bound, as in `tmc.py`); small `TOFF` = fast inaudible chopper, big `TOFF` = slow chopper that can drop into the audible band |
 | `HSTRT`, `HEND` | hysteresis around the target | the current ripple amplitude; effective hysteresis `(HSTRT+1) + (HEND−3)` must stay ≤ 16 **[datasheet]** |
 | `TPFD` | passive fast decay (2240/5160 only) | damps the mid-band velocity resonance |
 
@@ -49,8 +49,9 @@ One spreadCycle chopper cycle **[datasheet]**:
   “vibration ≠ perceived loudness” (see the scoring caveat in the README) **[measured]**.
 - The chopper itself (20–80 kHz) is far beyond the sensor; its frequency is
   *computed* from the registers instead and penalised when audible. The computed
-  value leaves out the fast decay and the rest of the on time, so it runs above the
-  real frequency: a TMC2209 still whined at 28.3 kHz of the estimate ([#157](https://github.com/anton-vinogradov/chopper-autotune/issues/157)). The
+  value is an upper bound: it takes the on phase and the fast decay at their shortest,
+  one blank time each, and on a real motor both last longer, the more so the higher
+  the hysteresis. A TMC2209 still whined at 26.8 kHz of the estimate ([#157](https://github.com/anton-vinogradov/chopper-autotune/issues/157)). The
   audible limit is therefore a setting (`AUDIBLE_KHZ`, 20 kHz by default).
 - Per-move score = **median** magnitude: robust against sample noise, but
   **blind to rare transients** — a config can win the median while producing

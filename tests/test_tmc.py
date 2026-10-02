@@ -27,7 +27,7 @@ def test_validate_hysteresis_limit_is_on_effective_values():
 
 def test_chopper_freq_estimate():
     driver = tmc.DRIVERS['2209']
-    assert tmc.chopper_freq_hz(tmc.Chopper(0, 8, 0, 0), driver) == pytest.approx(12e6 / (2 * (16 + 12 + 256)))
+    assert tmc.chopper_freq_hz(tmc.Chopper(0, 8, 0, 0), driver) == pytest.approx(12e6 / (2 * (16 + 24 + 256)))
     assert (tmc.chopper_freq_hz(tmc.Chopper(0, 3, 0, 0), driver)
             > tmc.chopper_freq_hz(tmc.Chopper(0, 8, 0, 0), driver))
     assert tmc.Hearing().audible(tmc.Chopper(0, 10, 0, 0), driver)
@@ -37,11 +37,11 @@ def test_chopper_freq_estimate():
 def test_blank_times_are_per_driver():
     # 2208/2209 datasheet: 16/24/32/40 clocks; 2130/2240/5160/2660: 16/24/36/54
     assert tmc.chopper_freq_hz(tmc.Chopper(2, 1, 0, 0), tmc.DRIVERS['2209']) \
-        == pytest.approx(12e6 / (2 * (32 + 12 + 32)))
+        == pytest.approx(12e6 / (2 * (32 + 24 + 32)))
     assert tmc.chopper_freq_hz(tmc.Chopper(3, 1, 0, 0), tmc.DRIVERS['2209']) \
-        == pytest.approx(12e6 / (2 * (40 + 12 + 32)))
+        == pytest.approx(12e6 / (2 * (40 + 24 + 32)))
     assert tmc.chopper_freq_hz(tmc.Chopper(2, 1, 0, 0), tmc.DRIVERS['5160']) \
-        == pytest.approx(12e6 / (2 * (36 + 12 + 32)))
+        == pytest.approx(12e6 / (2 * (36 + 24 + 32)))
 
 
 def test_label_and_snippet():
