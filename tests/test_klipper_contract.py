@@ -553,9 +553,19 @@ def test_a_single_accelerometer_keeps_its_name_as_written(source, tmp_path, monk
     assert chip == 'adxl345 Hotend' and accel_command_chip(settings, chip) == 'Hotend'
 
 
-@pytest.mark.parametrize('source', fetched('adxl345.py'))
-def test_accelerometer_measure_takes_the_chip_name_as_written(source):
-    require(source)
+# a TMPDIR of klippy's service: Kalico writes the raw files there, and the tool that
+# RUN_SHELL_COMMAND starts inherits it
+KLIPPY_TMPDIR = '/srv/klippy-tmp'
+
+
+def where_the_tool_looks(path: str, pattern: str) -> bool:
+    return any(fnmatch.fnmatch(os.path.realpath(path), os.path.join(d, pattern))
+               for d in collect.capture_dirs())
+
+
+def accel_dispatch(source: str, chip):
+    """The release's G-code dispatcher with the accelerometer commands of `chip`, an
+    'adxl345 Hotend' section."""
     tag = source.replace('.', '_').replace('-', '_')
     package = types.ModuleType('contract_%s_accel' % tag)
     package.__path__ = [os.path.join(SRC, source)]
@@ -573,9 +583,31 @@ def test_accelerometer_measure_takes_the_chip_name_as_written(source):
     spec.loader.exec_module(adxl345)
     printer, dispatch, _ = ready_dispatch(load_gcode(source), GCONF_STEALTH)
     adxl345.AccelCommandHelper(types.SimpleNamespace(
-        get_printer=lambda: printer, get_name=lambda: 'adxl345 Hotend', error=configparser.Error), object())
+        get_printer=lambda: printer, get_name=lambda: 'adxl345 Hotend', error=configparser.Error), chip)
+    return dispatch
+
+
+@pytest.mark.parametrize('source', fetched('adxl345.py'))
+def test_accelerometer_measure_takes_the_chip_name_as_written(source):
+    require(source)
+    dispatch = accel_dispatch(source, object())
     assert list(dispatch.mux_commands['ACCELEROMETER_MEASURE'][1]) == [
         accel_command_chip({}, 'adxl345 Hotend')]
+
+
+@pytest.mark.parametrize('source', fetched('adxl345.py'))
+def test_the_csv_capture_looks_where_accelerometer_measure_writes(source, monkeypatch):
+    require(source)
+    monkeypatch.setattr(tempfile, 'tempdir', KLIPPY_TMPDIR)
+    written = []
+    dispatch = accel_dispatch(source, Accelerometer('adxl345 Hotend', written))
+    console = []
+    dispatch.register_output_handler(console.append)
+    measure = 'ACCELEROMETER_MEASURE CHIP=%s NAME=v060' % accel_command_chip({}, 'adxl345 Hotend')
+    dispatch.run_script('\n'.join([measure, measure]))       # start, then stop and write
+    assert len(written) == 1 and where_the_tool_looks(written[0][1], '*-v060.csv')
+    # the console names the file: found also by a tool that does not share klippy's TMPDIR
+    assert collect.written_files(console) == [written[0][1]]
 
 
 def load_extra(source: str, filename: str):
@@ -678,13 +710,15 @@ def sweep_on(source: str, tester: dict, sections: 'list[str]', line: str, monkey
     printer, dispatch, _ = ready_dispatch(load_gcode(source), GCONF_STEALTH)
     printer.config_error = configparser.Error               # klippy: configfile.error
     printer.lookup_object = types.MethodType(real_lookup_object(source), printer)
+    printer.console = []
+    dispatch.register_output_handler(printer.console.append)
     written = []
     for section in sections:
         printer.objects[section] = Accelerometer(section, written)
     printer.objects['toolhead'] = Toolhead()
     resonance = module.ResonanceTester(Section(printer, dict(tester, probe_points='100,100,20')))
     monkeypatch.setattr(resonance.executor, 'run_test', lambda *args, **kwargs: None)   # the moves
-    monkeypatch.setattr(tempfile, 'tempdir', '/tmp')        # Kalico writes to gettempdir()
+    monkeypatch.setattr(tempfile, 'tempdir', KLIPPY_TMPDIR)
     printer.send_event('klippy:connect')
     try:
         dispatch.run_script(line)
@@ -699,7 +733,8 @@ def clean_capture(source, tester, sections, chip, named, monkeypatch) -> bool:
     line = sweep_command('1,1', 'A', named, (30, 200), 2)
     printer, written, error = sweep_on(source, tester, sections, line, monkeypatch)
     return (error is None and not printer.shutdowns and [chip for chip, _ in written] == [chip]
-            and fnmatch.fnmatch(written[0][1], CAPTURE % 'A'))
+            and where_the_tool_looks(written[0][1], CAPTURE % 'A')
+            and collect.written_files(printer.console) == [written[0][1]])
 
 
 # [resonance_tester] options, and the accelerometer sections the config has

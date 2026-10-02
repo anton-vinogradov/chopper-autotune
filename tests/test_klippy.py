@@ -6,7 +6,8 @@ import time
 import pytest
 
 import fake_klipper
-from chopper_autotune.klippy import Klippy, KlippyError, accel_batch, fence_markers, find_socket
+from chopper_autotune.klippy import (ConsoleFenceLost, Klippy, KlippyError, accel_batch, fence_markers,
+                                     find_socket)
 
 
 def make_pair():
@@ -292,8 +293,18 @@ def test_gcode_output_raises_when_the_fence_is_lost():
                                   'params': {'response': '// GCONF:      00000000'}})
                 send(server, {'id': request['id'], 'result': {}})
     threading.Thread(target=serve, daemon=True).start()
-    with pytest.raises(KlippyError, match='BEGIN not seen'):
+    with pytest.raises(ConsoleFenceLost, match='BEGIN not seen'):
         kl.gcode_output('DUMP_TMC STEPPER=stepper_x REGISTER=GCONF')
+    kl.close()
+
+
+def test_gcode_output_keeps_every_line_of_a_long_script():
+    # TEST_RESONANCES prints a line per Hz: a 30-300 Hz sweep pushed the fence out of a
+    # 256-line tail, after the whole sweep had run
+    kl, server = make_pair()
+    sweep = ['// Testing frequency %d Hz' % hz for hz in range(30, 431)]
+    serve_scripts(server, lambda line: sweep if line.startswith('TEST_RESONANCES') else [])
+    assert kl.gcode_output('TEST_RESONANCES AXIS=1,1 OUTPUT=raw_data') == sweep
     kl.close()
 
 

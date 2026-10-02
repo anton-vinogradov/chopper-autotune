@@ -1,7 +1,7 @@
 """Collection phase: drive the printer over a register/speed grid, record a dataset.
 
 Runs on the printer host: talks to the klippy unix socket directly and streams
-accelerometer samples over it; CSV files in /tmp are the fallback path (--csv).
+accelerometer samples over it; CSV files are the fallback path (--csv).
 """
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import itertools
 import os
 import re
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -20,7 +21,7 @@ import numpy as np
 
 from . import __version__, tmc
 from .dataset import Dataset, RESULTS_HOME
-from .klippy import Klippy, KlippyError, find_socket
+from .klippy import ConsoleFenceLost, Klippy, KlippyError, find_socket
 from .metrics import parse_accel_csv, transients, vibration_score, window
 from .tmc import Range
 
@@ -769,17 +770,46 @@ def capture_span(path: str) -> float:
     return (last - first) if first is not None and last is not None else 0.0
 
 
+def capture_dirs() -> 'list[str]':
+    """Where accelerometer CSVs land when the console named none: Klipper writes them to
+    /tmp, Kalico to klippy's temp directory, its TMPDIR, which a tool RUN_SHELL_COMMAND
+    starts inherits."""
+    return sorted({os.path.realpath(d) for d in ('/tmp', tempfile.gettempdir())})
+
+
+WRITTEN = re.compile(r'Writing raw accelerometer data to (.+) file')
+CAPTURE_MTIME_SLACK_SEC = 1.0      # a file system with coarse mtimes rounds a fresh file down
+
+
+def written_files(lines: 'list[str]') -> 'list[str]':
+    """The raw files ACCELEROMETER_MEASURE and TEST_RESONANCES name in the console: where
+    klippy's TMPDIR put them, also for a tool started over SSH that does not share it."""
+    return [match.group(1) for match in map(WRITTEN.search, lines) if match]
+
+
+def capture_pattern(written: 'list[str]', pattern: str) -> str:
+    """The file the console named, else `pattern` in the capture directories."""
+    return glob.escape(written[0]) if written else pattern
+
+
+def capture_files(pattern: str) -> 'list[str]':
+    """The files `pattern` names in every capture directory; an absolute pattern names
+    its own directory alone."""
+    return sorted({path for d in capture_dirs() for path in glob.glob(os.path.join(d, pattern))})
+
+
 def await_flushed(pattern: str, min_span_sec: float = 0.0, timeout: float = 30.0,
-                  poll: float = 0.1) -> str:
+                  poll: float = 0.1, newer_than: float = 0.0) -> str:
     """Wait for a Klipper accel CSV matching `pattern` to appear AND finish flushing.
     The background writer flushes in batches after the command returns — a size that
     merely stopped growing for one poll can still be a TRUNCATED capture (measured: a
     cut sweep read as a phantom 156 Hz peak). Demand the size stay stable across two
-    polls AND the capture cover the expected duration."""
+    polls AND the capture cover the expected duration. `newer_than`: a file left from an
+    earlier run under the same name, where the tool cannot clean up, is not this one."""
     deadline = time.time() + timeout
     last, stable = -1, 0
     while time.time() < deadline:
-        files = glob.glob(pattern)
+        files = [path for path in capture_files(pattern) if os.path.getmtime(path) >= newer_than]
         if files:
             path = max(files, key=os.path.getmtime)
             size = os.path.getsize(path)
@@ -791,17 +821,25 @@ def await_flushed(pattern: str, min_span_sec: float = 0.0, timeout: float = 30.0
     raise TimeoutError('capture for %s incomplete after %.0fs' % (pattern, timeout))
 
 
-def wait_for_csv(name: str, min_span_sec: float = 0.0, timeout: float = CSV_WAIT_SEC) -> Path:
+def wait_for_csv(name: str, min_span_sec: float = 0.0, timeout: float = CSV_WAIT_SEC,
+                 written: 'list[str]' = (), newer_than: float = 0.0) -> Path:
+    pattern = capture_pattern(list(written), '*-%s.csv' % name)
     try:
         # 0.05s polls: this wait sits on the hot path of EVERY csv measurement, and the
         # old fixed 0.3+0.2s settle alone cost 40-90 minutes over a full grid
-        return Path(await_flushed('/tmp/*-%s.csv' % name, min_span_sec, timeout, poll=0.05))
+        return Path(await_flushed(pattern, min_span_sec, timeout, poll=0.05, newer_than=newer_than))
     except TimeoutError:
-        raise TimeoutError('accelerometer csv for %s did not appear/flush in /tmp' % name)
+        raise TimeoutError('accelerometer csv for %s did not appear/flush: %s'
+                           % (name, ' or '.join(searched(pattern))))
+
+
+def searched(pattern: str) -> 'list[str]':
+    """Where capture_files(pattern) looks, for an error to say."""
+    return sorted({os.path.join(d, pattern) for d in capture_dirs()})
 
 
 def drop_stale_csv(name: str):
-    for stale in glob.glob('/tmp/*-%s.csv' % name):
+    for stale in capture_files('*-%s.csv' % name):
         os.unlink(stale)
 
 
@@ -1007,8 +1045,11 @@ def capture_stream(hw: Hardware, script: str, duration: float,
 def capture_csv(hw: Hardware, name: str, script: str, min_span_sec: float = 0.0) -> np.ndarray:
     drop_stale_csv(name)
     measure = 'ACCELEROMETER_MEASURE CHIP=%s NAME=%s' % (hw.measure_chip, name)
+    started = time.time() - CAPTURE_MTIME_SLACK_SEC
     try:
-        hw.kl.gcode('\n'.join(['M400', measure, script, 'M400', measure]))
+        lines = hw.kl.gcode_output('\n'.join(['M400', measure, script, 'M400', measure]))
+    except ConsoleFenceLost:
+        lines = []          # the script ran to its end: the chip stopped and wrote the file
     except KlippyError:
         # Klipper toggles measurement per chip, not per name: a mid-script failure can
         # leave the chip capturing and silently corrupt every following csv
@@ -1017,7 +1058,7 @@ def capture_csv(hw: Hardware, name: str, script: str, min_span_sec: float = 0.0)
         except KlippyError:
             pass
         raise
-    csv_path = wait_for_csv(name, min_span_sec)
+    csv_path = wait_for_csv(name, min_span_sec, written=written_files(lines), newer_than=started)
     with open(csv_path) as f:
         data = parse_accel_csv(f)
     os.unlink(csv_path)

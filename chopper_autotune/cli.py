@@ -136,7 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument('--socket', default=None,
                    help='klippy unix socket path, default: auto-detect (printer_data/comms, /tmp/klippy_uds)')
     c.add_argument('--csv', action='store_true',
-                   help='fallback capture via ACCELEROMETER_MEASURE and /tmp CSV instead of streaming')
+                   help='fallback capture via ACCELEROMETER_MEASURE and its CSV instead of streaming')
     c.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y'), default='x',
                    help='motor a or b (a=stepper_x, b=stepper_y); x/y also accepted')
     c.add_argument('--speed', type=Range.parse, required=True,
@@ -170,7 +170,7 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument('--socket', default=None,
                    help='klippy unix socket path, default: auto-detect')
     f.add_argument('--csv', action='store_true',
-                   help='fallback capture via ACCELEROMETER_MEASURE and /tmp CSV instead of streaming')
+                   help='fallback capture via ACCELEROMETER_MEASURE and its CSV instead of streaming')
     f.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y'), default='x',
                    help='motor a or b (a=stepper_x, b=stepper_y); x/y also accepted')
     f.add_argument('--min-speed', type=int, default=20)
@@ -190,7 +190,7 @@ def build_parser() -> argparse.ArgumentParser:
                                     '(which speeds ring vs stay quiet)')
     mp.add_argument('--socket', default=None, help='klippy unix socket path, default: auto-detect')
     mp.add_argument('--csv', action='store_true',
-                    help='fallback capture via ACCELEROMETER_MEASURE and /tmp CSV instead of streaming')
+                    help='fallback capture via ACCELEROMETER_MEASURE and its CSV instead of streaming')
     mp.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y'), default='x',
                     help='motor a or b (a=stepper_x, b=stepper_y); x/y also accepted')
     mp.add_argument('--min-speed', type=int, default=20)
