@@ -680,7 +680,7 @@ def detect_hardware(kl: Klippy, axis: str, accel: bool = True) -> Hardware:
 
 def build_plan(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range, hend: Range,
                tpfd: Optional[Range], speeds: 'list[int]',
-               skip_audible: bool = False) -> 'list[tuple[tmc.Chopper, int]]':
+               hearing: tmc.Hearing = tmc.Hearing()) -> 'list[tuple[tmc.Chopper, int]]':
     tpfd_values = list(tpfd.values()) if tpfd is not None and driver.has_tpfd else [None]
     plan = []
     for t, o, hs, he, tp in itertools.product(tbl.values(), toff.values(), hstrt.values(),
@@ -688,10 +688,28 @@ def build_plan(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range, hend: 
         combo = tmc.Chopper(t, o, hs, he, tp)
         if tmc.validate(combo, driver) is not None:
             continue
-        if skip_audible and tmc.is_audible(combo, driver):
+        if hearing.skips(combo, driver):
             continue
         plan.extend((combo, speed) for speed in speeds)
     return plan
+
+
+def refuse_unhearable(driver: tmc.Driver, tbl: Range, toff: Range, hearing: tmc.Hearing,
+                      widen: bool = False):
+    """TBL and TOFF alone set the chopper frequency: with SKIP_AUDIBLE and a limit no
+    pair of the ranges reaches, a run would measure nothing. Say so before anything
+    moves or heats; `widen` when the user sets the ranges."""
+    if not hearing.skip:
+        return
+    pairs = [tmc.Chopper(t, o, 0, 0) for t in tbl.values() for o in toff.values()]
+    top = max((tmc.chopper_freq_hz(c, driver) for c in pairs if tmc.validate(c, driver) is None),
+              default=0.0)
+    if top < hearing.limit_hz:
+        raise SystemExit('SKIP_AUDIBLE leaves nothing to try: the fastest TMC%s chopper the '
+                         'TBL/TOFF ranges allow runs at %.1f kHz, below AUDIBLE_KHZ=%g. '
+                         'Lower AUDIBLE_KHZ%s'
+                         % (driver.name, top / 1000, hearing.limit_hz / 1000,
+                            ' or widen TBL/TOFF' if widen else ''))
 
 
 def travel_for(speed: float, accel: float, measure_time: float) -> float:
@@ -1146,7 +1164,7 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
     recommendation is the best-ranked combo from that (validated) set — never a
     single unmeasured lucky combo that floated to the top of the whole grid."""
     from .analyze import aggregate, print_table, rank
-    ranked = rank(aggregate(ds, False, args.trim), hw.driver, args.audible_weight)
+    ranked = rank(aggregate(ds, False, args.trim), hw.driver, tmc.Hearing.of(args))
     if not ranked:
         print('No successful measurements — nothing to recommend')
         return None
@@ -1231,7 +1249,7 @@ def validate_top(kl: Klippy, hw: Hardware, ds: Dataset, args, speeds: 'list[int]
     ok = failed = 0
     validated = set()
     for _ in range(MAX_VALIDATE_ROUNDS):
-        ranked = rank(aggregate(ds, False, args.trim), hw.driver, args.audible_weight)
+        ranked = rank(aggregate(ds, False, args.trim), hw.driver, tmc.Hearing.of(args))
         pending = [entry['chopper'] for entry in ranked[:args.validate]
                    if entry['chopper'] not in validated]
         if not pending:
@@ -1257,13 +1275,14 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
                          multi_start_descent, penalized_score, seed_start)
 
     stats = {'ok': 0, 'failed': 0}
+    hearing = tmc.Hearing.of(args)
     budget = descent_budget(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd)
     stock = tmc.stock_chopper(hw.driver, tpfd is not None)
     history = dataset_history(ds, hw.driver)
     clicks = dataset_transients(ds)
 
     def score_of(combo: tmc.Chopper) -> float:
-        return penalized_score(combo, history[combo], hw.driver, args.audible_weight,
+        return penalized_score(combo, history[combo], hw.driver, hearing,
                                clicks[combo] / len(history[combo]))
 
     cache = {combo: score_of(combo) for combo in history}
@@ -1282,13 +1301,13 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
     def evaluate(combo: tmc.Chopper) -> float:
         if combo in cache:
             return cache[combo]
-        if args.skip_audible and tmc.is_audible(combo, hw.driver):
+        if hearing.skips(combo, hw.driver):
             cache[combo] = float('inf')
             return cache[combo]
         measure_candidate(combo, args.iterations)
         score = score_of(combo) if history[combo] else float('inf')
         cache[combo] = score
-        note = (' audible' if tmc.is_audible(combo, hw.driver) else '') \
+        note = (' audible' if hearing.audible(combo, hw.driver) else '') \
             + (' clicks %d!' % clicks[combo] if clicks[combo] else '')
         print('  %s -> %s' % (combo.label(),
                               'failed' if score == float('inf') else '%.1f%s' % (score, note)))
@@ -1299,7 +1318,7 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
         return score
 
     if args.seed_from:
-        start = seed_start(Dataset.open(args.seed_from), hw.driver, args.audible_weight)
+        start = seed_start(Dataset.open(args.seed_from), hw.driver, hearing)
         print('Seeded from %s: starting at %s' % (args.seed_from, start.label()))
     else:
         start = tmc.baseline_chopper(hw.baseline, default=stock)
@@ -1316,7 +1335,7 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
     for combo in finalists:
         measure_candidate(combo, VALIDATE_EXTRA_ITERATIONS, first_iteration=args.iterations)
 
-    if stock not in history:
+    if stock not in history and not hearing.skips(stock, hw.driver):
         # the improvement report needs the stock reference; the descent's spanning
         # seeds usually visit it, this covers the runs where they did not (~10 s)
         print('Measuring the Klipper-default reference for the improvement report')
@@ -1374,6 +1393,8 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
         tpfd = None
     if args.seed_from and args.search != 'descent':
         print('Warning: --seed-from only affects --search descent, ignoring')
+    hearing = tmc.Hearing.of(args)
+    refuse_unhearable(hw.driver, args.tbl, args.toff, hearing, widen=True)
 
     speeds = list(args.speed.values())
     if min(speeds) <= 0:
@@ -1394,10 +1415,10 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
     plan = []
     if args.search == 'grid':
         plan = build_plan(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd, speeds,
-                          args.skip_audible)
+                          hearing)
         if not plan:
             raise SystemExit('empty plan: all combinations rejected by datasheet constraints'
-                             + (' or audible' if args.skip_audible else ''))
+                             + (' or audible' if hearing.skip else ''))
         n_moves = len(plan) * args.iterations * 2 + validation_moves
         print('Plan: %d combinations x %d speeds -> %d moves of %.1fmm, capture %s, ETA %s'
               % (len(plan) // len(speeds), len(speeds), n_moves, travel, args.source,
@@ -1437,12 +1458,11 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
         'baseline_registers': hw.baseline,
         'autotune': autotune_tag(hw.driver.name, hw.autotune),
         'forced_spreadcycle': bool(hw.stealth),
-        'skip_audible': args.skip_audible,
+        **hearing.manifest_fields(),
         'ranges': {'tbl': [args.tbl.lo, args.tbl.hi], 'toff': [args.toff.lo, args.toff.hi],
                    'hstrt': [args.hstrt.lo, args.hstrt.hi], 'hend': [args.hend.lo, args.hend.hi],
                    'tpfd': [tpfd.lo, tpfd.hi] if tpfd else None},
         'search': args.search,
-        'audible_weight': args.audible_weight,
         'accel': accel,
         'measure_time': args.measure_time,
         'trim': args.trim,
@@ -1457,6 +1477,10 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
         if 'autotune' not in ds.manifest():
             # a dataset from before the tool recorded it: the rest is measured now
             ds.update_manifest(autotune=autotune_tag(hw.driver.name, hw.autotune))
+        # the hearing changes no measurement, only what this run tries and recommends: a
+        # winner the old one picked is not this run's, until this run records its own
+        if tmc.Hearing.of(recorded=ds.manifest()) != hearing:
+            ds.update_manifest(winner=None, improvement=None, **hearing.manifest_fields())
     done = ds.done_ids()
     if done:
         print('Resuming %s: %d measurements already present' % (root, len(done)))

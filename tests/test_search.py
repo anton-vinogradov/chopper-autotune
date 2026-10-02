@@ -50,16 +50,16 @@ def test_descent_never_evaluates_invalid():
 
 
 def test_descent_respects_audible_penalty():
-    # magnitude improves mildly with toff, but toff >= 9 pushes f_chop below 20 kHz;
+    # magnitude improves mildly with toff, but toff >= 6 pushes f_chop below 30 kHz;
     # the doubled audible score must outweigh the small vibration gain
     def audible_trap(combo):
         magnitude = 3000.0 - 100 * combo.toff
-        return penalized_score(combo, [magnitude], DRIVER, audible_weight=1.0)
+        return penalized_score(combo, [magnitude], DRIVER, tmc.Hearing(weight=1.0))
 
     ranges = dict(RANGES, toff=Range(1, 15))
     best = coordinate_descent(DRIVER, ranges['tbl'], ranges['toff'], ranges['hstrt'],
                               ranges['hend'], None, tmc.Chopper(2, 3, 5, 0), audible_trap)
-    assert not tmc.is_audible(best, DRIVER)
+    assert not tmc.Hearing().audible(best, DRIVER)
 
 
 def test_descent_stops_when_stable():
@@ -98,24 +98,24 @@ def test_simulate_on_synthetic_grid(tmp_path, capsys):
 
 def test_seed_start_picks_penalized_best_and_adapts_tpfd(tmp_path):
     ds = Dataset.create(tmp_path / 'seed', {})
-    quiet = {'tbl': 0, 'toff': 8, 'hstrt': 7, 'hend': 5, 'tpfd': 4}     # 21.1 kHz
-    whiny = {'tbl': 3, 'toff': 8, 'hstrt': 7, 'hend': 5, 'tpfd': 4}     # 18.6 kHz, audible
+    quiet = {'tbl': 0, 'toff': 4, 'hstrt': 7, 'hend': 5, 'tpfd': 4}     # 35.7 kHz
+    whiny = {'tbl': 3, 'toff': 8, 'hstrt': 7, 'hend': 5, 'tpfd': 4}     # 18.8 kHz, audible
     for name, fields, magnitude in (('a', quiet, 1000.0), ('b', whiny, 900.0)):
         ds.append({'id': name, 'kind': 'move', 'status': 'ok', **fields,
                    'score': {'median_magnitude': magnitude}})
 
     # audible 900 * 1.5 loses to quiet 1000; tpfd stripped for a driver without it
-    best = seed_start(ds, DRIVER, audible_weight=0.5)
-    assert best == tmc.Chopper(0, 8, 7, 5)
+    best = seed_start(ds, DRIVER, tmc.Hearing(weight=0.5))
+    assert best == tmc.Chopper(0, 4, 7, 5)
     # for a TPFD-capable driver the seed keeps tpfd, and a small weight flips the winner
-    best5160 = seed_start(ds, tmc.DRIVERS['5160'], audible_weight=0.05)
+    best5160 = seed_start(ds, tmc.DRIVERS['5160'], tmc.Hearing(weight=0.05))
     assert best5160 == tmc.Chopper(3, 8, 7, 5, tpfd=4)
 
 
 def test_seed_start_empty_dataset(tmp_path):
     ds = Dataset.create(tmp_path / 'empty', {})
     with pytest.raises(SystemExit):
-        seed_start(ds, DRIVER, 0.25)
+        seed_start(ds, DRIVER, tmc.Hearing())
 
 
 def nonseparable(combo):
@@ -180,36 +180,41 @@ def test_dataset_transients_sums_clicks(tmp_path):
 def test_click_penalty_beats_a_small_median_win():
     # measured case: h16 wins the median by ~4% but clicks ~5x per move;
     # the penalty must hand the win to the clean config
-    clean = penalized_score(tmc.Chopper(2, 1, 5, 3), [1227.0], DRIVER, 0.25)
-    clicky = penalized_score(tmc.Chopper(2, 1, 7, 11), [1180.0], DRIVER, 0.25,
+    clean = penalized_score(tmc.Chopper(2, 1, 5, 3), [1227.0], DRIVER, tmc.Hearing())
+    clicky = penalized_score(tmc.Chopper(2, 1, 7, 11), [1180.0], DRIVER, tmc.Hearing(),
                              clicks_per_move=5.5)
     assert clean < clicky
     # and a click-free score is unchanged by the new argument
-    assert clean == penalized_score(tmc.Chopper(2, 1, 5, 3), [1227.0], DRIVER, 0.25,
+    assert clean == penalized_score(tmc.Chopper(2, 1, 5, 3), [1227.0], DRIVER, tmc.Hearing(),
                                     clicks_per_move=0.0)
 
 
 def test_edge_tiebreaker_prefers_safe_when_vibration_ties():
     # flat ladder (low run current): the tie-breaker must pick the config away from
     # the edges, not one sitting at max hysteresis / near the audible chopper band
-    edge = tmc.Chopper(0, 8, 3, 15)      # h_eff 16, 21 kHz — both edges
-    safe = tmc.Chopper(2, 1, 4, 4)       # h_eff 6, 79 kHz — interior, high freq
-    assert penalized_score(safe, [900.0], DRIVER, 0.25) < \
-        penalized_score(edge, [891.0], DRIVER, 0.25)      # safe wins despite being louder
+    edge = tmc.Chopper(0, 4, 3, 15)      # h_eff 16, 36 kHz — both edges
+    safe = tmc.Chopper(2, 1, 4, 4)       # h_eff 6, 68 kHz — interior, high freq
+    assert penalized_score(safe, [900.0], DRIVER, tmc.Hearing()) < \
+        penalized_score(edge, [891.0], DRIVER, tmc.Hearing())      # safe wins despite being louder
+
+    # the same chopper frequency: the edge hysteresis alone loses the tie
+    edge_hysteresis = tmc.Chopper(2, 1, 3, 15)     # h_eff 16, 68 kHz
+    assert penalized_score(safe, [900.0], DRIVER, tmc.Hearing()) < \
+        penalized_score(edge_hysteresis, [891.0], DRIVER, tmc.Hearing())
 
     # same total hysteresis, higher chopper frequency wins the tie
-    low_freq = tmc.Chopper(0, 8, 6, 12)      # h16, 21 kHz
-    high_freq = tmc.Chopper(0, 6, 6, 12)     # h16, 27 kHz
-    assert penalized_score(high_freq, [890.0], DRIVER, 0.25) < \
-        penalized_score(low_freq, [884.0], DRIVER, 0.25)
+    low_freq = tmc.Chopper(0, 5, 6, 12)      # h16, 30 kHz
+    high_freq = tmc.Chopper(0, 4, 6, 12)     # h16, 36 kHz
+    assert penalized_score(high_freq, [890.0], DRIVER, tmc.Hearing()) < \
+        penalized_score(low_freq, [884.0], DRIVER, tmc.Hearing())
 
 
 def test_edge_tiebreaker_never_overrides_a_real_vibration_win():
     # a config that is meaningfully quieter must win even if it sits at an edge
     quiet_edge = tmc.Chopper(2, 1, 4, 14)    # h16 but 30% quieter
     loud_interior = tmc.Chopper(2, 1, 5, 3)  # h6, interior, but much louder
-    assert penalized_score(quiet_edge, [1180.0], DRIVER, 0.25) < \
-        penalized_score(loud_interior, [1650.0], DRIVER, 0.25)
+    assert penalized_score(quiet_edge, [1180.0], DRIVER, tmc.Hearing()) < \
+        penalized_score(loud_interior, [1650.0], DRIVER, tmc.Hearing())
 
 
 def test_every_candidate_shares_the_start_tpfd_spelling():

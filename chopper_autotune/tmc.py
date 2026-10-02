@@ -8,10 +8,14 @@ from typing import Optional
 BLANK_TIME_CLOCKS = (16, 24, 36, 54)
 # TMC2208/2209 use a different blank-time table than the rest of the family
 BLANK_TIME_CLOCKS_220X = (16, 24, 32, 40)
-AUDIBLE_LIMIT_HZ = 20000.0
-# below this the chopper is ultrasonic but with little margin; a config is nudged
-# toward more headroom when nothing else distinguishes it
-CAUTION_FREQ_HZ = 30000.0
+# of the estimate, an upper bound: in #157 a whine stopped between 26.8 and 31.3 kHz
+AUDIBLE_LIMIT_HZ = 30000.0
+# what every run heard with before the limit was recorded (#157)
+RECORDED_LIMIT_BEFORE_HZ = 20000.0
+AUDIBLE_WEIGHT = 0.25
+# from the audible limit up to this multiple of it the chopper is ultrasonic but with
+# little margin; a config is nudged toward more headroom when nothing else distinguishes it
+CAUTION_RATIO = 1.5
 HYST_CAP = 16.0                 # datasheet max effective hysteresis
 FREQ_MARGIN_WEIGHT = 0.05       # tie-breaker only: a real vibration win always overrides
 HYST_EDGE_WEIGHT = 0.05
@@ -72,13 +76,17 @@ class Driver:
     # Klipper refuses the config at load above this raw hstrt + hend (tmc2660.py only):
     # a saved winner past it would keep Klipper from starting
     hysteresis_raw_max: int = 18
+    # one slow decay lasts this + 32 * TOFF clocks: 24 in the TMC2208/2209/2130/5160
+    # datasheets, 12 in the TMC2660's
+    slow_decay_clocks: int = 24
 
 
 DRIVERS = {
     '2130': Driver('2130', 13.2e6, False, ('en_pwm_mode', 0, 1), default=KLIPPER_DEFAULT_2130),
     '2208': Driver('2208', 12.0e6, False, ('en_spreadcycle', 1, 0), BLANK_TIME_CLOCKS_220X),
     '2209': Driver('2209', 12.0e6, False, ('en_spreadcycle', 1, 0), BLANK_TIME_CLOCKS_220X),
-    '2660': Driver('2660', 15.0e6, False, default=KLIPPER_DEFAULT_2660, hysteresis_raw_max=15),
+    '2660': Driver('2660', 15.0e6, False, default=KLIPPER_DEFAULT_2660, hysteresis_raw_max=15,
+                   slow_decay_clocks=12),
     '2240': Driver('2240', 12.5e6, True, ('en_pwm_mode', 0, 1), default=KLIPPER_DEFAULT_TPFD),
     '5160': Driver('5160', 12.0e6, True, ('en_pwm_mode', 0, 1), default=KLIPPER_DEFAULT_TPFD),
 }
@@ -131,17 +139,51 @@ def validate(c: Chopper, driver: 'Optional[Driver]' = None) -> Optional[str]:
 
 
 def chopper_freq_hz(c: Chopper, driver: Driver) -> float:
-    """First-order spreadCycle estimate: one phase = blank + slow decay, two phases per cycle.
-
-    Fast decay and hysteresis time are ignored, so the real frequency is somewhat
-    lower; accurate enough to flag combos falling into the audible range.
-    """
-    clocks = 2 * (driver.blank_times[c.tbl] + 12 + 32 * c.toff)
+    """An upper bound of the spreadCycle frequency: a cycle of two slow decays, with the
+    on phase and the fast decay at their shortest, one blank time each. Both last longer
+    on a real motor, the more so the higher the hysteresis, so the real frequency is
+    lower: the datasheets put the slow decay at 30-70% of the cycle (#157)."""
+    clocks = 2 * (driver.blank_times[c.tbl] + driver.slow_decay_clocks + 32 * c.toff)
     return driver.fclk_hz / clocks
 
 
-def is_audible(c: Chopper, driver: Driver) -> bool:
-    return chopper_freq_hz(c, driver) < AUDIBLE_LIMIT_HZ
+@dataclass(frozen=True)
+class Hearing:
+    """Which chopper frequencies count as audible, and what that costs a combo: `weight`
+    scales its score up, `skip` keeps it out of the run and out of the ranking. The
+    limit applies to chopper_freq_hz, an upper bound of the real frequency, so an ear
+    that hears the default limit's winners needs a higher limit (#157)."""
+    limit_hz: float = AUDIBLE_LIMIT_HZ
+    weight: float = AUDIBLE_WEIGHT
+    skip: bool = False
+
+    @classmethod
+    def of(cls, args=None, recorded: 'Optional[dict]' = None) -> 'Hearing':
+        """From the command line; what it leaves out comes from the run that recorded
+        a dataset (`recorded`, its manifest), then from the defaults."""
+        recorded = recorded or {}
+        limit = RECORDED_LIMIT_BEFORE_HZ if recorded else AUDIBLE_LIMIT_HZ
+        if 'audible_khz' not in recorded:
+            # a run from before: its skip went by the estimate of the day (12 + 32 * TOFF),
+            # by this one it would drop combos, its winner too, the run measured as inaudible
+            recorded = dict(recorded, skip_audible=False)
+
+        def pick(name: str, default):
+            value = getattr(args, name, None)
+            return value if value is not None else recorded.get(name, default)
+        return cls(pick('audible_khz', limit / 1000) * 1000,
+                   pick('audible_weight', AUDIBLE_WEIGHT), bool(pick('skip_audible', False)))
+
+    def audible(self, c: Chopper, driver: Driver) -> bool:
+        return chopper_freq_hz(c, driver) < self.limit_hz
+
+    def skips(self, c: Chopper, driver: Driver) -> bool:
+        return self.skip and self.audible(c, driver)
+
+    def manifest_fields(self) -> dict:
+        """What a dataset records, for of() to read back."""
+        return {'audible_khz': self.limit_hz / 1000, 'audible_weight': self.weight,
+                'skip_audible': self.skip}
 
 
 def effective_hysteresis(c: Chopper) -> int:
@@ -149,7 +191,7 @@ def effective_hysteresis(c: Chopper) -> int:
     return (c.hstrt + 1) + (c.hend - 3)
 
 
-def edge_penalty(c: Chopper, driver: Driver) -> float:
+def edge_penalty(c: Chopper, driver: Driver, hearing: Hearing) -> float:
     """A small preference — used as a tie-breaker in the score — for configs away from
     two edges: a chopper frequency comfortably above the audible band, and interior
     hysteresis (further from the datasheet cap = less current ripple/heat, no latent
@@ -157,9 +199,10 @@ def edge_penalty(c: Chopper, driver: Driver) -> float:
     difference overrides it; it only decides when the measurement is otherwise flat
     (e.g. the whole hysteresis ladder is nearly flat at a low run current)."""
     freq = chopper_freq_hz(c, driver)
+    caution = hearing.limit_hz * CAUTION_RATIO
     penalty = 0.0
-    if AUDIBLE_LIMIT_HZ <= freq < CAUTION_FREQ_HZ:
-        penalty += FREQ_MARGIN_WEIGHT * (CAUTION_FREQ_HZ - freq) / (CAUTION_FREQ_HZ - AUDIBLE_LIMIT_HZ)
+    if hearing.limit_hz <= freq < caution:
+        penalty += FREQ_MARGIN_WEIGHT * (caution - freq) / (caution - hearing.limit_hz)
     penalty += HYST_EDGE_WEIGHT * max(0, effective_hysteresis(c)) / HYST_CAP
     return penalty
 

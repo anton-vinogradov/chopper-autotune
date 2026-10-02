@@ -15,7 +15,8 @@ def two_wheel_drive(monkeypatch):
 
 def tune_args(**overrides):
     base = {'axis': 'xy', 'speed': None, 'save': False, 'iterations': 1,
-            'audible_weight': 0.25, 'accel': None, 'no_raw': False, 'csv': False,
+            'audible_khz': None, 'audible_weight': 0.25, 'skip_audible': False,
+            'accel': None, 'no_raw': False, 'csv': False,
             'socket': None, 'url': 'http://x', 'dry_run': False}
     base.update(overrides)
     return argparse.Namespace(**base)

@@ -55,8 +55,8 @@ def test_winner_state_round_trips(tmp_path, monkeypatch):
     assert load_winner_state() is None
     save_winner_state('2209', tmc.Chopper(3, 7, 6, 0))
     state = load_winner_state()
-    assert state == {'driver': '2209',
-                     'fields': {'tbl': 3, 'toff': 7, 'hstrt': 6, 'hend': 0}}
+    assert state == {'driver': '2209', 'fields': {'tbl': 3, 'toff': 7, 'hstrt': 6, 'hend': 0},
+                     **tmc.Hearing().manifest_fields()}
 
 
 def test_extruder_demo_arg_translates():
@@ -80,7 +80,7 @@ def test_extruder_descent_rides_the_shared_engine(monkeypatch):
         return tmc.Chopper(0, 2, 2, 12)
 
     monkeypatch.setattr(ex, 'multi_start_descent', fake_engine)
-    winner, cache = ex.descent(None, None, tmc.DRIVERS['2209'], 5.0, 0.25, None)
+    winner, cache = ex.descent(None, None, tmc.DRIVERS['2209'], 5.0, tmc.Hearing(), None)
     assert captured['ranges'] == ex.FIELD_RANGES
     assert captured['start'] == tmc.KLIPPER_DEFAULT
     assert captured['tpfd'] is None
@@ -109,10 +109,30 @@ def test_extruder_descent_measures_live_and_caches(monkeypatch):
         def update(self, text, force=False):
             pass
 
-    winner, cache = ex.descent(None, FakeKl(), ex.tmc.DRIVERS['2209'], 5.0, 0.25, FakeScreen())
+    winner, cache = ex.descent(None, FakeKl(), ex.tmc.DRIVERS['2209'], 5.0, tmc.Hearing(), FakeScreen())
     assert winner in cache
     assert len(measured) == len(cache)          # every combo measured exactly once (cache)
     assert (winner.tbl, winner.toff) == (2, 3)  # stayed inside the forced ranges
+
+
+def test_extruder_descent_never_measures_what_the_hearing_skips(monkeypatch):
+    import re
+    from types import SimpleNamespace
+
+    from chopper_autotune import extruder as ex
+    driver, hearing = tmc.DRIVERS['2209'], tmc.Hearing(limit_hz=33000, skip=True)
+    sent, measured = [], []
+
+    def fake_measure(hw, speed):
+        fields = dict(re.findall(r'FIELD=(\w+) VALUE=(\d+)', sent[-1]))
+        measured.append(tmc.Chopper(*(int(fields[name]) for name in ('tbl', 'toff', 'hstrt', 'hend'))))
+        return 100.0 + abs(measured[-1].toff - 5) * 10, 0     # quietest at an audible toff 5
+
+    monkeypatch.setattr(ex, 'measure', fake_measure)
+    winner, _ = ex.descent(None, SimpleNamespace(gcode=sent.append), driver, 5.0, hearing,
+                           SimpleNamespace(update=lambda text, force=False: None))
+    assert measured and not any(hearing.audible(combo, driver) for combo in measured)
+    assert not hearing.audible(winner, driver)
 
 
 def test_extruder_context_reads_tpfd_on_tpfd_drivers():

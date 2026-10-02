@@ -19,7 +19,7 @@ from . import tmc
 from .collect import (Range, Screen, autotune_advice, autotune_goal, autotune_stealth, autotune_tag,
                       capture_stream, detect_hardware, live_chopper, live_stealth,
                       measured_under_autotune, refuse_autotune_save, refuse_if_printing,
-                      run_restore, unexpected_stealth, wake_stepper)
+                      refuse_unhearable, run_restore, unexpected_stealth, wake_stepper)
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
 from .metrics import transients, vibration_score
@@ -31,11 +31,13 @@ VALIDATE_TOP = 3            # re-measure the best candidates before recommending
 STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/extruder.json')
 
 
-def save_winner_state(driver_name: str, winner: tmc.Chopper, autotune: 'str | None' = None):
+def save_winner_state(driver_name: str, winner: tmc.Chopper, autotune: 'str | None' = None,
+                      hearing: tmc.Hearing = tmc.Hearing()):
     """The extruder has no dataset like the axes do; remember the winner so SAVE_LAST=1
     can persist it later without re-running the whole heated tune. autotune: the
-    klipper_tmc_autotune goal it was measured under (its CoolStep changes the current)."""
-    state = {'driver': driver_name, 'fields': winner.fields()}
+    klipper_tmc_autotune goal it was measured under (its CoolStep changes the current);
+    the hearing it was picked with, read back like a dataset's."""
+    state = {'driver': driver_name, 'fields': winner.fields(), **hearing.manifest_fields()}
     if autotune:
         state['autotune'] = autotune
     save_json(STATE, state)
@@ -133,7 +135,7 @@ def measure(hw, speed: float) -> 'tuple[float, int]':
 FIELD_RANGES = (Range(0, 3), Range(1, 8), Range(0, 7), Range(0, 15))   # tbl/toff/hstrt/hend
 
 
-def descent(hw, kl, driver, speed: float, audible_weight: float, screen: Screen,
+def descent(hw, kl, driver, speed: float, hearing: tmc.Hearing, screen: Screen,
             rounds: int = 2, budget: 'int | None' = None) -> 'tuple[tmc.Chopper, dict]':
     """Multi-start coordinate descent (search.py — the same engine as the axis tune:
     joint tbl+toff phase and spanning hend seeds, closing the measured toff x hend
@@ -142,10 +144,12 @@ def descent(hw, kl, driver, speed: float, audible_weight: float, screen: Screen,
     cache = {}
 
     def evaluate(combo):
+        if combo not in cache and hearing.skips(combo, driver):
+            cache[combo] = float('inf')
         if combo not in cache:
             kl.gcode(tmc.set_fields_script('extruder', combo.fields()))
             magnitude, clicks = measure(hw, speed)
-            cache[combo] = penalized_score(combo, [magnitude], driver, audible_weight,
+            cache[combo] = penalized_score(combo, [magnitude], driver, hearing,
                                            clicks_per_move=float(clicks))
             screen.update('Chopper E cand %d%s: %.0f'
                           % (len(cache), ' of max %d' % budget if budget else '',
@@ -230,9 +234,12 @@ def extruder_tune(kl: Klippy, args) -> int:
         state = load_winner_state()
         if not state:
             raise SystemExit('no stored extruder winner — run CHOPPER_EXTRUDER first')
-        from .analyze import _persist, refuse_unloadable, updated_config
+        from .analyze import _persist, inaudible_refusal, refuse_unloadable, updated_config
         from .moonraker import Moonraker
         refuse_unloadable(state['driver'], 'extruder', state['fields'])
+        why = inaudible_refusal(state, tmc.Hearing.of(args, state))
+        if why:
+            raise SystemExit('the stored extruder winner %s: %s' % (state['fields'], why))
         refuse_autotune_save(kl.settings(), state['driver'], 'extruder')
         if state.get('autotune'):
             raise SystemExit(measured_under_autotune(state['driver'], 'extruder'))
@@ -263,6 +270,8 @@ def extruder_tune(kl: Klippy, args) -> int:
         refuse_if_printing(kl)
         return extruder_show(kl, args, driver, baseline_regs, stealth, temp)
     speeds = [float(v) for v in range(args.min_speed, args.max_speed + 1)]
+    hearing = tmc.Hearing.of(args)
+    refuse_unhearable(driver, FIELD_RANGES[0], FIELD_RANGES[1], hearing)   # before the heat-up
 
     budget = descent_budget(driver, *FIELD_RANGES, None)
     print('Extruder chopper tune: tmc%s, current registers %s' % (
@@ -319,23 +328,23 @@ def extruder_tune(kl: Klippy, args) -> int:
                   % (speed, '  (weak peak — the field may be flat here)' if flat else ''))
 
         print('Register descent at %.1f mm/s...' % speed)
-        winner, cache = descent(hw, kl, driver, speed, args.audible_weight, screen,
+        winner, cache = descent(hw, kl, driver, speed, hearing, screen,
                                 budget=budget)
 
         # winner's curse guard: re-measure the descent's top few before recommending
-        top = sorted(cache, key=cache.get)[:VALIDATE_TOP]
+        top = sorted((c for c in cache if cache[c] != float('inf')), key=cache.get)[:VALIDATE_TOP]
         rescored = {}
         for combo in top:
             kl.gcode(tmc.set_fields_script('extruder', combo.fields()))
             scores = []
             for _ in range(2):
                 magnitude, clicks = measure(hw, speed)
-                scores.append(penalized_score(combo, [magnitude], driver,
-                                              args.audible_weight, float(clicks)))
+                scores.append(penalized_score(combo, [magnitude], driver, hearing, float(clicks)))
             rescored[combo] = statistics.mean(scores)
             print('  validate %s: %.0f' % (combo.label(), rescored[combo]))
         winner = min(rescored, key=rescored.get)
-        save_winner_state(driver_name, winner, autotune_tag(driver_name, autotune_goal(settings, 'extruder')))
+        save_winner_state(driver_name, winner, autotune_tag(driver_name, autotune_goal(settings, 'extruder')),
+                          hearing)
 
         print('\n=== Extruder winner ===')
         print('%s  score %.0f  (f_chop %.1f kHz, h_eff %d)'
