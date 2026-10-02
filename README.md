@@ -255,7 +255,7 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 | `TRIM` | `0.1` | guard fraction of the cruise window (with `CSV=1`: `0.25` of the whole capture) |
 | `DATASET` | new | pass an existing directory to resume it |
 | `NO_RAW` | `0` | do not keep raw samples (saves space, disables `RECOMPUTE`) |
-| `CSV` | `0` | classic `ACCELEROMETER_MEASURE`+`/tmp` capture instead of streaming |
+| `CSV` | `0` | classic `ACCELEROMETER_MEASURE` CSV capture instead of streaming |
 | `DRY_RUN` | `0` | plan and ETA only |
 
 **CHOPPER_ANALYZE** — offline ranking of a dataset.

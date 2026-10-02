@@ -1,8 +1,10 @@
+import os
+
 import pytest
 import numpy as np
 
 from chopper_autotune import belts as belts_mod
-from chopper_autotune.belts import (capture_span, fundamental, gap_pct, insensitive,
+from chopper_autotune.belts import (CAPTURE, capture_span, fundamental, gap_pct, insensitive,
                                     load_state, progress_message, save_state,
                                     tension_newtons, verdict, wait_for_capture, welch_peak)
 
@@ -94,8 +96,19 @@ def test_wait_for_capture_returns_a_settled_file(tmp_path):
                             min_span_sec=1.5, timeout=5.0) == str(csv)
 
 
+def test_the_sweep_capture_is_found_in_klippy_tmpdir(tmp_path, monkeypatch):
+    # Kalico's TEST_RESONANCES writes the raw file to klippy's TMPDIR, which the tool inherits
+    import tempfile
+    monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path))
+    csv = tmp_path / 'raw_data_beltA.csv'
+    _raw_csv(str(csv), freq=100.0, seconds=2.0)
+    found = wait_for_capture(CAPTURE % 'A', min_span_sec=1.5, timeout=5.0)
+    assert os.path.realpath(found) == os.path.realpath(str(csv))
+
+
 def test_wait_for_capture_times_out_on_nothing(tmp_path):
-    with pytest.raises(SystemExit, match='incomplete'):
+    # where it looked: no [resonance_tester] option sets the output directory
+    with pytest.raises(SystemExit, match=r'0s of the 0s sweep flushed in .*raw_data_\*\.csv$'):
         wait_for_capture(str(tmp_path / 'raw_data_*.csv'), timeout=0.8)
 
 
@@ -325,8 +338,16 @@ def test_resolver_frequency_window_rejects_cross_mode_pairs():
     assert resolve_pair(fams_a, [fams_b[0]]) is None  # only the 91 Hz mode: refuse
 
 
-def sweep_run(monkeypatch, tmp_path, tester, dry_run=False, sections=()):
-    """belts SWEEP=1 on a fake printer; returns the G-code it sent."""
+def replies(console):
+    if isinstance(console, Exception):
+        raise console
+    return list(console)
+
+
+def sweep_run(monkeypatch, tmp_path, tester, dry_run=False, sections=(), console=(),
+              captures=None, cutoffs=None):
+    """belts SWEEP=1 on a fake printer; returns the G-code it sent. `console`: what a
+    sweep prints; `captures` collects the file pattern each sweep waits for."""
     from types import SimpleNamespace
 
     from chopper_autotune.collect import resolve_accel_chip
@@ -336,11 +357,14 @@ def sweep_run(monkeypatch, tmp_path, tester, dry_run=False, sections=()):
                          display=False)
     scripts = []
     kl = SimpleNamespace(settings=lambda: settings, homed_axes=lambda: 'xyz', gcode=scripts.append,
+                         gcode_output=lambda script: scripts.append(script) or replies(console),
                          config_sections=lambda: list(sections))
     monkeypatch.setattr(belts_mod, 'detect_hardware', lambda kl, motor, accel: hw)
     monkeypatch.setattr(belts_mod, 'refuse_if_printing', lambda kl: None)
     monkeypatch.setattr(belts_mod, 'home_xy', lambda kl, script: None)
-    monkeypatch.setattr(belts_mod, 'wait_for_capture', lambda pattern, min_span_sec: 'capture.csv')
+    monkeypatch.setattr(belts_mod, 'wait_for_capture', lambda pattern, min_span_sec, newer_than: (
+        captures if captures is not None else []).append(pattern)
+        or (cutoffs if cutoffs is not None else []).append(newer_than) or 'capture.csv')
     monkeypatch.setattr(belts_mod, 'welch_psd', lambda path: (None, None))
     monkeypatch.setattr(belts_mod, 'dominant', lambda freqs, psd, band: (100.0, 1.0))
     monkeypatch.setattr(belts_mod, 'top_peaks', lambda freqs, psd, band: [100.0])
@@ -606,3 +630,27 @@ def test_a_stop_after_the_shuttles_is_not_swallowed(monkeypatch):
     with pytest.raises(SystemExit) as stop:
         belts_mod.machine_axes(SimpleNamespace(max_accel=3000.0), SimpleNamespace(gcode=gcode))
     assert stop.value.code == 143
+
+
+def test_the_sweep_waits_for_the_file_the_console_named(monkeypatch, tmp_path):
+    # over SSH the tool does not share klippy's TMPDIR, where Kalico wrote the raw file;
+    # nor can it clean it there, so last run's file under that name is not taken
+    import time
+    captures, cutoffs = [], []
+    before = time.time()
+    sweep_run(monkeypatch, tmp_path, {'accel_chip': 'adxl345'}, captures=captures, console=[
+        '// Writing raw accelerometer data to /srv/klippy-tmp/raw_data_x_beltA.csv file'],
+        cutoffs=cutoffs)
+    assert captures == ['/srv/klippy-tmp/raw_data_x_beltA.csv'] * 2
+    assert all(before - 2 < cutoff <= time.time() for cutoff in cutoffs) and len(cutoffs) == 2
+    captures.clear()
+    sweep_run(monkeypatch, tmp_path, {'accel_chip': 'adxl345'}, captures=captures)
+    assert captures == [CAPTURE % 'A', CAPTURE % 'B']
+
+
+def test_a_sweep_whose_console_fence_was_lost_still_finds_its_file(monkeypatch, tmp_path):
+    from chopper_autotune.klippy import ConsoleFenceLost
+    captures = []
+    sweep_run(monkeypatch, tmp_path, {'accel_chip': 'adxl345'}, captures=captures,
+              console=ConsoleFenceLost('console fence BEGIN not seen (256 console lines captured)'))
+    assert captures == [CAPTURE % 'A', CAPTURE % 'B']

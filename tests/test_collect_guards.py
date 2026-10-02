@@ -1,3 +1,6 @@
+import os
+import time
+
 import pytest
 
 from chopper_autotune.collect import check_resume, refuse_if_printing, run_restore
@@ -121,6 +124,73 @@ def test_await_flushed_demands_span_and_settled_size(tmp_path):
     # the same file against its true duration -> accepted
     assert await_flushed(str(tmp_path / '*-v060.csv'), min_span_sec=1.0,
                          timeout=5.0, poll=0.05) == str(csv)
+
+
+def test_a_csv_capture_finds_the_files_kalico_writes_to_klippy_tmpdir(tmp_path, monkeypatch):
+    # the tool inherits klippy's TMPDIR, where Kalico's ACCELEROMETER_MEASURE writes
+    import tempfile
+
+    from chopper_autotune.collect import drop_stale_csv, wait_for_csv
+    monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path))
+    csv = tmp_path / 'adxl345-hotend-v060.csv'
+    csv.write_text('#time,x,y,z\n' + ''.join('%.4f,0,0,0\n' % (t / 100) for t in range(101)))
+    assert wait_for_csv('v060', min_span_sec=1.0, timeout=5.0).resolve() == csv.resolve()
+    drop_stale_csv('v060')
+    assert not csv.exists()
+
+
+def test_a_csv_capture_takes_the_file_the_console_named(tmp_path, monkeypatch):
+    # started over SSH, the tool does not share klippy's TMPDIR, where Kalico wrote it; a
+    # '[' in a path is a glob character
+    import tempfile
+
+    from chopper_autotune.collect import wait_for_csv
+    monkeypatch.setattr(tempfile, 'tempdir', str(tmp_path / 'elsewhere'))
+    klippy_tmp = tmp_path / 'klippy[tmp]'
+    klippy_tmp.mkdir()
+    csv = klippy_tmp / 'adxl345-hotend-v060.csv'
+    csv.write_text('#time,x,y,z\n' + ''.join('%.4f,0,0,0\n' % (t / 100) for t in range(101)))
+    assert wait_for_csv('v060', min_span_sec=1.0, timeout=5.0, written=[str(csv)]) == csv
+    with pytest.raises(TimeoutError, match=r'did not appear/flush: .*elsewhere/\*-v061\.csv'):
+        wait_for_csv('v061', timeout=0.2)
+
+
+def test_a_lost_console_fence_neither_restarts_the_chip_nor_loses_the_capture(tmp_path, monkeypatch):
+    # the script ran to its end, the chip stopped and wrote the file: one more
+    # ACCELEROMETER_MEASURE would start it again
+    from types import SimpleNamespace
+
+    import chopper_autotune.collect as collect
+    from chopper_autotune.klippy import ConsoleFenceLost
+    sent = []
+
+    def lost(script):
+        sent.append(script)
+        raise ConsoleFenceLost('console fence BEGIN not seen (300 console lines captured)')
+    hw = SimpleNamespace(kl=SimpleNamespace(gcode_output=lost, gcode=sent.append),
+                         measure_chip='hotend')
+    csv = tmp_path / 'adxl345-hotend-v060.csv'
+    csv.write_text('#time,x,y,z\n' + ''.join('%.4f,0,0,0\n' % (t / 100) for t in range(50)))
+    told, cutoffs = [], []
+    monkeypatch.setattr(collect, 'drop_stale_csv', lambda name: None)
+    monkeypatch.setattr(collect, 'wait_for_csv', lambda name, span, written, newer_than:
+                        told.append(written) or cutoffs.append(newer_than) or str(csv))
+    before = time.time()
+    collect.capture_csv(hw, 'v060', 'G4 P100')
+    assert len(sent) == 1 and told == [[]]
+    # a file from before this capture is not taken for it
+    assert before - 2 < cutoffs[0] <= time.time()
+
+
+def test_a_file_older_than_the_capture_is_not_the_capture(tmp_path):
+    # over SSH the tool cannot clean klippy's TMPDIR: last run's file under the same name
+    from chopper_autotune.collect import await_flushed
+    csv = tmp_path / 'raw_data_beltA.csv'
+    csv.write_text('#time,x,y,z\n' + ''.join('%.4f,0,0,0\n' % (t / 100) for t in range(101)))
+    os.utime(csv, (time.time() - 600, time.time() - 600))
+    with pytest.raises(TimeoutError):
+        await_flushed(str(csv), timeout=0.5, poll=0.05, newer_than=time.time() - 1)
+    assert await_flushed(str(csv), timeout=2.0, poll=0.05) == str(csv)
 
 
 def test_report_winner_reports_improvement_vs_defaults(tmp_path, monkeypatch, capsys):
@@ -259,16 +329,21 @@ def test_capture_csv_names_the_chip_as_klipper_registered_it(tmp_path, monkeypat
         def object_list(self):
             return []
 
-        def gcode(self, script):
+        def gcode_output(self, script):
             self.scripts.append(script)
+            return ['// accelerometer measurements started',
+                    '// Writing raw accelerometer data to %s file' % csv]
 
     csv = tmp_path / 'chip-v060.csv'
     csv.write_text('#time,x,y,z\n' + ''.join('%.4f,0,0,0\n' % (t / 100) for t in range(50)))
     monkeypatch.setattr(collect, 'drop_stale_csv', lambda name: None)
-    monkeypatch.setattr(collect, 'wait_for_csv', lambda name, span: str(csv))
+    told = []
+    monkeypatch.setattr(collect, 'wait_for_csv', lambda name, span, written, newer_than:
+                        told.append(written) or str(csv))
     kl = FakeKl()
     collect.capture_csv(collect.detect_hardware(kl, 'x'), 'v060', 'G4 P100')
     assert 'ACCELEROMETER_MEASURE CHIP=%s NAME=v060\n' % command_chip in kl.scripts[0]
+    assert told == [[str(csv)]]                     # the file the console named
 
 
 def test_report_winner_finds_the_stock_reference_when_tpfd_is_not_swept(tmp_path, monkeypatch):

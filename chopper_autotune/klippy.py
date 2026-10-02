@@ -16,11 +16,15 @@ ACCEL_KEY = 'accel'
 ACCEL_ENDPOINTS = {'lis3dh': 'lis2dw/dump_lis2dw', 'beacon': 'beacon/dump_accel'}
 OUTPUT_KEY = 'gcode_output'
 STATUS_KEY = 'chopper_status'
-OUTPUT_MAX = 256           # the console subscription is broadcast and permanent: keep a tail
+OUTPUT_MAX = 256           # between scripts the broadcast subscription keeps only a tail
 
 
 class KlippyError(RuntimeError):
     pass
+
+
+class ConsoleFenceLost(KlippyError):
+    """The script ran to its end; only the console lines it printed were not seen."""
 
 
 def fence_markers(token: str) -> 'tuple[str, str]':
@@ -189,11 +193,12 @@ class Klippy:
             token = 'CHOPPER-%d-%d' % (os.getpid(), self._next_id)
         begin, end = fence_markers(token)
         with self._wakeup:
-            self._output.clear()
-        self.gcode('%s\n%s\n%s' % (begin, script, end))
-        with self._wakeup:
-            lines = list(self._output)
-            self._output.clear()
+            self._output = []           # unbounded while the script runs: a sweep prints a line per Hz
+        try:
+            self.gcode('%s\n%s\n%s' % (begin, script, end))
+        finally:
+            with self._wakeup:
+                lines, self._output = self._output, deque(maxlen=OUTPUT_MAX)
         begun = ended = False
         fenced = []
         for line in lines:
@@ -206,7 +211,7 @@ class Klippy:
             elif begun:
                 fenced.append(line)
         if not ended:
-            raise KlippyError('console fence %s not seen (%d console lines captured)'
+            raise ConsoleFenceLost('console fence %s not seen (%d console lines captured)'
                               % ('END' if begun else 'BEGIN', len(lines)))
         return fenced
 

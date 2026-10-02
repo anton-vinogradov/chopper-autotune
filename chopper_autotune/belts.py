@@ -26,17 +26,18 @@ newtons, T = mu * (2 * L * f)^2.
 """
 from __future__ import annotations
 
-import glob
 import os
+import time
 
 import numpy as np
 
-from .collect import (Screen, ThermalGuard, await_flushed, capture_span, coupled_xy, detect_hardware,
-                      home_xy, motor_label, refuse_blind_z_hop, refuse_if_printing,
-                      rehome_unless_hot, release_gantry, run_restore)
+from .collect import (CAPTURE_MTIME_SLACK_SEC, Screen, ThermalGuard, await_flushed, capture_files,
+                      capture_pattern, capture_span, coupled_xy, detect_hardware, home_xy,
+                      motor_label, refuse_blind_z_hop, refuse_if_printing, rehome_unless_hot,
+                      release_gantry, run_restore, searched, written_files)
 from .current import stress_vector
 from .dataset import load_json, save_json
-from .klippy import Klippy, find_socket
+from .klippy import ConsoleFenceLost, Klippy, find_socket
 
 SEGMENT = 1024              # Welch window; ~0.3 s at the ADXL's ~3.2 kHz -> ~3 Hz resolution
 MATCH_TOLERANCE = 5.0       # percent apart below which the belts count as matched
@@ -45,7 +46,7 @@ STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/belts.json')
 # the sweep's run-to-run deltas live apart: its structural response frequencies must
 # never land in belts.json, which the panel renders as TENSION (pluck fundamentals)
 SWEEP_STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/belts_sweep.json')
-CAPTURE = '/tmp/raw_data_*belt%s*.csv'   # TEST_RESONANCES OUTPUT=raw_data NAME=belt<label>
+CAPTURE = 'raw_data_*belt%s*.csv'   # TEST_RESONANCES OUTPUT=raw_data NAME=belt<label>
 
 PLUCK_BAND = (40.0, 1000.0)  # near-head spans ring ~200-450 Hz, their 2f up to ~900;
                              # ambient lines (e.g. a persistent ~600 Hz) are excluded
@@ -95,18 +96,19 @@ def insensitive(freqs: 'dict[str, float]', prev: 'dict | None', threshold_hz: fl
             and abs(freqs['B'] - prev['B']) < threshold_hz)
 
 
-def wait_for_capture(pattern: str, min_span_sec: float = 0.0, timeout: float = 30.0) -> str:
+def wait_for_capture(pattern: str, min_span_sec: float = 0.0, timeout: float = 30.0,
+                     newer_than: float = 0.0) -> str:
     """collect.await_flushed with a sweep-shaped error: TEST_RESONANCES returns before
     the background writer has flushed the raw CSV, and a truncated sweep reads as a
     phantom peak at whatever frequency the cut landed on (measured: '156 Hz')."""
     try:
-        return await_flushed(pattern, min_span_sec, timeout, poll=0.3)
+        return await_flushed(pattern, min_span_sec, timeout, poll=0.3, newer_than=newer_than)
     except TimeoutError:
-        files = glob.glob(pattern)
+        files = capture_files(pattern)
         newest = max(files, key=os.path.getmtime) if files else None
-        raise SystemExit('capture incomplete for %s: %.0fs of the %.0fs sweep flushed — '
-                         'check the [resonance_tester] output path'
-                         % (pattern, capture_span(newest) if newest else 0.0, min_span_sec))
+        raise SystemExit('capture incomplete: %.0fs of the %.0fs sweep flushed in %s'
+                         % (capture_span(newest) if newest else 0.0, min_span_sec,
+                            ' or '.join(searched(pattern))))
 
 
 def diagonal_chips(settings: dict) -> 'list[str]':
@@ -303,13 +305,18 @@ def belts(kl: Klippy, args) -> int:
             label = motor_label(motor)
             vec = stress_vector(hw.kinematics, motor)
             axis = '%g,%g' % vec
-            for stale in glob.glob(CAPTURE % label):
+            for stale in capture_files(CAPTURE % label):
                 os.remove(stale)
             screen.update('Chopper belts: exciting %s' % label, force=True)
             print(' exciting belt %s (head diagonal %s)...' % (label, axis))
-            kl.gcode(sweep_command(axis, label, chip, band, hz_per_sec) + '\nM400')
-            path = wait_for_capture(CAPTURE % label,
-                                    min_span_sec=(band[1] - band[0]) / hz_per_sec)
+            started = time.time() - CAPTURE_MTIME_SLACK_SEC
+            try:
+                lines = kl.gcode_output(sweep_command(axis, label, chip, band, hz_per_sec) + '\nM400')
+            except ConsoleFenceLost:
+                lines = []                          # the sweep ran: look for its file by name
+            path = wait_for_capture(capture_pattern(written_files(lines), CAPTURE % label),
+                                    min_span_sec=(band[1] - band[0]) / hz_per_sec,
+                                    newer_than=started)
             freqs, psd = welch_psd(path)
             peak, binwidth = dominant(freqs, psd, band)
             peaks[label] = peak
