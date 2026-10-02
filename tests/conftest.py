@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from chopper_autotune import collect, demo, extruder, find_speed, tmc, tune
+from chopper_autotune import collect, demo, extruder, find_speed, resonance_map, tmc, tune
 
 
 @pytest.fixture(autouse=True)
@@ -76,19 +76,20 @@ def stub_printer(tmp_path, monkeypatch):
                                 baseline={'tbl': 0, 'toff': 2, 'hstrt': 2, 'hend': 12},
                                 display=True)
 
-    for module in (collect, find_speed):
+    for module in (collect, find_speed, resonance_map):
         for name, value in (('detect_hardware', hardware), ('ThermalGuard', StubGuard),
                             ('refuse_blind_z_hop', lambda *args: None),
                             ('park', lambda *args: None),
                             ('make_parker', lambda *args: (lambda *more: None)),
                             ('measure_baseline', lambda *args: None),
-                            ('enter_spreadcycle', lambda *args: None),
+                            ('enter_spreadcycle', lambda *args, **kwargs: None),
                             ('exit_spreadcycle', lambda *args: None),
                             ('restore_chopper', lambda *args: None),
                             ('rehome_unless_hot', lambda *args: None),
                             ('refuse_if_printing', lambda *args: None),
                             ('default_dataset_root', dataset_root)):
-            monkeypatch.setattr(module, name, value)
+            if hasattr(module, name):
+                monkeypatch.setattr(module, name, value)
     monkeypatch.setattr(demo, 'write_state', lambda *args: None)
     monkeypatch.setattr(extruder, 'load_winner_state', lambda: None)
 

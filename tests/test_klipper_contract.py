@@ -6,6 +6,7 @@ download fails instead of skipping."""
 import ast
 import collections
 import configparser
+import contextlib
 import fnmatch
 import importlib.util
 import json
@@ -131,6 +132,9 @@ class Reactor:
 
     def monotonic(self):
         return time.monotonic()
+
+    def assert_no_pause(self):                      # master's template status reads
+        return contextlib.nullcontext()
 
     def register_fd(self, fd, read_cb, write_cb=None):
         return object()
@@ -608,6 +612,29 @@ def test_the_csv_capture_looks_where_accelerometer_measure_writes(source, monkey
     assert len(written) == 1 and where_the_tool_looks(written[0][1], '*-v060.csv')
     # the console names the file: found also by a tool that does not share klippy's TMPDIR
     assert collect.written_files(console) == [written[0][1]]
+
+
+@pytest.mark.parametrize('source', fetched('gcode.py'))
+def test_the_ranking_table_keeps_its_columns_in_the_console(source, capsys):
+    # CHOPPER_ANALYZE runs in the foreground: its output reaches respond_info, which strips
+    # the leading spaces of every line, and the console shows it in a monospace font
+    from chopper_autotune.analyze import print_table, rank
+    require(source)
+    ranked = rank([{'chopper': tmc.Chopper(tbl, toff, 4, 6), 'magnitude': 100.0 * toff + tbl,
+                    'spread': 1.0, 'n': 2} for tbl in range(4) for toff in range(2, 5)],
+                  tmc.DRIVERS['2209'], tmc.Hearing())
+    print_table(ranked, 12)
+    dispatch = load_gcode(source).GCodeDispatch(Printer())
+    console = []
+    dispatch.register_output_handler(console.append)
+    dispatch.respond_info(capsys.readouterr().out)
+    lines = [line[len('// '):] for message in console for line in message.split('\n')]
+
+    def column_edges(line):
+        # rank flush left at 0, the other ten columns flush right
+        return [match.end() for match in re.finditer(r'\S+', line)][1:11]
+    header = column_edges(lines[0])
+    assert [column_edges(line) for line in lines[1:]] == [header] * 12
 
 
 def load_extra(source: str, filename: str):
@@ -1103,10 +1130,11 @@ class ShellReactor(Reactor):
         return waketime
 
 
-def macro_printer(source: str):
-    """Our chopper_autotune.cfg on this release's own gcode.py, config reader and
-    gcode_macro.py, with the shell command module the printer runs: Kalico ships one,
-    install.sh puts ours beside Klipper's extras (and leaves one already there)."""
+def macro_printer(source: str, *configs: str, ours: str = CFG):
+    """Our chopper_autotune.cfg, and `configs` read after it, on this release's own
+    gcode.py, config reader, gcode_macro.py, delayed_gcode.py and display_status.py,
+    with the shell command module the printer runs: Kalico ships one, install.sh puts
+    ours beside Klipper's extras (and leaves one already there)."""
     gcode = load_gcode(source)
     configfile = load_klippy(source, 'configfile')
     if source.startswith('kalico'):
@@ -1120,19 +1148,25 @@ def macro_printer(source: str):
     shell = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(shell)
     shell.subprocess = types.SimpleNamespace(Popen=Popen, PIPE=-1, STDOUT=-2)
-    fileconfig = read_like_klipper(CFG)
+    fileconfig = read_like_klipper(ours, *configs)
     printer = Printer()
     printer.reactor = ShellReactor()
     printer.command_error = gcode.CommandError
     printer.config_error = configparser.Error
     dispatch = gcode.GCodeDispatch(printer)
     printer.objects['gcode'] = dispatch
+    printer.objects['configfile'] = types.SimpleNamespace(
+        get_status=lambda eventtime: {'settings': settings_of(fileconfig)})
+    printer.objects['display_status'] = load_klippy(source, 'display_status').load_config(
+        ConsoleConfig(printer))
     tracking = {}
+    modules = {'gcode_macro': macro, 'gcode_shell_command': shell,
+               'delayed_gcode': load_klippy(source, 'delayed_gcode')}
 
     def load_object(config, section, default=None):
         if section not in printer.objects:
             wrapper = configfile.ConfigWrapper(printer, fileconfig, tracking, section)
-            module = {'gcode_macro': macro, 'gcode_shell_command': shell}[section.split()[0]]
+            module = modules[section.split()[0]]
             printer.objects[section] = (module.load_config_prefix(wrapper) if ' ' in section
                                         else module.load_config(wrapper))
         return printer.objects[section]
@@ -1141,7 +1175,7 @@ def macro_printer(source: str):
         (name, obj) for name, obj in printer.objects.items()
         if module is None or name.split()[0] == module]
     for section in fileconfig.sections():
-        if section.split()[0] in ('gcode_macro', 'gcode_shell_command'):
+        if section.split()[0] in modules:
             load_object(None, section)
     printer.send_event('klippy:ready')
     console = []
@@ -1175,6 +1209,49 @@ def test_a_macro_line_reaches_the_tool_as_typed(source, line, argv):
     dispatch.run_script(line)
     assert [started[1:] for started in Popen.started] == [argv], (source, console)
     assert not [text for text in console if text.startswith('!!')], console
+
+
+@pytest.mark.parametrize('source', fetched('delayed_gcode.py'))
+def test_the_self_check_names_a_replaced_macro_once(source, tmp_path):
+    # Klipper prints an error once at every macro level it passes: from a macro the
+    # delayed_gcode called, the console got the self-check's error twice
+    require(source)
+    other = tmp_path / 'other.cfg'
+    other.write_text('[gcode_macro CHOPPER_TUNE]\ngcode:\n    G28\n')
+    dispatch, console = macro_printer(source, str(other))
+    dispatch.printer.reactor.fire_timers()                  # initial_duration has passed
+    errors = [message for message in console if message.startswith('!!')]
+    assert len(errors) == 1 and 'chopper-autotune: CHOPPER_TUNE runs another tool' in errors[0]
+    message = dispatch.printer.objects['display_status'].get_status(0)['message']
+    assert message.startswith('chopper-autotune: CHOPPER_TUNE runs another tool')
+
+
+@pytest.mark.parametrize('source', fetched('delayed_gcode.py'))
+def test_the_self_check_survives_a_section_of_ours_removed_by_hand(source, tmp_path):
+    # a template error in a delayed_gcode reaches only klippy.log: a missing section
+    # of ours must neither break the check nor count as a conflict
+    require(source)
+    ours = tmp_path / 'chopper_autotune.cfg'
+    with open(CFG) as original:
+        ours.write_text(original.read().replace('[gcode_macro CHOPPER_EXTRUDER]',
+                                                '[gcode_macro TUNE_EXTRUDER]'))
+    dispatch, console = macro_printer(source, ours=str(ours))
+    dispatch.printer.reactor.fire_timers()
+    assert console == []
+    other = tmp_path / 'other.cfg'
+    other.write_text('[gcode_macro CHOPPER_TUNE]\ngcode:\n    G28\n')
+    dispatch, console = macro_printer(source, str(other), ours=str(ours))
+    dispatch.printer.reactor.fire_timers()
+    errors = [message for message in console if message.startswith('!!')]
+    assert len(errors) == 1 and 'chopper-autotune: CHOPPER_TUNE runs another tool' in errors[0]
+
+
+@pytest.mark.parametrize('source', fetched('delayed_gcode.py'))
+def test_the_self_check_is_silent_without_a_conflict(source):
+    require(source)
+    dispatch, console = macro_printer(source)
+    dispatch.printer.reactor.fire_timers()
+    assert console == [] and not dispatch.printer.objects['display_status'].get_status(0)['message']
 
 
 class ConsoleConfig:

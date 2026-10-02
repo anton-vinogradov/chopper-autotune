@@ -25,8 +25,8 @@ from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen
                       make_parker, measure_baseline, now, park, refuse_blind_z_hop,
                       refuse_if_printing, refuse_multi_motor, rehome_unless_hot, run_restore)
 from .dataset import Dataset, save_json
-from .find_speed import (build_curve, build_speed_plan, find_peaks, find_valleys, run_sweep,
-                         smooth, write_report)
+from .find_speed import (build_curve, build_speed_plan, find_peaks, find_valleys, planned_ids,
+                         refuse_a_failed_scan, run_sweep, smooth, write_report)
 from .klippy import Klippy, find_socket
 
 BAR_WIDTH = 32
@@ -151,6 +151,7 @@ def resonance_map(kl: Klippy, args) -> int:
         run_restore(lambda: exit_spreadcycle(kl, hw), lambda: rehome_unless_hot(kl),
                     ds.flush_raw)
 
+    refuse_a_failed_scan(ds, hw.motor, planned_ids(plan, args.iterations))
     curve = build_curve(ds)
     if not curve:
         raise SystemExit('no successful measurements')

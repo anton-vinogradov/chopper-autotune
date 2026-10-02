@@ -116,6 +116,34 @@ def build_speed_plan(args, accel: float, limit: float) -> 'list[tuple[int, float
     return plan
 
 
+# a curve with more holes than this is no verdict: a move a driver or the accelerometer
+# failed reads as a dip, and its neighbours as a peak (#133: 95 of 102 failed)
+MAX_FAILED_SHARE = 0.25
+
+
+def planned_ids(plan: 'list[tuple[int, float]]', iterations: int) -> 'set[str]':
+    return {scan_id(speed, iteration, direction) for speed, _ in plan
+            for iteration in range(iterations) for direction in (1, -1)}
+
+
+def refuse_a_failed_scan(ds: Dataset, motor: str, planned: 'set[str]'):
+    """Name the first error of a scan whose moves failed on a large share, before any
+    verdict on peaks; a few failures only reach the log. Only this run's moves count:
+    a resumed dataset may hold failures of a wider range it does not measure again."""
+    last = {}
+    for record in ds.records():
+        if record.get('kind') == 'speed' and record['id'] in planned:
+            last[record['id']] = record                 # a resumed move: its latest try
+    failures = [record for record in last.values() if record.get('status') != 'ok']
+    if not failures:
+        return
+    first = 'the first error: %s' % failures[0].get('error', 'unknown')
+    if len(failures) > MAX_FAILED_SHARE * len(last):
+        raise SystemExit('motor %s: the speed scan failed on %d of %d moves; %s'
+                         % (motor, len(failures), len(last), first))
+    print('%d of %d scan moves failed; %s' % (len(failures), len(last), first))
+
+
 def run_sweep(hw, ds: Dataset, args, plan: 'list[tuple[int, float]]', accel: float,
               screen: Screen, before_move, done: set) -> int:
     """Measure vibration at every planned speed, both directions, into ds; return the failed
@@ -238,6 +266,7 @@ def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None]':
     started = time.time()
     screen = Screen(kl, hw.display, popup)
     before_move = make_parker(kl, hw, guard)
+    planned = planned_ids(plan, args.iterations)
     try:
         measure_baseline(hw, ds, args, done)       # the noise floor: motors still off
         enter_spreadcycle(kl, hw)
@@ -255,11 +284,13 @@ def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None]':
         ceiling = fit_max_speed(accel, limit, args.measure_time, args.step)
         while curve and not peaks and rising_at_edge(curve, args.max_speed, args.step) \
                 and args.max_speed + args.step <= ceiling:
+            refuse_a_failed_scan(ds, hw.motor, planned)      # no faster moves on a failing setup
             new_max = min(ceiling, args.max_speed + max(4 * args.step, 40))
             print('The curve is still rising at %d mm/s — extending the scan to %d'
                   % (args.max_speed, new_max))
             args.min_speed, args.max_speed = args.max_speed + args.step, new_max
             extension = build_speed_plan(args, accel, limit)
+            planned |= planned_ids(extension, args.iterations)
             failed += run_sweep(hw, ds, args, extension, accel, screen, before_move, done)
             curve = build_curve(ds)
             peaks = find_peaks(smooth([magnitude for _, magnitude in curve]))
@@ -271,6 +302,7 @@ def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None]':
             lambda: rehome_unless_hot(kl),
             ds.flush_raw)
 
+    refuse_a_failed_scan(ds, hw.motor, planned)
     if not curve:
         raise SystemExit('no successful measurements')
 

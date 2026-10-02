@@ -43,7 +43,7 @@ class RaisedError(Exception):
 
 def run_selfcheck(settings: dict, display_status: bool = True) -> 'tuple[str | None, str | None]':
     """What the start-up self-check leaves: (the display message, the console error).
-    Runs the script _CHOPPER_SELFCHECK renders line by line, as Klipper does; M117
+    Runs the script the delayed_gcode renders line by line, as Klipper does; M117
     exists only with [display_status] loaded (Mainsail's and Fluidd's configs have it)."""
     try:
         import jinja2
@@ -55,8 +55,8 @@ def run_selfcheck(settings: dict, display_status: bool = True) -> 'tuple[str | N
     def raise_error(message):
         raise RaisedError(message)
 
-    def render(macro, params=None):
-        script = settings['gcode_macro ' + macro]['gcode']
+    def render(section, params=None):
+        script = settings[section]['gcode']
         printer = dict({'configfile': {'settings': settings}},
                        **({'display_status': {'message': None}} if display_status else {}))
         return jinja2.Environment('{%', '%}', '{', '}').from_string(script).render(
@@ -64,14 +64,14 @@ def run_selfcheck(settings: dict, display_status: bool = True) -> 'tuple[str | N
              'action_raise_error': raise_error, 'action_respond_info': lambda message: ''})
 
     display = None
-    for line in (line.strip() for line in render('_chopper_selfcheck').split('\n')):
+    for line in (line.strip() for line in render('delayed_gcode chopper_autotune_selfcheck').split('\n')):
         if line.startswith('M117 '):
             assert display_status, 'M117 without [display_status] is an unknown command'
             display = line[len('M117 '):]
         elif line.startswith('_CHOPPER_REPLACED '):
             params = dict(word.split('=', 1) for word in line.split()[1:])
             try:
-                render('_chopper_replaced', params)
+                render('gcode_macro _chopper_replaced', params)
             except RaisedError as raised:
                 return display, str(raised)
         else:
