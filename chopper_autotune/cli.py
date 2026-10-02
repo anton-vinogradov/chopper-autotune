@@ -343,7 +343,7 @@ def announce_failure(args, message: str):
         return
     try:
         from .klippy import Klippy, find_socket
-        from .collect import accepted_commands
+        from .collect import accepted_commands, console_safe
         kl = Klippy(find_socket(getattr(args, 'socket', None))).connect()
         try:
             safe = message.replace('"', "'").replace('\n', ' ')
@@ -351,7 +351,7 @@ def announce_failure(args, message: str):
             # the 120-character cut is the display's, the console gets the whole line. Only
             # the commands Klipper takes now: a refused M117 reprints the whole state message
             commands = accepted_commands(kl)
-            for command, text in (('M118', safe), ('M117', safe[:120])):
+            for command, text in (('M118', console_safe(safe)), ('M117', safe[:120])):
                 if commands is not None and command not in commands:
                     continue
                 try:

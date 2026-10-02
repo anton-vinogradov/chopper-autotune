@@ -75,6 +75,22 @@ def test_screen_final_adds_a_popup():
     assert 'M118 Belts matched: A 105 / B 105 Hz' in kl.sent
 
 
+@pytest.mark.parametrize('validate, pops', [(0, True), (3, False)])
+def test_the_grid_verdict_pops_up_only_when_no_validation_follows(monkeypatch, validate, pops):
+    # the validation moves the motors again: a popup there would land mid-run
+    from types import SimpleNamespace
+
+    import chopper_autotune.collect as collect
+    monkeypatch.setattr(collect, 'measure_combo', lambda *args: (2, 0, [100.0, 101.0], 0))
+    shown = []
+    screen = SimpleNamespace(update=lambda text, force=False: shown.append(('update', force)),
+                             final=lambda text: shown.append(('final', True)))
+    plan = [(collect.tmc.Chopper(2, 3, 5, 0), 58)]
+    collect.run_grid(None, None, None, SimpleNamespace(iterations=1, validate=validate), plan,
+                     70.0, 1000.0, set(), None, screen)
+    assert shown[-1] == (('final', True) if pops else ('update', True))
+
+
 def test_fit_measure_time_shrinks_for_fast_resonances():
     """The measured failure: motor B's 96 mm/s resonance needed 129 mm of travel against
     the 104 mm cap and aborted the tune — the cruise must shrink to fit instead."""

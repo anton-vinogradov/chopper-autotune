@@ -338,10 +338,13 @@ def run_apply(mk, stepper: str, chopper: tmc.Chopper):
                    'Klipper puts toff back to the config value and keeps the other applied '
                    'registers; SAVE=1 keeps the whole set' % stepper)
         print(warning)
-        try:
-            mk.gcode('M118 ' + warning)             # APPLY runs detached: the log alone is unseen
-        except Exception:
-            pass
+        # APPLY runs detached: the log alone is unseen. Not without [respond]: Klipper
+        # answers an M118 it lacks with an 'Unknown command' line, KlipperScreen with an error
+        if 'M118' in (mk.accepted_commands() or {'M118'}):
+            try:
+                mk.gcode('M118 ' + warning)
+            except Exception:
+                pass
 
 
 def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]', extruder_state: 'dict | None' = None):

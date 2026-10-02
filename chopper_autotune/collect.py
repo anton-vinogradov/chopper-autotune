@@ -852,19 +852,21 @@ class Screen:
     shows in every console but raises no popup.
 
     Each channel is used only where Klipper takes its command (accepted_commands), and
-    disables itself on error so a missing one never stops a run.
+    disables itself on error so a missing one never stops a run. A stage of a longer run
+    (`popup=False`: the speed scan and the register search inside CHOPPER_TUNE) ends in
+    the console without a popup: the motors still have work to do.
     """
 
     CONSOLE_PREFIX = 'Chopper:'                     # RESPOND puts the space in itself
 
     INTERVAL_SEC = 5.0
 
-    def __init__(self, kl: Klippy, display: bool):
+    def __init__(self, kl: Klippy, display: bool, popup: bool = True):
         self.kl = kl
         commands = accepted_commands(kl)
         self.display = display and (commands is None or 'M117' in commands)
         self.console = commands is None or 'RESPOND' in commands
-        self.popup = commands is None or 'M118' in commands
+        self.popup = popup and (commands is None or 'M118' in commands)
         self.last = 0.0
 
     def update(self, text: str, force: bool = False):
@@ -886,7 +888,7 @@ class Screen:
         if self.display:
             self.display = self._send('M117 %s' % text)
         if self.popup:
-            self._send('M118 %s' % text)
+            self._send('M118 %s' % console_safe(text))
         elif self.console:
             self.console = self._send('RESPOND PREFIX="%s" MSG="%s"' % (
                 self.CONSOLE_PREFIX, console_text(text)))
@@ -903,7 +905,13 @@ class Screen:
 def console_text(text: str) -> str:
     """A display text as RESPOND's MSG: without the tool's name the prefix already gives,
     and with no double quote, which would end MSG."""
-    return re.sub(r'^Chopper:?\s+', '', text).replace('"', "'")
+    return console_safe(re.sub(r'^Chopper:?\s+', '', text)).replace('"', "'")
+
+
+def console_safe(text: str) -> str:
+    """A console line every console shows: KlipperScreen's reads it as Pango markup and
+    drops a line a '<' or '&' makes invalid."""
+    return text.replace('<', '\u2039').replace('&', 'and')
 
 
 def eta_text(seconds: float) -> str:
@@ -1201,7 +1209,11 @@ def run_grid(kl: Klippy, hw: Hardware, ds: Dataset, args, plan, travel: float, a
             eta = remaining * (time.monotonic() - started) / (ok + failed)
             screen.update('Chopper %d%% %d/%d ETA %s'
                           % (100 * index // len(plan), index, len(plan), eta_text(eta)))
-    screen.final('Chopper grid done: %d ok, %d failed' % (ok, failed))
+    done_text = 'Chopper grid done: %d ok, %d failed' % (ok, failed)
+    if args.validate:
+        screen.update(done_text, force=True)        # the validation still moves the motors
+    else:
+        screen.final(done_text)
     return ok, failed
 
 
@@ -1282,7 +1294,7 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
                               'failed' if score == float('inf') else '%.1f%s' % (score, note)))
         if score != float('inf'):
             # without the bound the counter reads as endless (field: run stopped by hand)
-            screen.update('Chopper %s cand %d of <=%d: %.0f'
+            screen.update('Chopper %s cand %d of max %d: %.0f'
                           % (hw.motor, len(cache), budget, score))
         return score
 
@@ -1346,7 +1358,7 @@ def run_collect(args) -> int:
         kl.close()
 
 
-def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
+def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
     args.source = 'csv' if args.csv else 'stream'
     if args.trim is None:
         args.trim = 0.25 if args.csv else 0.1
@@ -1456,7 +1468,7 @@ def collect(kl: Klippy, args) -> 'tuple[int, str | None]':
     park(kl, hw)
     started = time.time()
     before_move = make_parker(kl, hw, guard)
-    screen = Screen(kl, hw.display)
+    screen = Screen(kl, hw.display, popup)
     try:
         measure_baseline(hw, ds, args, done)       # the noise floor: motors still off
         enter_spreadcycle(kl, hw)

@@ -148,7 +148,7 @@ def descent(hw, kl, driver, speed: float, audible_weight: float, screen: Screen,
             cache[combo] = penalized_score(combo, [magnitude], driver, audible_weight,
                                            clicks_per_move=float(clicks))
             screen.update('Chopper E cand %d%s: %.0f'
-                          % (len(cache), ' of <=%d' % budget if budget else '',
+                          % (len(cache), ' of max %d' % budget if budget else '',
                              cache[combo]))
         return cache[combo]
 

@@ -50,6 +50,14 @@ class Moonraker:
         result = self._request('GET', '/printer/objects/query', {'configfile': 'settings'})
         return result['status']['configfile']['settings']
 
+    def accepted_commands(self) -> 'set[str] | None':
+        """As collect.accepted_commands, through Moonraker."""
+        try:
+            result = self._request('GET', '/printer/objects/query', {'gcode': 'commands'})
+            return set(result['status']['gcode']['commands'])
+        except Exception:
+            return None
+
     def is_printing(self) -> bool:
         result = self._request('GET', '/printer/objects/query', {'print_stats': 'state'})
         return result['status'].get('print_stats', {}).get('state') == 'printing'

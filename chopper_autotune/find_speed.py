@@ -175,7 +175,7 @@ def run_find_speed(args) -> int:
         kl.close()
 
 
-def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
+def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None]':
     args.source = 'csv' if args.csv else 'stream'
     if args.trim is None:
         args.trim = 0.25 if args.csv else 0.1
@@ -236,7 +236,7 @@ def scan(kl: Klippy, args) -> 'tuple[int, int | None]':
     guard.preflight()
     park(kl, hw)
     started = time.time()
-    screen = Screen(kl, hw.display)
+    screen = Screen(kl, hw.display, popup)
     before_move = make_parker(kl, hw, guard)
     try:
         measure_baseline(hw, ds, args, done)       # the noise floor: motors still off
