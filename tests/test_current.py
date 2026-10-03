@@ -259,23 +259,148 @@ def test_a_stop_during_the_first_change_still_puts_it_back():
     assert len(restores) == 1
 
 
-@pytest.mark.parametrize('kinematics', ['limited_corexy', 'limited_cartesian'])
-def test_kalicos_limited_kinematics_are_refused_before_any_motion(monkeypatch, kinematics):
-    # Kalico caps each belt there (max_x/y_velocity and accel): the pattern would not
-    # reach its 200 mm/s, as the envelope already refuses
+KINEMATICS_REPORTS = {
+    # SET_KINEMATICS_LIMIT without parameters, as Kalico's limited_* kinematics answer it
+    'limited_corexy': ['// x,y,z max_accels: (3000.0, 2000.0, 100.0)\n'
+                       '// Per axis accelerations limits scale with current acceleration.\n'
+                       '// Minimum XY acceleration of 1664 mm/s\u00b2 reached on 56\u00b0 diagonals.'],
+    'limited_cartesian': ['// x,y,z max_velocities: [300.0, 200.0, 15.0]\n'
+                          '// x,y,z max_accels: [3000.0, 2000.0, 100.0]\n'
+                          '// Per axis accelerations limits are independent of current acceleration.'],
+}
+
+
+@pytest.mark.parametrize('kinematics, motor, lifted, restored', [
+    # the strokes run diagonals: both axes
+    ('limited_corexy', 'y', 'SET_KINEMATICS_LIMIT SCALE=0 X_ACCEL=1000000 Y_ACCEL=1000000',
+     'SET_KINEMATICS_LIMIT SCALE=1 X_ACCEL=3000.0 Y_ACCEL=2000.0'),
+    # the motor's own axis: the other keeps its limit for the moves that set the strokes up
+    ('limited_cartesian', 'x', 'SET_KINEMATICS_LIMIT SCALE=0 X_ACCEL=1000000 Y_ACCEL=2000.0',
+     'SET_KINEMATICS_LIMIT SCALE=0 X_ACCEL=3000.0 Y_ACCEL=2000.0'),
+    ('limited_cartesian', 'y', 'SET_KINEMATICS_LIMIT SCALE=0 X_ACCEL=3000.0 Y_ACCEL=1000000',
+     'SET_KINEMATICS_LIMIT SCALE=0 X_ACCEL=3000.0 Y_ACCEL=2000.0'),
+])
+def test_kalicos_accel_limits_step_aside_for_a_motors_strokes_and_come_back(kinematics, motor,
+                                                                           lifted, restored):
+    from types import SimpleNamespace
+
+    from chopper_autotune.current import axis_limits, keep_axis_limits, lift_axis_limits
+    scripts = []
+    kl = SimpleNamespace(gcode=scripts.append,
+                         gcode_output=lambda script: KINEMATICS_REPORTS[kinematics])
+    limits, restores = axis_limits(kl, kinematics), []
+    keep_axis_limits(kl, limits, restores)
+    lift_axis_limits(kl, kinematics, limits, motor)
+    assert scripts == [lifted]
+    restores[0]()
+    assert scripts == [lifted, restored]
+    keep_axis_limits(kl, None, restores)
+    lift_axis_limits(kl, 'corexy', None, motor)
+    assert len(restores) == 1 and scripts == [lifted, restored]
+    assert axis_limits(kl, 'corexy') is None
+    with pytest.raises(SystemExit, match='did not report the limited_corexy limits'):
+        axis_limits(SimpleNamespace(gcode_output=lambda script: ['// Unknown command']),
+                    'limited_corexy')
+
+
+@pytest.mark.parametrize('kinematics, vec, accel, scale, expected', [
+    ('corexy', (1.0, 1.0), 10000.0, False, 10000.0),
+    # a diagonal of motor A: sqrt2 / (1/3000 + 1/2000)
+    ('limited_corexy', (1.0, 1.0), 10000.0, False, 1697.06),
+    ('limited_corexy', (1.0, 1.0), 1000.0, False, 1000.0),
+    # scale_xy_accel: the cap follows M204 over the larger limit
+    ('limited_corexy', (1.0, 1.0), 10000.0, True, 5656.85),
+    ('limited_cartesian', (0.0, 1.0), 10000.0, False, 2000.0),
+    ('limited_cartesian', (1.0, 0.0), 2500.0, False, 2500.0),
+    ('limited_cartesian', (1.0, 0.0), 10000.0, True, 8320.5),
+])
+def test_the_accel_a_stroke_gets_follows_kalicos_per_axis_limits(kinematics, vec, accel, scale,
+                                                                 expected):
+    from chopper_autotune.current import accel_along
+    limits = {'accels': [3000.0, 2000.0], 'velocities': [], 'scale': scale}
+    assert accel_along(kinematics, vec, accel, limits if kinematics.startswith('limited') else None) \
+        == pytest.approx(expected, abs=0.01)
+
+
+@pytest.mark.parametrize('kinematics, max_velocity, refusal', [
+    # limited_corexy caps the belt itself: 180 lets no belt reach 200
+    ('limited_corexy', 180.0, 'raise max_velocity to 200 or more: now 180, it caps motor A at 180'),
+    # Klipper caps the head: on corexy 180 lets a belt reach 254
+    ('corexy', 180.0, None),
+    ('limited_corexy', 200.0, None),
+])
+def test_a_limited_corexy_belt_is_capped_by_max_velocity_itself(monkeypatch, kinematics,
+                                                               max_velocity, refusal):
     from types import SimpleNamespace
 
     import chopper_autotune.current as cur
     from chopper_autotune.cli import build_parser
-    hw = SimpleNamespace(kinematics=kinematics, axis_span=300.0, max_accel=3000.0,
+    hw = SimpleNamespace(kinematics=kinematics, axis_span=300.0, max_accel=10000.0,
                          driver=SimpleNamespace(name='2209'))
     monkeypatch.setattr(cur, 'detect_hardware', lambda kl, axis, accel=False: hw)
     scripts = []
-    kl = SimpleNamespace(gcode=scripts.append, request=status(), settings=lambda: {
-        'tmc2209 stepper_x': {'run_current': 0.8}, 'stepper_x': {}})
-    with pytest.raises(SystemExit, match='%s is not supported by CHOPPER_CURRENT' % kinematics):
-        cur.current_tune(kl, build_parser().parse_args(['current', '--motor', 'a', '--yes']))
+    kl = SimpleNamespace(gcode=scripts.append, request=status(max_velocity),
+                         gcode_output=lambda script: KINEMATICS_REPORTS['limited_corexy'],
+                         settings=lambda: {'tmc2209 stepper_x': {'run_current': 0.8}, 'stepper_x': {}})
+    args = build_parser().parse_args(['current', '--motor', 'a', '--yes', '--dry-run'])
+    if refusal:
+        with pytest.raises(SystemExit) as refused:
+            cur.current_tune(kl, args)
+        assert str(refused.value.code).startswith(refusal)
+    else:
+        assert cur.current_tune(kl, args) == 0
     assert scripts == []
+
+
+def limited_current(monkeypatch, kinematics, report, max_velocity=500.0):
+    from types import SimpleNamespace
+
+    import chopper_autotune.current as cur
+    hw = SimpleNamespace(kinematics=kinematics, axis_span=300.0, max_accel=10000.0,
+                         driver=SimpleNamespace(name='2209'))
+    monkeypatch.setattr(cur, 'detect_hardware', lambda kl, axis, accel=False: hw)
+    return SimpleNamespace(gcode=lambda script: pytest.fail('moved: %s' % script),
+                           request=status(max_velocity), gcode_output=lambda script: report,
+                           settings=lambda: {'tmc2209 stepper_%s' % m: {'run_current': 0.8}
+                                             for m in 'xy'})
+
+
+@pytest.mark.parametrize('kinematics, motor, accel, line', [
+    # the printer's own load: what its per-axis limits give the stroke
+    ('limited_cartesian', 'b', None, '  motor B: configured run_current 0.80 A, strokes at 2000 '
+                                     'mm/s2 (what the per-axis limits give it of max_accel 10000)'),
+    ('limited_corexy', 'a', None, '  motor A: configured run_current 0.80 A, strokes at 5657 '
+                                  'mm/s2 (what the per-axis limits give it of max_accel 10000)'),
+    # an ACCEL given runs as asked: the strokes lift the limit
+    ('limited_cartesian', 'b', '4000', '  motor B: configured run_current 0.80 A, strokes at 4000 mm/s2'),
+    ('corexy', 'a', None, '  motor A: configured run_current 0.80 A, strokes at 10000 mm/s2'),
+])
+def test_current_strokes_load_a_motor_as_the_printer_does(monkeypatch, capsys, kinematics, motor,
+                                                         accel, line):
+    # Kalico caps each axis: max_accel alone loaded a heavy bed 3x past what it ever gets
+    import chopper_autotune.current as cur
+    from chopper_autotune.cli import build_parser
+    kl = limited_current(monkeypatch, kinematics, KINEMATICS_REPORTS.get(kinematics, []))
+    cur.current_tune(kl, build_parser().parse_args(
+        ['current', '--motor', motor, '--dry-run'] + (['--accel', accel] if accel else [])))
+    assert line in capsys.readouterr().out.splitlines()
+
+
+def test_current_refuses_a_belt_kalico_caps_below_the_pattern(monkeypatch):
+    # max_y_velocity is the user's limit for the Y motor, as max_velocity is the head's
+    import chopper_autotune.current as cur
+    from chopper_autotune.cli import build_parser
+    report = ['// x,y,z max_velocities: [300.0, 150.0, 15.0]\n'
+              '// x,y,z max_accels: [3000.0, 2000.0, 100.0]\n'
+              '// Per axis accelerations limits are independent of current acceleration.']
+    for max_velocity in (500.0, 200.0):             # at 200 max_velocity is no cap to raise
+        kl = limited_current(monkeypatch, 'limited_cartesian', report, max_velocity)
+        with pytest.raises(SystemExit) as refused:
+            cur.current_tune(kl, build_parser().parse_args(['current', '--motor', 'b', '--dry-run']))
+        assert str(refused.value.code).startswith(
+            'raise max_y_velocity to 200 or more: now 150, it caps motor B at 150 of the 200 mm/s')
+        assert cur.current_tune(kl, build_parser().parse_args(
+            ['current', '--motor', 'a', '--dry-run'])) == 0
 
 
 def test_a_rung_sets_and_puts_back_the_exact_current():

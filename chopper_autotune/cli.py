@@ -313,7 +313,8 @@ def build_parser() -> argparse.ArgumentParser:
     cur.add_argument('--resolution', type=float, default=0.05,
                      help='threshold resolution in amps, default 0.05')
     cur.add_argument('--accel', type=float, default=None,
-                     help='stress acceleration, default printer max_accel (the worst case)')
+                     help='stress acceleration, default the printer\'s own: max_accel, on Kalico\'s '
+                          'limited_* what the per-axis limits give the stroke')
     cur.add_argument('--save', action='store_true',
                      help='write the recommended run_current into the config and restart')
     cur.add_argument('--socket', default=None)
@@ -353,7 +354,9 @@ def build_parser() -> argparse.ArgumentParser:
     env.add_argument('--accel-probe-speed', type=int, default=150,
                      help='fixed speed for the acceleration sweep in mm/s, default 150')
     env.add_argument('--accel', type=float, default=None,
-                     help='speed-sweep acceleration and accel-ladder base, default printer max_accel')
+                     help='speed-sweep acceleration and accel-ladder base, default the printer\'s '
+                          'own: max_accel, on Kalico\'s limited_* what the per-axis limits give '
+                          'the stroke')
     env.add_argument('--socket', default=None)
     env.add_argument('--dry-run', action='store_true')
     env.add_argument('-y', '--yes', action='store_true')
