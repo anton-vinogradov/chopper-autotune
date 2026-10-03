@@ -1,8 +1,10 @@
+import os
 from types import SimpleNamespace
 
 import pytest
 
-from chopper_autotune import collect, demo, extruder, find_speed, resonance_map, tmc, tune
+from chopper_autotune import (analyze, belts, collect, current, dataset, demo, envelope, extruder,
+                              find_speed, resonance_map, tmc, tune)
 
 
 @pytest.fixture(autouse=True)
@@ -11,6 +13,18 @@ def current_klipper(request, monkeypatch):
     gate itself (collect.require_current_klipper)."""
     if 'version_gate' not in request.keywords:
         monkeypatch.setattr(collect, 'require_current_klipper', lambda kl: None)
+
+
+@pytest.fixture(autouse=True)
+def results_home(tmp_path, monkeypatch):
+    """No test writes the user's ~/printer_data: the results, states and datasets of the
+    tools go to the test's temp dir (a whole CHOPPER_CURRENT run left its current.json)."""
+    home = tmp_path / 'chopper-autotune'
+    for module in (dataset, collect, analyze):
+        monkeypatch.setattr(module, 'RESULTS_HOME', home)
+    for module, name in ((belts, 'STATE'), (belts, 'SWEEP_STATE'), (current, 'STATE'),
+                         (envelope, 'STATE'), (extruder, 'STATE'), (resonance_map, 'STATE')):
+        monkeypatch.setattr(module, name, str(home / os.path.basename(getattr(module, name))))
 
 
 @pytest.fixture(autouse=True)
