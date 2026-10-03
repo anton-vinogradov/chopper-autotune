@@ -229,3 +229,20 @@ def test_the_results_say_tested_where_the_envelope_ran_short(tmp_path, panel_mod
     panel.motors = []
     assert prefix + '[printer] velocity ≤176' in panel.results_text()
 
+
+
+def test_the_results_name_each_axis_on_limited_cartesian(tmp_path, panel_module, monkeypatch):
+    # the head limits alone: Kalico refused a max_x_velocity left above them
+    import json
+    recommend = {'max_velocity': 471, 'max_accel': 11100, 'print_accel': None,
+                 'per_axis': {'max_x_velocity': 400, 'max_y_velocity': 250,
+                              'max_x_accel': 10000, 'max_y_accel': 5000}}
+    (tmp_path / 'envelope.json').write_text(json.dumps(
+        {'A': {'speed': '400', 'accel': '13k'}, 'recommend': recommend}))
+    for name in ('STATE', 'CURRENT_STATE', 'BELTS_STATE', 'MAP_STATE'):
+        monkeypatch.setattr(panel_module, name, str(tmp_path / 'none.json'))
+    monkeypatch.setattr(panel_module, 'ENVELOPE_STATE', str(tmp_path / 'envelope.json'))
+    panel = panel_on(panel_module, CFG)
+    panel.motors = []
+    assert ('[printer] velocity ≤471 (X ≤400, Y ≤250) · accel ≤11100 (X ≤10000, Y ≤5000)'
+            in panel.results_text())

@@ -548,3 +548,105 @@ def test_kalicos_per_axis_limits_step_aside_for_the_strokes_and_come_back_after_
         else:
             env.envelope(kl, build_parser().parse_args(['envelope', '--motor', 'a', '--yes']))
     assert_axis_limits_lifted_and_put_back(kl.scripts)
+
+
+class HeavyBedKl(StatusKl):
+    """A Kalico printer on limited_cartesian with a heavy bed: Y capped at 2000 mm/s2 and
+    250 mm/s."""
+
+    def gcode_output(self, script):
+        if script == 'SET_KINEMATICS_LIMIT':
+            return ['// x,y,z max_velocities: [400.0, 250.0, 15.0]\n'
+                    '// x,y,z max_accels: [8000.0, 2000.0, 100.0]\n'
+                    '// Per axis accelerations limits are independent of current acceleration.']
+        return []
+
+
+def test_on_limited_cartesian_the_envelope_lifts_the_tested_axis_only_and_advises_per_axis(
+        tmp_path, monkeypatch, capsys):
+    # the bed's setup moves kept its limit; Kalico refused an advice below max_y_velocity
+    import dataclasses
+    import json
+
+    import chopper_autotune.envelope as env
+    kl = HeavyBedKl()
+    monkeypatch.setattr(env, 'detect_hardware', lambda kl_, axis, accel=False: dataclasses.replace(
+        hardware(kl_), kinematics='limited_cartesian', max_accel=8000))
+    bursts = []
+
+    def stress_burst(kl_, board, motor, vec, speed, accel, span, check=lambda: None):
+        limit = [script for script in kl.scripts if script.startswith('SET_KINEMATICS_LIMIT')][-1]
+        bursts.append((motor, speed, accel, limit))
+    monkeypatch.setattr(env, 'stress_burst', stress_burst)
+    monkeypatch.setattr(env, 'Referee', lambda *a: SimpleNamespace(
+        calibrate=lambda: None, slipped=lambda: 2.0 if bursts[-1][:2] == ('x', 350)
+        or bursts[-1][0] == 'y' and bursts[-1][2] >= 6000 else 0.0))
+    monkeypatch.setattr(env, 'enter_spreadcycle', lambda kl_, hw, restores=False: None)
+    monkeypatch.setattr(env, 'exit_spreadcycle', lambda kl_, hw: None)
+    monkeypatch.setattr(env, 'STATE', str(tmp_path / 'envelope.json'))
+    env.envelope(kl, build_parser().parse_args(['envelope', '--yes']))
+    assert {motor: {limit for m, _, _, limit in bursts if m == motor} for motor in 'xy'} == {
+        'x': {'SET_KINEMATICS_LIMIT SCALE=0 X_ACCEL=1000000 Y_ACCEL=2000.0'},
+        'y': {'SET_KINEMATICS_LIMIT SCALE=0 X_ACCEL=8000.0 Y_ACCEL=1000000'}}
+    # the speed ladder at what the printer gives each motor, up to the velocity limit in force
+    assert {motor: (min(accel for m, _, accel, _ in bursts if m == motor),
+                    max(speed for m, speed, _, _ in bursts if m == motor)) for motor in 'xy'} \
+        == {'x': (8000, 350), 'y': (2000, 250)}
+    assert [script for script in kl.scripts if script.startswith('SET_KINEMATICS_LIMIT')][-1] \
+        == 'SET_KINEMATICS_LIMIT SCALE=0 X_ACCEL=8000.0 Y_ACCEL=2000.0'
+    out = capsys.readouterr().out
+    assert ('(max_velocity 500, max_y_velocity 250, accel 2000): raise max_y_velocity to 350 '
+            'and ACCEL to 2500 to reach 350') in out
+    assert 'motor A: speed ladder 150/200/250/300/350 mm/s (accel 8000);' in out
+    assert 'motor B: speed ladder 150/200/250 mm/s (accel 2000, what the per-axis limits give ' \
+        'it of max_accel 8000);' in out
+    assert '[printer] max_x_velocity: 300, max_y_velocity: 250\n' in out
+    with open(tmp_path / 'envelope.json') as state:
+        recommend = json.load(state)['recommend']
+    assert recommend['per_axis'] == {'max_x_velocity': 300, 'max_y_velocity': 250,
+                                     'max_x_accel': 24600, 'max_y_accel': 3000}
+    assert (recommend['max_velocity'], recommend['max_accel']) == (390, 24700)
+
+
+@pytest.mark.parametrize('kinematics, why', [
+    ('corexy', 'a 45 deg move runs a belt sqrt(2) faster than the head'),
+    ('limited_corexy', 'Kalico caps each belt by max_velocity here'),
+    ('cartesian', 'an X or Y move runs its belt at head speed'),
+])
+def test_the_velocity_advice_explains_itself_per_kinematics(tmp_path, monkeypatch, capsys,
+                                                            kinematics, why):
+    # on limited_corexy the sqrt(2) note read as if its own max_velocity were unsafe
+    import dataclasses
+
+    import chopper_autotune.envelope as env
+    kl = LimitedKl() if kinematics.startswith('limited') else StatusKl()
+    monkeypatch.setattr(env, 'detect_hardware', lambda kl_, axis, accel=False: dataclasses.replace(
+        hardware(kl_), kinematics=kinematics))
+    monkeypatch.setattr(env, 'stress_burst', lambda *args, **kwargs: None)
+    monkeypatch.setattr(env, 'Referee', lambda *a: SimpleNamespace(calibrate=lambda: None,
+                                                                     slipped=lambda: 0.0))
+    monkeypatch.setattr(env, 'enter_spreadcycle', lambda kl_, hw, restores=False: None)
+    monkeypatch.setattr(env, 'exit_spreadcycle', lambda kl_, hw: None)
+    monkeypatch.setattr(env, 'STATE', str(tmp_path / 'envelope.json'))
+    env.envelope(kl, build_parser().parse_args(['envelope', '--yes']))
+    assert 'belt ceiling (%s);' % why in capsys.readouterr().out
+
+
+def test_current_strokes_load_a_heavy_bed_as_the_printer_does(monkeypatch):
+    # M204 at max_accel loaded Y 4x past its max_y_accel: a healthy motor 'skipped'
+    import dataclasses
+    import re
+
+    import chopper_autotune.current as cur
+    kl = HeavyBedKl()
+    kl._settings = dict(SETTINGS, **{'tmc2240 stepper_y': {'driver_slope_control': 3,
+                                                           'run_current': 1.2}})
+    monkeypatch.setattr(cur, 'detect_hardware', lambda kl_, axis, accel=False: dataclasses.replace(
+        hardware(kl_), kinematics='limited_cartesian', max_accel=8000))
+    monkeypatch.setattr(cur, 'Referee', lambda *a: SimpleNamespace(calibrate=lambda: None,
+                                                                     slipped=lambda: 0.0))
+    cur.current_tune(kl, build_parser().parse_args(['current', '--motor', 'b', '--yes']))
+    rungs = {float(accel) for script in kl.scripts if script.startswith('G28 X Y\nG90\nM204')
+             for accel in re.findall(r'M204 S(\d+)', script)}
+    assert rungs == {2000.0}
+    assert 'SET_KINEMATICS_LIMIT SCALE=0 X_ACCEL=8000.0 Y_ACCEL=1000000' in kl.scripts

@@ -1012,7 +1012,7 @@ def test_every_rung_the_envelope_keeps_is_reached(source, kinematics, motor, acc
                                                    max_velocity, speeds):
     # a rung the strokes never reached 'held' and topped the max_velocity advice
     require(source)
-    from chopper_autotune.current import belt_cap, belt_top
+    from chopper_autotune.current import belt_cap, belt_top, velocity_caps
     from chopper_autotune.envelope import stroke_ladders
     _, vec, kept, _, _ = stroke_ladders(kinematics, motor, span * 8, speeds, accel, (accel,), 0,
                                         max_velocity)
@@ -1028,7 +1028,7 @@ def test_every_rung_the_envelope_keeps_is_reached(source, kinematics, motor, acc
             [2 * span * math.hypot(*vec)] * len(strokes))
         assert [stroke['accel'] for stroke in strokes] == pytest.approx([accel] * len(strokes))
         expected = rung['speed'] if rung['speed'] in kept else belt_top(
-            span, vec, accel, belt_cap(kinematics, vec, max_velocity))
+            span, vec, accel, belt_cap(velocity_caps(kinematics, vec, max_velocity)))
         assert stroke_speeds(rung) == pytest.approx([expected] * len(strokes), abs=0.5), rung
 
 
@@ -1417,10 +1417,11 @@ LIMITED = [
 
 @pytest.mark.parametrize('name, state', LIMITED)
 @pytest.mark.parametrize('motor', ['x', 'y'])
-def test_the_strokes_run_past_kalicos_per_axis_limits_and_put_them_back(name, state, motor):
-    # Kalico caps each axis whatever M204 asks: the ladders' rungs above the caps 'held'
-    # without being run. The tool reads the limits, lifts them for the run, puts them back
-    from chopper_autotune.current import axis_limits, belt_cap, lift_axis_limits
+def test_the_strokes_get_what_the_tools_plan_under_kalicos_per_axis_limits(name, state, motor):
+    # Kalico caps each axis whatever M204 asks: CURRENT loads a motor as the printer does,
+    # the envelope lifts the accel limits its rungs run past, and both put them back
+    from chopper_autotune.current import (accel_along, axis_limits, belt_cap, keep_axis_limits,
+                                          lift_axis_limits, velocity_caps)
     source = next((s for s in fetched('limited_corexy.py') if s and s.startswith('kalico')), None)
     require(source)
     kinematics = limited_kinematics(source, name, **copy.deepcopy(state))
@@ -1428,21 +1429,29 @@ def test_the_strokes_run_past_kalicos_per_axis_limits_and_put_them_back(name, st
     dispatch.register_command('SET_KINEMATICS_LIMIT', kinematics.cmd_SET_KINEMATICS_LIMIT)
     kl = KinematicsKl(dispatch)
     vec, max_velocity, accel = stress_vector(name, motor), 400.0, 12000.0
-
-    capped = StrokeMove(vec, max_velocity, accel)
-    kinematics.check_move(capped)
-    assert capped.limits[1] < accel                  # the per-axis cap would cut the rung
-
     limits = axis_limits(kl, name)
-    restores = []
-    lift_axis_limits(kl, limits, restores)
-    stroke = StrokeMove(vec, max_velocity, accel)
-    kinematics.check_move(stroke)
-    speed, stroke_accel = stroke.limits
-    # the belt runs |vec| times the head speed, up to what belt_cap planned; the rung's accel
-    assert min(speed, max_velocity) * math.hypot(*vec) == pytest.approx(belt_cap(name, vec, max_velocity))
-    assert stroke_accel >= accel
 
+    def stroke(along=vec):
+        # (the belt speed, the accel) a move along this direction gets at M204 S<accel>
+        move = StrokeMove(along, max_velocity, accel)
+        kinematics.check_move(move)
+        speed, cap = move.limits
+        return min(speed, max_velocity) * math.hypot(*along), min(cap, accel)
+
+    belt, stroke_accel = stroke()
+    assert belt == pytest.approx(belt_cap(velocity_caps(name, vec, max_velocity, limits)))
+    assert stroke_accel == pytest.approx(accel_along(name, vec, accel, limits))
+    assert stroke_accel < accel                     # the per-axis limit would cut a rung
+
+    restores = []
+    keep_axis_limits(kl, limits, restores)
+    lift_axis_limits(kl, name, limits, motor)
+    assert stroke() == pytest.approx((belt, accel))  # the rung's accel; the velocity limits stay
+    if name == 'limited_cartesian':
+        # the other axis keeps its limit for the moves that set the strokes up
+        other = (0.0, 1.0) if motor == 'x' else (1.0, 0.0)
+        assert stroke(other)[1] == pytest.approx(accel_along(name, other, accel,
+                                                             dict(limits, scale=False)))
     for restore in restores:
         restore()
     assert {key: getattr(kinematics, key) for key in state} == state

@@ -354,17 +354,22 @@ def rail_twins(settings: dict, axis: str) -> 'list[str]':
     return twins
 
 
+def refuse_corexz(settings: dict):
+    """CoreXZ, Kalico's limited_corexz too: the X motors carry Z as well, a one-motor
+    move drives the gantry up or down."""
+    kinematics = (settings.get('printer') or {}).get('kinematics', '')
+    if kinematics.endswith('corexz'):
+        raise SystemExit('%s: the X motors move Z too; one-motor moves are not supported '
+                         'there, nothing was moved' % kinematics)
+
+
 def refuse_multi_motor(settings: dict, axes: str = 'xy'):
     """The tools that move or tune one motor act on stepper_x/stepper_y only. With a
     second motor on the same axis (AWD, a two-motor gantry) the twin first idles on the
     belt, then, after a re-home, holds against it, and registers, current and saves
     reach one driver of the pair (#129). Refuse before anything moves, dry run included;
     only the axes the run drives count (a dual-Y gantry can still tune X)."""
-    kinematics = (settings.get('printer') or {}).get('kinematics', '')
-    if kinematics.endswith('corexz'):
-        # the X motors carry Z as well: a one-motor move drives the gantry up or down
-        raise SystemExit('%s: the X motors move Z too; one-motor moves are not supported '
-                         'there, nothing was moved' % kinematics)
+    refuse_corexz(settings)
     twins = [name for axis in axes for name in rail_twins(settings, axis)]
     if twins:
         raise SystemExit('%s: several motors drive one axis (AWD or a two-motor gantry); '

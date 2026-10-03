@@ -12,11 +12,11 @@ import os
 
 from .collect import (KLIPPY_DIR, Screen, ThermalGuard, coupled_xy, detect_hardware,
                       enter_spreadcycle, exit_spreadcycle, fit_row, full_steps_per_mm, home_xy,
-                      rail_twins, refuse_blind_z_hop, refuse_if_printing, rehome_unless_hot,
-                      run_restore)
-from .current import (Referee, axis_limits, belt_cap, belt_top, free_strokes, lift_axis_limits,
-                      live_limits, referee_axis, stress_vector, stroke_accel, stroke_peak,
-                      velocity_for)
+                      rail_twins, refuse_blind_z_hop, refuse_corexz, refuse_if_printing,
+                      rehome_unless_hot, run_restore)
+from .current import (Referee, accel_along, axis_limits, belt_cap, belt_top, free_strokes,
+                      keep_axis_limits, lift_axis_limits, live_limits, referee_axis, stress_vector,
+                      stroke_accel, stroke_peak, velocity_caps, velocity_needs)
 from .dataset import save_json
 from .klippy import Klippy, find_socket
 
@@ -91,6 +91,9 @@ def recommend_limits(speed_holds: 'dict[str, float]', accel_holds: 'dict[str, fl
       max_velocity caps the belt itself; the /margin variant rides along.
     - [printer] max_accel: the MACHINE cap (motor torque/margin) — travels use it, and
       smoothing costs nothing where no plastic is laid.
+    - on Kalico's limited_cartesian each motor drives its own axis and has its own limits
+      (max_x_velocity, max_y_accel...); Kalico refuses one above max_velocity/max_accel
+      and pairs those as the hypotenuse of the two axes.
     - slicer print accel: the input shaper's smoothing threshold — print quality only."""
     if not speed_holds or None in speed_holds.values() \
             or not accel_holds or None in accel_holds.values():
@@ -98,6 +101,14 @@ def recommend_limits(speed_holds: 'dict[str, float]', accel_holds: 'dict[str, fl
     belt = min(speed_holds.values())
     vel = belt / math.sqrt(2) if coupled_xy(kinematics) and kinematics != 'limited_corexy' else belt
     machine_accel = int(min(accel_holds.values()) / margin // 100 * 100)
+    per_axis = None
+    if kinematics == 'limited_cartesian':
+        per_axis = {}
+        for axis, label in (('x', 'A'), ('y', 'B')):
+            per_axis['max_%s_velocity' % axis] = int(speed_holds[label])
+            per_axis['max_%s_accel' % axis] = int(accel_holds[label] / margin // 100 * 100)
+        vel = math.hypot(per_axis['max_x_velocity'], per_axis['max_y_velocity'])
+        machine_accel = int(math.hypot(per_axis['max_x_accel'], per_axis['max_y_accel']) // 100 * 100)
     print_accel = min((good for _, _, good, _ in shaper.values()), default=None)
     crisp_accels = [crisp for _, _, _, crisp in shaper.values() if crisp]
     crisp_accel = min(crisp_accels) if crisp_accels else None
@@ -111,7 +122,8 @@ def recommend_limits(speed_holds: 'dict[str, float]', accel_holds: 'dict[str, fl
                                                     *shaper[slowest_shaper][:2])
                            if slowest_shaper else None),
             'now_velocity': printer_now.get('max_velocity'),
-            'now_accel': printer_now.get('max_accel')}
+            'now_accel': printer_now.get('max_accel'),
+            'per_axis': per_axis}
 
 
 def verdict_now(now: 'float | None', suggested: float, over: str, ok: str = 'ok') -> str:
@@ -144,38 +156,40 @@ def stress_burst(kl: Klippy, board, motor: str, vec: 'tuple[float, float]',
 
 
 def stroke_ladders(kinematics: str, motor: str, axis_span: float, speeds, accel: float, accels,
-                   probe_speed: float, max_velocity: float, configured: float = 0):
+                   probe_speed: float, max_velocity: float, configured: float = 0,
+                   per_axis: 'dict | None' = None):
     """(span, vec, speed rungs, accel rungs, why the speed ladder stops short or None) of one
     motor, without the rungs its strokes cannot run: a rung never reached would 'hold'
     and top the advice. The rungs are belt speeds; max_velocity is the one in force,
-    configured the one in printer.cfg."""
+    configured the one in printer.cfg, per_axis Kalico's limits in force (axis_limits)."""
     from .collect import motor_label
     label = motor_label(motor)
     span = min(25.0, axis_span / 8)
     vec = stress_vector(kinematics, motor)
-    cap = belt_cap(kinematics, vec, max_velocity)
+    caps = velocity_caps(kinematics, vec, max_velocity, per_axis)
+    cap = belt_cap(caps)
     top = belt_top(span, vec, accel, cap)
     kept = tuple(speed for speed in speeds if speed <= top)
     source = (' (set at runtime; printer.cfg has %g)' % configured
               if configured and configured != max_velocity else '')
+    held_by = ', '.join(['max_velocity %g%s' % (max_velocity, source)]
+                        + ['%s %g' % (option, value) for option, (value, _) in caps.items()
+                           if option != 'max_velocity'] + ['accel %.0f' % accel])
 
     def needs(speed) -> str:
         # every limit that stops a stroke short of this belt speed, not just the lower one
-        return ' and '.join(
-            (['max_velocity to %d' % velocity_for(kinematics, vec, speed)] if cap < speed else [])
-            + (['ACCEL to %d' % stroke_accel(speed, span, vec)]
-               if stroke_peak(span, vec, accel) < speed else []))
+        return ' and '.join(velocity_needs(caps, speed)
+                            + (['ACCEL to %d' % stroke_accel(speed, span, vec)]
+                               if stroke_peak(span, vec, accel) < speed else []))
     if not kept:
         # the action first: the display shows its first characters (failure_display)
-        raise SystemExit('raise %s or more: motor %s runs under %d mm/s, MIN_SPEED %d (max_velocity '
-                         '%g%s, accel %.0f). Nothing was moved'
-                         % (needs(speeds[0]), label, math.floor(top) + 1, speeds[0], max_velocity,
-                            source, accel))
+        raise SystemExit('raise %s or more: motor %s runs under %d mm/s, MIN_SPEED %d (%s). '
+                         'Nothing was moved'
+                         % (needs(speeds[0]), label, math.floor(top) + 1, speeds[0], held_by))
     short = None
     if len(kept) < len(speeds):
-        short = ('the strokes stop at %d mm/s (max_velocity %g%s, accel %.0f): raise %s to '
-                 'reach %d' % (math.floor(top), max_velocity, source, accel, needs(speeds[-1]),
-                               speeds[-1]))
+        short = ('the strokes stop at %d mm/s (%s): raise %s to reach %d'
+                 % (math.floor(top), held_by, needs(speeds[-1]), speeds[-1]))
         print('Motor %s: the speed ladder stops at %d mm/s: %s' % (label, kept[-1], short))
     kept_accels = tuple(a for a in accels if probe_speed <= belt_top(span, vec, a, cap))
     if not kept_accels:
@@ -233,27 +247,34 @@ def envelope(kl: Klippy, args) -> int:
     hw = {m: detect_hardware(kl, m, accel=False) for m in motors}
     board = hw[motors[0]]
     settings = kl.settings()
+    refuse_corexz(settings)                 # AWD runs, approximate: no refuse_multi_motor
     note = awd_note(settings, motors)
     if note:
         print('WARNING: ' + note)
-    base_accel = args.accel or board.max_accel
     speeds = tuple(range(args.min_speed, args.max_speed + 1, args.step))
-    accels = tuple(round(base_accel * f, -2) for f in (1.0, 1.5, 2.0, 3.0, 4.0))
     # G1 feed is clamped to max_velocity, the one in force now: rungs above it would "hold"
     # without ever being run, as would rungs a stroke is too short to reach
     limits = live_limits(kl)
     per_axis = axis_limits(kl, board.kinematics)
     configured = float(settings.get('printer', {}).get('max_velocity') or 0)
-    ladders = {m: stroke_ladders(board.kinematics, m, hw[m].axis_span, speeds, base_accel, accels,
-                                 args.accel_probe_speed, limits['max_velocity'], configured)
+    # the speed ladder at the printer's own accel: on Kalico's limited_* kinematics what
+    # its per-axis limits give the strokes of this motor
+    bases = {m: args.accel or accel_along(board.kinematics, stress_vector(board.kinematics, m),
+                                          board.max_accel, per_axis) for m in motors}
+    ladders = {m: stroke_ladders(board.kinematics, m, hw[m].axis_span, speeds, bases[m],
+                                 tuple(round(bases[m] * f, -2) for f in (1.0, 1.5, 2.0, 3.0, 4.0)),
+                                 args.accel_probe_speed, limits['max_velocity'], configured,
+                                 per_axis)
                for m in motors}
 
     print('Motion envelope on motor(s) %s at the configured run current: worst-case '
           'single-motor stress, endstop referee.' % '+'.join(motor_label(m) for m in motors))
     for m in motors:
         _, _, motor_speeds, motor_accels, _ = ladders[m]
-        print('  motor %s: speed ladder %s mm/s (accel %.0f); accel ladder %s mm/s2 (speed %d)'
-              % (motor_label(m), '/'.join(map(str, motor_speeds)), base_accel,
+        capped = (', what the per-axis limits give it of max_accel %g' % board.max_accel
+                  if not args.accel and bases[m] < board.max_accel else '')
+        print('  motor %s: speed ladder %s mm/s (accel %.0f%s); accel ladder %s mm/s2 (speed %d)'
+              % (motor_label(m), '/'.join(map(str, motor_speeds)), bases[m], capped,
                  '/'.join('%g' % a for a in motor_accels), args.accel_probe_speed))
     top_speed = max(ladders[m][2][-1] for m in motors)
     rail = settings.get('stepper_%s' % motors[0], {})
@@ -283,9 +304,10 @@ def envelope(kl: Klippy, args) -> int:
     try:
         home_xy(kl, 'G28 X Y\nG90')
         free_strokes(kl, settings, limits, restores)
-        lift_axis_limits(kl, per_axis, restores)
+        keep_axis_limits(kl, per_axis, restores)
         for m in motors:
             label = motor_label(m)
+            lift_axis_limits(kl, board.kinematics, per_axis, m)
             span, vec, motor_speeds, motor_accels, short = ladders[m]
             current = float(settings['tmc%s stepper_%s' % (hw[m].driver.name, m)]['run_current'])
             print('\n=== Motor %s @ %.2f A ===' % (label, current))
@@ -305,10 +327,10 @@ def envelope(kl: Klippy, args) -> int:
                               else board.center[0])
                 guard.check()
                 ref.calibrate()
-                print(' speed ceiling (accel %.0f):' % base_accel)
+                print(' speed ceiling (accel %.0f):' % bases[m])
                 s_hold, s_skip = ceiling(
                     motor_speeds,
-                    lambda v: stress_burst(kl, board, m, vec, v, base_accel, span, guard.check)
+                    lambda v: stress_burst(kl, board, m, vec, v, bases[m], span, guard.check)
                     or guard.check() or skips(ref.slipped()),
                     lambda v, sk: report(v, sk, 'mm/s'))
                 print(' accel ceiling (speed %d mm/s):' % args.accel_probe_speed)
@@ -358,21 +380,51 @@ def envelope(kl: Klippy, args) -> int:
         save_state({'recommend': recommendation})   # Results carries the numbers
         rec = recommendation
         print('\n=== What to set ===')
-        print('[printer] max_velocity: %d%s\n    every direction stays at the tested %g mm/s'
-              ' belt ceiling (a 45 deg move runs a belt sqrt(2) faster than the head);'
-              ' %d keeps a %.1fx margin'
-              % (rec['max_velocity'],
-                 verdict_now(rec['now_velocity'], rec['max_velocity'],
-                             over='untested above, not a limit' if untested
-                             else 'a 45 deg travel would outrun the tested ceiling'),
-                 rec['belt_ceiling'], rec['max_velocity_margin'], MARGIN))
+        printer_now = settings.get('printer', {})
+        if rec['per_axis']:
+            axes = rec['per_axis']
+            print('[printer] %s\n    each axis stays at its motor\'s tested belt ceiling; %s keep a '
+                  '%.1fx margin'
+                  % (', '.join('max_%s_velocity: %d%s' % (
+                      axis, axes['max_%s_velocity' % axis],
+                      verdict_now(printer_now.get('max_%s_velocity' % axis), axes['max_%s_velocity' % axis],
+                                  over='untested above, not a limit' if untested
+                                  else 'its motor would outrun the tested ceiling'))
+                               for axis in 'xy'),
+                     ' and '.join('%d' % (axes['max_%s_velocity' % axis] / MARGIN) for axis in 'xy'),
+                     MARGIN))
+        else:
+            if board.kinematics == 'limited_corexy':
+                why, outrun = 'Kalico caps each belt by max_velocity here', 'any travel'
+            elif coupled_xy(board.kinematics):
+                why, outrun = 'a 45 deg move runs a belt sqrt(2) faster than the head', 'a 45 deg travel'
+            else:
+                why, outrun = 'an X or Y move runs its belt at head speed', 'an X or Y travel'
+            print('[printer] max_velocity: %d%s\n    every direction stays at the tested %g mm/s'
+                  ' belt ceiling (%s); %d keeps a %.1fx margin'
+                  % (rec['max_velocity'],
+                     verdict_now(rec['now_velocity'], rec['max_velocity'],
+                                 over='untested above, not a limit' if untested
+                                 else outrun + ' would outrun the tested ceiling'),
+                     rec['belt_ceiling'], why, rec['max_velocity_margin'], MARGIN))
         for label, why in untested.items():
             print('    untested above %g mm/s on motor %s: %s' % (speed_holds[label], label, why))
-        print('[printer] max_accel: %d%s\n    the MACHINE cap: motor torque /%.1f;'
-              ' travels use it — smoothing costs nothing where no plastic is laid'
-              % (rec['max_accel'],
-                 verdict_now(rec['now_accel'], rec['max_accel'],
-                             over='above the motor margin'), MARGIN))
+        if rec['per_axis']:
+            print('[printer] %s\n    each motor\'s torque /%.1f'
+                  % (', '.join('max_%s_accel: %d%s' % (
+                      axis, axes['max_%s_accel' % axis],
+                      verdict_now(printer_now.get('max_%s_accel' % axis), axes['max_%s_accel' % axis],
+                                  over='above the motor margin'))
+                               for axis in 'xy'), MARGIN))
+            print('[printer] max_velocity: %d, max_accel: %d\n    the hypotenuse of the per-axis '
+                  'values, as Kalico pairs them: a diagonal uses both axes, and Kalico refuses a '
+                  'per-axis value above these' % (rec['max_velocity'], rec['max_accel']))
+        else:
+            print('[printer] max_accel: %d%s\n    the MACHINE cap: motor torque /%.1f;'
+                  ' travels use it — smoothing costs nothing where no plastic is laid'
+                  % (rec['max_accel'],
+                     verdict_now(rec['now_accel'], rec['max_accel'],
+                                 over='above the motor margin'), MARGIN))
         from .resonance_map import STATE as MAP_STATE
         from .dataset import load_json
         vfa = load_json(MAP_STATE)

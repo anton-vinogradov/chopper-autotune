@@ -1,3 +1,5 @@
+import pytest
+
 from chopper_autotune.envelope import MARGIN, ceiling, verdict
 
 
@@ -126,6 +128,19 @@ def test_on_limited_corexy_max_velocity_caps_the_belt_in_the_ladders_and_the_adv
                             printer_now={})['max_velocity'] == 350
 
 
+def test_on_limited_cartesian_the_advice_names_each_axis_and_pairs_the_head_limits():
+    # Kalico refuses a max_x_velocity above max_velocity: min(belts) as max_velocity left
+    # the printer unable to start
+    from chopper_autotune.envelope import recommend_limits
+    held = ({'A': 400, 'B': 250}, {'A': 13000, 'B': 6500})
+    rec = recommend_limits(*held, kinematics='limited_cartesian', shaper={}, printer_now={})
+    assert rec['per_axis'] == {'max_x_velocity': 400, 'max_y_velocity': 250,
+                               'max_x_accel': 10000, 'max_y_accel': 5000}
+    assert (rec['max_velocity'], rec['max_accel']) == (471, 11100)    # the hypotenuses
+    rec = recommend_limits(*held, kinematics='cartesian', shaper={}, printer_now={})
+    assert rec['per_axis'] is None and (rec['max_velocity'], rec['max_accel']) == (250, 5000)
+
+
 def test_the_ladders_drop_the_rungs_a_stroke_cannot_reach(capsys):
     # a rung never reached would 'hold' and top the max_velocity advice
     import pytest
@@ -156,3 +171,41 @@ def test_the_ladders_drop_the_rungs_a_stroke_cannot_reach(capsys):
     with pytest.raises(SystemExit, match='^lower ACCEL_PROBE_SPEED to 120 or less'):
         stroke_ladders('cartesian', 'x', 400.0, (100,), 3000, (3000,), 150, 120)
 
+
+
+@pytest.mark.parametrize('kinematics', ['corexz', 'limited_corexz'])
+def test_the_envelope_refuses_corexz_before_asking_klipper_anything(monkeypatch, kinematics):
+    # a slipped X motor moves Z too; Kalico's limited_corexz answers SET_KINEMATICS_LIMIT
+    # with limits the tool would misread as missing
+    from types import SimpleNamespace
+
+    import chopper_autotune.envelope as env
+    from chopper_autotune.cli import build_parser
+    asked = []
+    kl = SimpleNamespace(settings=lambda: {'printer': {'kinematics': kinematics}},
+                         gcode=asked.append, gcode_output=lambda script: asked.append(script) or [],
+                         request=lambda method, params=None: asked.append(method) or {})
+    monkeypatch.setattr(env, 'detect_hardware',
+                        lambda kl_, axis, accel=False: SimpleNamespace(kinematics=kinematics))
+    with pytest.raises(SystemExit, match='%s: the X motors move Z too' % kinematics):
+        env.envelope(kl, build_parser().parse_args(['envelope', '--dry-run']))
+    assert asked == []
+
+
+def test_an_accel_given_runs_the_ladder_as_asked_without_a_per_axis_note(monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    import chopper_autotune.envelope as env
+    from chopper_autotune.cli import build_parser
+    report = ['// x,y,z max_accels: (8000.0, 2000.0, 100.0)\n'
+              '// Per axis accelerations limits are independent of current acceleration.']
+    kl = SimpleNamespace(settings=lambda: {'printer': {'kinematics': 'limited_corexy'}},
+                         gcode_output=lambda script: report,
+                         request=lambda method, params=None: {'status': {
+                             'toolhead': {'max_velocity': 500.0, 'minimum_cruise_ratio': 0.5},
+                             'gcode_move': {'speed_factor': 1.0}}})
+    monkeypatch.setattr(env, 'detect_hardware', lambda kl_, axis, accel=False: SimpleNamespace(
+        kinematics='limited_corexy', axis_span=300.0, max_accel=10000.0))
+    env.envelope(kl, build_parser().parse_args(['envelope', '--motor', 'a', '--accel', '3000',
+                                                '--dry-run']))
+    assert 'mm/s (accel 3000); accel ladder 3000/4500/6000/9000/12000' in capsys.readouterr().out

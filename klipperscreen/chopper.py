@@ -346,10 +346,17 @@ class Panel(ScreenPanel):
                 for name, values in envelope.items()))
         if recommend:
             crisp = recommend.get("print_accel_crisp")
+            # Kalico's limited_cartesian: each axis has its own, the head limits pair them
+            axes = recommend.get("per_axis") or {}
+
+            def per_axis(kind):
+                return (" (X ≤%s, Y ≤%s)" % (axes["max_x_" + kind], axes["max_y_" + kind])
+                        if axes else "")
             # untested: no skip, the test stopped short of the velocity it could check
             lines.append((_("tested: ") if recommend.get("untested") else _("set: "))
-                         + "[printer] velocity ≤%s · accel ≤%s · print accel ≤%s%s%s"
-                         % (recommend.get("max_velocity"), recommend.get("max_accel"),
+                         + "[printer] velocity ≤%s%s · accel ≤%s%s · print accel ≤%s%s%s"
+                         % (recommend.get("max_velocity"), per_axis("velocity"),
+                            recommend.get("max_accel"), per_axis("accel"),
                             recommend.get("print_accel") or "?",
                             " (crisp ≤%s)" % crisp if crisp else "",
                             " (%s, approximate)" % recommend["approximate"]
