@@ -24,19 +24,24 @@ import os
 import socket
 import sys
 import threading
+import time
 import types
 from unittest import mock
 
 from chopper_autotune.klippy import Klippy
 
 SRC = os.environ.get('KLIPPER_SRC_DIR') or os.path.join(os.path.dirname(__file__), '.klipper-src')
-SAMPLE_HZ = 1600.0
+SAMPLE_HZ = 400.0
 STANDSTILL_MG = 5.0
 TMC_SECTIONS = ('tmc2130', 'tmc2208', 'tmc2209', 'tmc2240', 'tmc2660', 'tmc5160')
 CHOPPER_FIELDS = ('tbl', 'toff', 'hstrt', 'hend', 'tpfd', 'en_spreadcycle', 'en_pwm_mode', 'chm')
 STEPPER_SECTIONS = ('stepper_', 'extruder', 'manual_stepper ', 'dual_carriage')
 # what a release's modules import by name: klippy/*.py, its packages, Kalico's klippy
 KLIPPY_NAMES = {'klippy', 'gcode', 'toolhead', 'mcu', 'chelper', 'stepper', 'extras', 'kinematics'}
+# the extras built from the release's own module; any other one an object loads (homing,
+# statistics, verify_heater...) is a bare stand-in the tools never meet
+REAL_EXTRAS = {'gcode_move', 'display_status', 'stepper_enable', 'force_move', 'respond', 'heaters'}
+CLOCK = [0.]                # the seconds the tools slept (sleep()): Klipper's time ran on
 
 
 class ConfigError(Exception):
@@ -80,9 +85,6 @@ class Config:
         return [Config(self.front, section) for section in self.front.fileconfig.sections()
                 if section.startswith(prefix)]
 
-    def deprecate(self, *args, **kwargs):
-        pass
-
     def _get(self, parse, option, default):
         key = (self.section.lower(), option.lower())
         if not self.front.fileconfig.has_option(self.section, option):
@@ -120,70 +122,74 @@ class Config:
         return choices[choice]
 
 
+def sleep(seconds: float):
+    """time.sleep for the tools: the printer's time runs on, nothing waits."""
+    CLOCK[0] += seconds
+
+
+class Clock:
+    """A tool module's `time`, its sleep() the printer's (sleep())."""
+    sleep = staticmethod(sleep)
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
 class Reactor:
-    """Klipper's reactor without the clock: a callback runs once the script that queued
-    it has returned (TMC's enable handling takes the G-code mutex); of the timers only
-    a TMC driver's status check runs, once after every script (Klipper polls an enabled
-    driver every second)."""
+    """Klipper's reactor on the printer's clock: the toolhead's print time plus what the
+    tools slept. A callback runs once the script that queued it has returned or a
+    FORCE_MOVE waits for the motor (TMC's enable handling takes the G-code mutex); of
+    the timers a TMC driver's status check runs, when it is due (once a second for an
+    enabled driver)."""
     NOW = 0.
     NEVER = 9e15
 
     def __init__(self, front):
         self.front = front
-        self.callbacks, self.timers = [], []
+        self.callbacks, self.timers = [], {}
         self.pauses = 0
 
     def monotonic(self):
-        return 0.
+        toolhead = getattr(self.front, 'toolhead', None)
+        return CLOCK[0] + (toolhead.print_time if toolhead is not None else 0.)
 
     def pause(self, waketime):
-        """A wait (TEMPERATURE_WAIT): a second passes, the hotend reaches its target."""
+        """A wait (TEMPERATURE_WAIT): the time runs on, the hotend reaches its target."""
         self.pauses += 1
         if self.pauses > 1000:
             raise RuntimeError('a wait that never ends')
+        CLOCK[0] += max(0., waketime - self.monotonic())
         self.front.heat(waketime)
         return waketime
 
     def register_timer(self, callback, waketime=NEVER):
-        self.timers.append(callback)
+        self.timers[callback] = waketime
         return callback
 
     def update_timer(self, timer, waketime):
-        pass
+        self.timers[timer] = waketime
 
     def unregister_timer(self, timer):
-        if timer in self.timers:
-            self.timers.remove(timer)
+        self.timers.pop(timer, None)
 
     def poll_drivers(self):
-        for timer in list(self.timers):
-            if type(getattr(timer, '__self__', None)).__name__ == 'TMCErrorCheck':
-                timer(0.)
+        now = self.monotonic()
+        for timer, waketime in list(self.timers.items()):
+            if waketime <= now and type(getattr(timer, '__self__', None)).__name__ == 'TMCErrorCheck':
+                self.timers[timer] = timer(now)
 
     def register_callback(self, callback, waketime=NOW):
         self.callbacks.append(callback)
 
-    def register_async_callback(self, callback, waketime=NOW):
-        self.callbacks.append(callback)
-
     def run_callbacks(self):
         while self.callbacks:
-            self.callbacks.pop(0)(0.)
+            self.callbacks.pop(0)(self.monotonic())
 
     def mutex(self):
         return threading.RLock()
 
     def assert_no_pause(self):
         return contextlib.nullcontext()
-
-    def register_fd(self, *args, **kwargs):
-        return object()
-
-    def unregister_fd(self, handle):
-        pass
-
-    def set_fd_wake(self, *args, **kwargs):
-        pass
 
 
 class Mcu:
@@ -211,9 +217,6 @@ class MotionQueuing:
 
     def calc_step_gen_restart(self, est_print_time):
         return 0.
-
-    def get_kin_flush_delay(self):
-        return 0.001
 
     def __getattr__(self, name):
         return mock.MagicMock(name='motion_queuing.' + name)
@@ -265,11 +268,6 @@ class Thermistor:
         return .300
 
 
-class IdleTimeout:
-    def get_status(self, eventtime):
-        return {'state': 'Ready', 'printing_time': 0.}
-
-
 class Stepper:
     """An MCU stepper: its name, and the callbacks Klipper runs at its next step (the
     enable line of stepper_enable)."""
@@ -290,12 +288,6 @@ class Stepper:
         callbacks, self.active_callbacks = self.active_callbacks, []
         for callback in callbacks:
             callback(print_time)
-
-    def units_in_radians(self):
-        return False
-
-    def get_step_dist(self):
-        return 40. / 200 / 16
 
     def get_dir_inverted(self):
         return False, 0
@@ -327,6 +319,8 @@ class Chip:
         self.name_to_reg, self.fields = name_to_reg, fields
         self.tmc_frequency = rest[-1] if rest else None
         self.registers, self.reads, self.writes = {}, {}, []
+        if 'ADC_TEMP' in name_to_reg:               # a TMC2240's die at the room's 25 C
+            self.reads['ADC_TEMP'] = 2038 + int(25 * 7.7)
         self.mcu = self.front.printer.objects['mcu']
         self.front.chips[self.section] = self
 
@@ -431,9 +425,6 @@ class Kinematics:
     def clear_homing_state(self, axes):
         self.homed = ''.join(axis for axis in self.homed if axis not in axes)
 
-    def get_steppers(self):
-        return []
-
     def get_status(self, eventtime):
         return {'homed_axes': ''.join(axis for axis in 'xyz' if axis in self.homed),
                 'axis_minimum': [self.limits.get(axis, (0, 0))[0] for axis in 'xyz'] + [0],
@@ -529,7 +520,7 @@ class Printer:
         self.front = front
         self.reactor = Reactor(front)
         mcu = Mcu()
-        self.objects = {'mcu': mcu, 'pins': Pins(mcu), 'idle_timeout': IdleTimeout()}
+        self.objects = {'mcu': mcu, 'pins': Pins(mcu)}
         self.handlers = {}
         self.shutdowns = []
         self.command_error = command_error
@@ -556,8 +547,10 @@ class Printer:
         while condition(eventtime):
             eventtime = self.reactor.pause(eventtime + 1.)
 
-    def invoke_shutdown(self, message):
-        self.shutdowns.append(message)
+    def invoke_shutdown(self, message, *args):
+        if not self.shutdowns:
+            self.shutdowns.append(message)
+            self.send_event('klippy:shutdown')
 
     def get_state_message(self):
         if self.shutdowns:
@@ -581,20 +574,16 @@ class Printer:
 
     def load_object(self, config, section, default=ConfigError):
         """The object of a section, made on first ask as klippy does: the extras module's
-        load_config, or a stand-in."""
+        load_config (REAL_EXTRAS), or a stand-in."""
         if section not in self.objects:
             if section in self.loaders:
                 self.objects[section] = self.loaders[section]()
-            elif not os.path.exists(os.path.join(SRC, self.front.source, section + '.py')):
-                # a module Kalico's toolhead loads the tools never meet (homing, statistics...)
-                self.objects[section] = types.SimpleNamespace()
-            else:
+            elif section in REAL_EXTRAS:
                 module = self.front.import_module('extras.' + section)
                 self.objects[section] = module.load_config(Config(self.front, section))
+            else:
+                self.objects[section] = types.SimpleNamespace()
         return self.objects[section]
-
-    def add_object(self, name, obj):
-        self.objects[name] = obj
 
 
 class Configfile:
@@ -660,7 +649,7 @@ class Front:
         self.tracking = {}
         self.homing = False
         self.console, self.moves, self.chips, self.steppers, self.sensors = [], [], {}, {}, []
-        self.crashes, self.scripts = [], []
+        self.crashes, self.scripts, self.listeners = [], [], []
         with release_modules(source, self) as import_module:
             self.import_module = import_module
             gcode = import_module('gcode')
@@ -668,14 +657,20 @@ class Front:
             self.gcode = gcode.GCodeDispatch(printer)
             printer.objects['gcode'] = self.gcode
             self.gcode.register_output_handler(self.console.append)
+            self.gcode.register_output_handler(
+                lambda line: [listener(line) for listener in list(self.listeners)])
             printer.objects['configfile'] = Configfile(self)
             toolhead = import_module('toolhead')
             self.toolhead = toolhead.ToolHead(Config(self, 'printer'))
             printer.objects['toolhead'] = self.toolhead
             if hasattr(toolhead, 'ToolHeadCommandHelper'):      # master: the commands live there
                 toolhead.ToolHeadCommandHelper(Config(self, 'printer'))
-            for name in ('gcode_move', 'display_status', 'stepper_enable', 'force_move') + (
-                    ('respond',) if self.fileconfig.has_section('respond') else ()):
+            # as the release builds them from printer.cfg: display_status for [display_status]
+            # or [display], respond for [respond] (Kalico: always)
+            has = self.fileconfig.has_section
+            for name in ('gcode_move', 'stepper_enable', 'force_move') + (
+                    ('display_status',) if has('display_status') or has('display') else ()) + (
+                    ('respond',) if has('respond') or source.startswith('kalico') else ()):
                 printer.load_object(Config(self, name), name)
             printer.objects['force_move'].manual_move = self.manual_move
             self.calc_move_time = import_module('extras.force_move').calc_move_time
@@ -736,10 +731,13 @@ class Front:
         each move keeps what the chips held while it ran."""
         _, accel_t, cruise_t, _ = self.calc_move_time(dist, speed, accel)
         start = self.toolhead.get_last_move_time()
+        stepper.step(start)
+        # the motor starts a buffer time later: an enable it caused has rewritten the
+        # driver by then (on a stepper without its own enable pin toff comes back)
+        self.printer.reactor.run_callbacks()
         self.moves.append({'stepper': stepper.get_name(), 'distance': dist, 'speed': speed,
                            'accel': accel, 'window': (start, start + 2 * accel_t + cruise_t),
                            'chips': {section: chip.chopper() for section, chip in self.chips.items()}})
-        stepper.step(start)
         self.toolhead.dwell(2 * accel_t + cruise_t)
 
     def cmd_G28(self, gcmd):
@@ -821,8 +819,18 @@ class Front:
                     sock.sendall(json.dumps(message).encode() + b'\x03')
                 except OSError:                     # a client gone: Klipper drops it too
                     pass
-        self.gcode.register_output_handler(
-            lambda line: [send(dict(template, params={'response': line})) for template in output])
+
+        def listener(line):
+            for template in output:
+                send(dict(template, params={'response': line}))
+        self.listeners.append(listener)
+        try:
+            with sock:
+                self.serve_requests(sock, send, output, subscriptions, streams, sampled)
+        finally:
+            self.listeners.remove(listener)
+
+    def serve_requests(self, sock, send, output, subscriptions, streams, sampled):
         buffer = b''
         while True:
             try:
@@ -850,6 +858,7 @@ class Front:
         """(result, error) of one API request."""
         method, params = request['method'], request.get('params', {})
         result, error = {}, None
+        self.printer.reactor.poll_drivers()         # what Klipper polled while the tool waited
         if method == 'gcode/script':
             error = self.run(params['script'])
             for template in subscriptions.values():

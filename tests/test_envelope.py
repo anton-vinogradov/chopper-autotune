@@ -202,7 +202,7 @@ def test_an_accel_given_runs_the_ladder_as_asked_without_a_per_axis_note(monkeyp
     kl = SimpleNamespace(settings=lambda: {'printer': {'kinematics': 'limited_corexy'}},
                          gcode_output=lambda script: report,
                          request=lambda method, params=None: {'status': {
-                             'toolhead': {'max_velocity': 500.0, 'minimum_cruise_ratio': 0.5},
+                             'toolhead': {'max_velocity': 500.0, 'max_accel': 3000.0, 'minimum_cruise_ratio': 0.5},
                              'gcode_move': {'speed_factor': 1.0}}})
     monkeypatch.setattr(env, 'detect_hardware', lambda kl_, axis, accel=False: SimpleNamespace(
         kinematics='limited_corexy', axis_span=300.0, max_accel=10000.0))

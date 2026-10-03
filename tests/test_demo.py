@@ -8,6 +8,10 @@ from chopper_autotune.cli import _chopper
 from chopper_autotune.collect import Hardware, Range
 from chopper_autotune.demo import bar, demo
 
+# objects/query of the live limits (live_limits)
+LIVE = {'status': {'toolhead': {'max_velocity': 500.0, 'max_accel': 3000.0,
+                                'minimum_cruise_ratio': 0.5}, 'gcode_move': {'speed_factor': 1.0}}}
+
 
 def test_bar_scales_and_has_min_width():
     assert bar(100, 100) == '#' * 40
@@ -153,7 +157,7 @@ def test_show_writes_state_for_both_motors(tmp_path, monkeypatch):
     monkeypatch.setattr(demo_module, 'known_speed', lambda axis: 58 if axis == 'x' else 34)
     sweeps = iter([[2000.0], [1000.0]] * 2)
     monkeypatch.setattr(demo_module, '_sweep', lambda *a, **kw: next(sweeps))
-    kl = type('K', (), {'gcode': lambda self, s: None,
+    kl = type('K', (), {'gcode': lambda self, s: None, 'request': lambda self, *args: LIVE,
                         'gcode_output': lambda self, s: [],
                         'subscribe_accel': lambda self, chip: None,
                         'settings': lambda self: {},          # no driver sections: guard idle
@@ -338,6 +342,9 @@ def test_the_show_puts_back_autotunes_registers_read_live(monkeypatch):
 
         def subscribe_accel(self, chip):
             pass
+
+        def request(self, method, params=None):
+            return LIVE
 
     kl = Kl()
 

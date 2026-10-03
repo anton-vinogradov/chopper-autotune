@@ -53,7 +53,7 @@ class StatusKl:
 
     def request(self, method, params=None):
         # the live limits at Klipper's defaults: objects/query of toolhead and gcode_move
-        return {'status': {'toolhead': {'max_velocity': 500.0, 'minimum_cruise_ratio': 0.5},
+        return {'status': {'toolhead': {'max_velocity': 500.0, 'max_accel': 3000.0, 'minimum_cruise_ratio': 0.5},
                            'gcode_move': {'speed_factor': 1.0}}}
 
     def gcode_output(self, script):
@@ -259,7 +259,7 @@ def test_the_envelope_calls_a_short_ladder_untested_only_without_a_skip(tmp_path
     import chopper_autotune.envelope as env
     kl = StatusKl()
     kl.request = lambda method, params=None: {'status': {
-        'toolhead': {'max_velocity': 200.0, 'minimum_cruise_ratio': 0.5},   # set at runtime
+        'toolhead': {'max_velocity': 200.0, 'max_accel': 3000.0, 'minimum_cruise_ratio': 0.5},   # set at runtime
         'gcode_move': {'speed_factor': 1.0}}}
     monkeypatch.setattr(env, 'detect_hardware', lambda kl_, axis, accel=False: hardware(kl_))
     burst = {}
@@ -296,7 +296,7 @@ def test_a_stop_after_a_motor_of_the_envelope_is_not_swallowed(tmp_path, monkeyp
 
     def gcode(script):
         real_gcode(script)
-        if script == 'M204 S10000' and not motors:
+        if script == 'M204 S3000' and not motors:
             motors.append('A')
             raise SystemExit(143)                   # CHOPPER_STOP right after motor A
     kl.gcode = gcode
@@ -325,7 +325,7 @@ def test_a_stop_during_the_current_restore_saves_nothing(tmp_path, monkeypatch):
 
     def gcode(script):
         real_gcode(script)
-        if script == 'M204 S10000':                 # the restore's accel: CHOPPER_STOP lands
+        if script == 'M204 S3000':                  # the restore's accel: CHOPPER_STOP lands
             raise SystemExit(143)
     kl.gcode = gcode
     with pytest.raises(SystemExit) as stop:

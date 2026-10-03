@@ -18,6 +18,7 @@ from .collect import (MOVE_MARGIN, RunStopped, Screen, ThermalGuard, capture_str
                       motor_label, now, park, refuse_after_shutdown, refuse_blind_z_hop,
                       refuse_if_printing, refuse_multi_motor, rehome_unless_hot, restore_chopper,
                       run_measurement, run_restore, travel_for)
+from .current import live_limits
 from .dataset import Dataset
 from .klippy import Klippy, KlippyError, find_socket
 from .metrics import vibration_score
@@ -116,6 +117,7 @@ def showcase_together(kl, args) -> int:
     # drivers, which re-energizes a hot one on a stepper without an enable pin
     refuse_blind_z_hop(kl, kl.settings())
     guard.preflight()
+    accel_now = live_limits(kl)['max_accel']        # an M204 left from a print comes back
     try:
         # home and hold at center with the motors ENABLED (park disables them) for G1 moves
         home_xy(kl, 'G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, *board.center))
@@ -148,7 +150,7 @@ def showcase_together(kl, args) -> int:
         run_restore(
             *[lambda axis=axis: restore_chopper(kl, hw[axis]) for axis in MOTORS],
             *[lambda axis=axis: exit_spreadcycle(kl, hw[axis]) for axis in MOTORS],
-            lambda: kl.gcode('M204 S%.0f' % board.max_accel),
+            lambda: kl.gcode('M204 S%.0f' % accel_now),
             lambda: rehome_unless_hot(kl))
 
     if not results['default'] or not results['tuned']:

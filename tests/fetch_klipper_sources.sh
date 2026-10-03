@@ -32,8 +32,7 @@ for ref in v0.13.0 "$klipper_master"; do
                 kinematics/extruder.py extras/input_shaper.py extras/gcode_macro.py \
                 extras/respond.py extras/display_status.py extras/delayed_gcode.py \
                 extras/stepper_enable.py extras/tmc.py extras/tmc2130.py extras/tmc2208.py \
-                extras/tmc2209.py extras/tmc2660.py extras/tmc5160.py extras/adxl345.py stepper.py \
-                extras/heaters.py; do
+                extras/tmc2209.py extras/tmc2660.py extras/tmc5160.py stepper.py extras/heaters.py; do
         fetch "https://raw.githubusercontent.com/Klipper3d/klipper/$ref/klippy/$file" \
               "$dest/klipper-$ref/$(basename "$file")"
     done

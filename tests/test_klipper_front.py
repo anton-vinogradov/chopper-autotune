@@ -38,8 +38,8 @@ def printer_cfg(kinematics: str = 'corexy', driver: str = '2209', extra: str = '
                       for index, axis in enumerate('xy'))
     return ('[printer]\nkinematics: %s\nmax_velocity: 500\nmax_accel: 10000\n\n%s%s'
             '[adxl345]\ncs_pin: P40\n\n[resonance_tester]\naccel_chip: adxl345\n'
-            'probe_points: 125, 125, 20\n\n[force_move]\nenable_force_move: True\n\n[respond]\n\n%s'
-            % (kinematics, rails, drivers, extra))
+            'probe_points: 125, 125, 20\n\n[force_move]\nenable_force_move: True\n\n[respond]\n\n'
+            '[display_status]\n\n%s' % (kinematics, rails, drivers, extra))
 
 
 def assert_clean(front):
@@ -53,8 +53,9 @@ def assert_clean(front):
 
 
 @pytest.fixture(autouse=True)
-def no_poll_wait(monkeypatch):
-    monkeypatch.setattr(collect, 'PREFLIGHT_SEC', 0)
+def printer_time(monkeypatch):
+    """The tools' sleeps let the printer's time run on: Klipper polls the drivers meanwhile."""
+    monkeypatch.setattr(collect, 'time', klipper_front.Clock())
 
 
 COLLECT_CASES = [(kinematics, driver, stealth)
@@ -85,6 +86,11 @@ def test_a_grid_collect_moves_the_motor_on_each_combo_and_puts_the_driver_back(
     # each combo on the chip while its moves ran, forward and back, in spreadCycle
     ran = {(move['chips'][section]['toff'], move['distance'] > 0) for move in moves}
     assert ran == {(3, False), (3, True), (4, False), (4, True)}
+    # each move as planned, net zero: a FORCE_MOVE skips the range check
+    manifest = json.loads((tmp_path / 'grid' / 'manifest.json').read_text())
+    assert {(abs(round(move['distance'], 3)), move['speed'], move['accel']) for move in moves} \
+        == {(manifest['travel_distance'], 60, manifest['accel'])}
+    assert sum(move['distance'] for move in moves) == pytest.approx(0, abs=1e-6)
     field, spread, _ = tmc.DRIVERS[driver].spreadcycle_switch or ('chm', 0, 0)
     assert all(move['chips'][section][name] == value for move in moves
                for name, value in (('tbl', 1), ('hstrt', 4), ('hend', 3), (field, spread)))
@@ -98,6 +104,9 @@ def run_tool(front, tool, argv):
         return tool(kl, build_parser().parse_args(argv))
     finally:
         kl.close()
+
+
+AT_RUNTIME = 'M204 S5000\nM220 S50\nSET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0.3'
 
 
 def limits_in_force(front) -> dict:
@@ -116,6 +125,7 @@ def test_current_bisects_on_the_real_current_helper_and_puts_the_exact_current_b
     front = klipper_front.Front(source, printer_cfg(kinematics).replace('run_current: 0.8',
                                                                        'run_current: 0.566'))
     chip = front.chips['tmc2209 stepper_x']
+    front.run(AT_RUNTIME)                       # what a print left: it comes back after
     configured, limits = (chip.field('irun'), chip.field('vsense')), limits_in_force(front)
     assert run_tool(front, current_tune, ['current', '--motor', 'a', '--yes']) == 0
     assert_clean(front)
@@ -133,6 +143,7 @@ def test_the_envelope_runs_its_ladders_and_puts_the_printer_back(source, kinemat
     require(source)
     front = klipper_front.Front(source, printer_cfg(kinematics).replace(
         '[tmc2209 stepper_x]\n', '[tmc2209 stepper_x]\nstealthchop_threshold: 999999\n'))
+    front.run(AT_RUNTIME)
     chips = {section: chip.chopper() for section, chip in front.chips.items()}
     limits = limits_in_force(front)
     assert run_tool(front, env.envelope, ['envelope', '--yes']) == 0
@@ -300,6 +311,8 @@ def test_the_extruder_tune_heats_its_own_hotend_and_leaves_it_off(source):
 def test_without_respond_the_run_talks_to_the_display_and_the_log_only(source, tmp_path):
     # RESPOND is [respond]'s: without it every update was an 'Unknown command' line
     require(source)
+    if source.startswith('kalico'):
+        pytest.skip('Kalico loads respond with or without [respond]')
     front = klipper_front.Front(source, printer_cfg().replace('[respond]\n', ''))
     status, _ = run_tool(front, collect.collect, [
         'collect', '--axis', 'x', '--speed', '60', '--toff', '3:4', '--hstrt', '4:4',
@@ -308,3 +321,91 @@ def test_without_respond_the_run_talks_to_the_display_and_the_log_only(source, t
     assert_clean(front)
     assert not [script for script in front.scripts if 'RESPOND' in script or 'M118' in script]
     assert front.printer.objects['display_status'].message
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_a_driver_hot_from_before_the_restart_stops_the_run_after_klipper_polled_it(source):
+    # Klipper reads a TMC2240's die only once a second after the motor is enabled: the
+    # check right after enabling would see no temperature at all
+    require(source)
+    front = klipper_front.Front(source, printer_cfg(driver='2240'))
+    front.chips['tmc2240 stepper_x'].reads['ADC_TEMP'] = 2038 + int(110 * 7.7)
+    with pytest.raises(collect.DriverTooHot):
+        run_tool(front, collect.collect, ['collect', '--axis', 'x', '--speed', '60', '--toff', '3:4',
+                                          '--yes', '--no-raw'])
+    assert_clean(front)
+    assert not [script for script in front.scripts if 'G28' in script or 'SET_TMC_FIELD' in script]
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_without_an_enable_pin_each_combo_still_reaches_the_moving_motor(source, tmp_path):
+    # enabling a motor without its own enable pin brings toff back from the config: a
+    # register written before that would be undone (wake_stepper)
+    require(source)
+    front = klipper_front.Front(source, printer_cfg('cartesian').replace('enable_pin: !P20\n', ''))
+    status, _ = run_tool(front, collect.collect, [
+        'collect', '--axis', 'x', '--speed', '60', '--tbl', '1:1', '--toff', '5:6', '--hstrt', '4:4',
+        '--hend', '3:3', '--iterations', '1', '--yes', '--no-raw', '--dataset', str(tmp_path / 'g')])
+    assert status == 0
+    assert_clean(front)
+    assert {(move['chips']['tmc2209 stepper_x']['toff'], move['distance'] > 0)
+            for move in front.moves} == {(5, False), (5, True), (6, False), (6, True)}
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_a_driver_error_mid_run_stops_it_at_the_next_command(source, tmp_path):
+    # #133: a shutdown answers every command with the same error; the run retried 95 moves
+    require(source)
+    front = klipper_front.Front(source, printer_cfg())
+    chip = front.chips['tmc2209 stepper_x']
+    force_move = front.printer.objects['force_move']
+    real_move = force_move.manual_move
+
+    def manual_move(*args):
+        real_move(*args)
+        chip.reads['DRV_STATUS'] = chip.fields.all_fields['DRV_STATUS']['s2ga']   # a short
+    force_move.manual_move = manual_move
+    with pytest.raises(collect.KlipperShutdown):
+        run_tool(front, collect.collect, ['collect', '--axis', 'x', '--speed', '60', '--toff', '3:4',
+                                          '--yes', '--no-raw', '--dataset', str(tmp_path / 'g')])
+    assert len(front.moves) == 1 and len(front.printer.shutdowns) == 1
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_a_stop_mid_rung_puts_the_exact_current_back(source):
+    # a rung lowers the current: a run stopped there must not leave the motor on it
+    from chopper_autotune.current import current_tune
+    require(source)
+    front = klipper_front.Front(source, printer_cfg().replace('run_current: 0.8',
+                                                             'run_current: 0.566'))
+    chip = front.chips['tmc2209 stepper_x']
+    configured = chip.field('irun')
+    real_write = chip.set_register
+
+    def set_register(reg_name, value, print_time=None):
+        real_write(reg_name, value, print_time)
+        if reg_name == 'IHOLD_IRUN' and chip.field('irun') < configured:
+            chip.reads['DRV_STATUS'] = 1                 # otpw on the lowered current
+    chip.set_register = set_register
+    with pytest.raises(collect.DriverTooHot):
+        run_tool(front, current_tune, ['current', '--motor', 'a', '--yes'])
+    assert_clean(front)
+    assert min(chip.fields.get_field('irun', value, 'IHOLD_IRUN')
+               for register, value in chip.writes if register == 'IHOLD_IRUN') < configured
+    assert chip.field('irun') == configured
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_the_show_on_both_motors_puts_back_the_printer_it_found(source):
+    from chopper_autotune import demo
+    require(source)
+    front = klipper_front.Front(source, printer_cfg().replace(*TUNED).replace(
+        '[tmc2209 stepper_y]\n', TUNED[1].replace('stepper_x', 'stepper_y')))
+    front.run(AT_RUNTIME)
+    chips = {section: chip.chopper() for section, chip in front.chips.items()}
+    limits = limits_in_force(front)
+    assert run_tool(front, demo.showcase_together, ['demo', '--speed', '60', '--rounds', '1',
+                                                    '--repeats', '1']) == 0
+    assert_clean(front)
+    assert {section: chip.chopper() for section, chip in front.chips.items()} == chips
+    assert limits_in_force(front) == limits

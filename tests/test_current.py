@@ -186,7 +186,7 @@ def test_a_stroke_peaks_where_it_brakes_as_hard_as_it_accelerates():
 def status(max_velocity=300.0, ratio=0.5, speed_factor=1.0):
     """objects/query of the live limits, as Klipper answers it."""
     return lambda method, params: {'status': {
-        'toolhead': {'max_velocity': max_velocity, 'minimum_cruise_ratio': ratio},
+        'toolhead': {'max_velocity': max_velocity, 'max_accel': 3000.0, 'minimum_cruise_ratio': ratio},
         'gcode_move': {'speed_factor': speed_factor}}}
 
 
