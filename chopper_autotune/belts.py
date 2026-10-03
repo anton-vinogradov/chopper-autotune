@@ -35,7 +35,7 @@ from .collect import (CAPTURE_MTIME_SLACK_SEC, Screen, ThermalGuard, await_flush
                       capture_pattern, capture_span, coupled_xy, detect_hardware, home_xy,
                       motor_label, refuse_blind_z_hop, refuse_if_printing, rehome_unless_hot,
                       release_gantry, run_restore, searched, written_files)
-from .current import stress_vector
+from .current import live_limits, stress_vector
 from .dataset import load_json, save_json
 from .klippy import ConsoleFenceLost, Klippy, find_socket
 
@@ -545,11 +545,12 @@ def machine_axes(hw, kl) -> 'tuple | None':
         _, vecs = np.linalg.eigh(np.cov(low.T))
         return vecs[:, -1]
 
+    accel = live_limits(kl)['max_accel']
     try:
         ex, ey = direction('X'), direction('Y')
     finally:
         # the shuttles lowered the accel; one that fails midway leaves relative moves too
-        run_restore(lambda: kl.gcode('G90\nM204 S%.0f' % hw.max_accel))
+        run_restore(lambda: kl.gcode('G90\nM204 S%.0f' % accel))
     if abs(float(np.dot(ex, ey))) > 0.5:            # jogs read alike: mounting is odd,
         return None                                 # fall back to unpolarized analysis
     return ex, ey

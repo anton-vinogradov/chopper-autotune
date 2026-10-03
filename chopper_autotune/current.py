@@ -250,10 +250,11 @@ def lift_axis_limits(kl: Klippy, kinematics: str, limits: 'dict | None', motor: 
 
 
 def live_limits(kl: Klippy) -> dict:
-    """What the next moves obey, set at runtime or not: the toolhead's max_velocity and
-    minimum_cruise_ratio, gcode_move's speed_factor (M220, 1.0 at 100%)."""
+    """What the next moves obey, set at runtime or not: the toolhead's max_velocity,
+    max_accel (M204) and minimum_cruise_ratio, gcode_move's speed_factor (M220, 1.0 at
+    100%)."""
     status = kl.request('objects/query', {'objects': {
-        'toolhead': ['max_velocity', 'minimum_cruise_ratio'],
+        'toolhead': ['max_velocity', 'max_accel', 'minimum_cruise_ratio'],
         'gcode_move': ['speed_factor']}})['status']
     return dict(status['toolhead'], speed_factor=status['gcode_move']['speed_factor'])
 
@@ -437,7 +438,7 @@ def current_tune(kl: Klippy, args) -> int:
         run_restore(
             *[lambda m=m: kl.gcode('SET_TMC_CURRENT STEPPER=stepper_%s CURRENT=%r'
                                    % (m, configured[m])) for m in motors],
-            lambda: kl.gcode('M204 S%.0f' % board.max_accel),
+            lambda: kl.gcode('M204 S%.0f' % limits['max_accel']),
             *restores,
             lambda: rehome_unless_hot(kl))
 

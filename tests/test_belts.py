@@ -599,8 +599,16 @@ def test_a_hot_driver_after_a_diagonal_stops_the_sweep_without_a_re_home(monkeyp
         + ['check'] and closing == [True]
 
 
+def live_accel(accel: float):
+    """objects/query of the live limits: an M204 left from a print, not the config's."""
+    return lambda method, params=None: {'status': {
+        'toolhead': {'max_velocity': 500.0, 'max_accel': accel, 'minimum_cruise_ratio': 0.5},
+        'gcode_move': {'speed_factor': 1.0}}}
+
+
 def test_a_failed_shuttle_puts_absolute_moves_and_the_accel_back(monkeypatch):
-    # the shuttle runs M204 S800 and G91 first: a move that fails midway skips its G90
+    # the shuttle runs M204 S800 and G91 first: a move that fails midway skips its G90;
+    # the accel comes back as it was, not as printer.cfg has it
     from types import SimpleNamespace
 
     import chopper_autotune.collect as collect_mod
@@ -611,8 +619,9 @@ def test_a_failed_shuttle_puts_absolute_moves_and_the_accel_back(monkeypatch):
         raise KlippyError('gcode/script failed: Move out of range')
     monkeypatch.setattr(collect_mod, 'capture_stream', capture)
     with pytest.raises(KlippyError):
-        belts_mod.machine_axes(SimpleNamespace(max_accel=3000.0), SimpleNamespace(gcode=sent.append))
-    assert sent == ['G90\nM204 S3000']
+        belts_mod.machine_axes(SimpleNamespace(max_accel=3000.0),
+                               SimpleNamespace(gcode=sent.append, request=live_accel(2500.0)))
+    assert sent == ['G90\nM204 S2500']
 
 
 def test_a_stop_after_the_shuttles_is_not_swallowed(monkeypatch):
@@ -623,12 +632,13 @@ def test_a_stop_after_the_shuttles_is_not_swallowed(monkeypatch):
     import chopper_autotune.collect as collect_mod
 
     def gcode(script):
-        if script == 'G90\nM204 S3000':
+        if script == 'G90\nM204 S2500':
             raise SystemExit(143)
     samples = np.column_stack([np.arange(400) / 400.0] + [np.sin(np.arange(400) * k) for k in (0.1, 0.2, 0.3)])
     monkeypatch.setattr(collect_mod, 'capture_stream', lambda hw, script, duration: (0.0, samples))
     with pytest.raises(SystemExit) as stop:
-        belts_mod.machine_axes(SimpleNamespace(max_accel=3000.0), SimpleNamespace(gcode=gcode))
+        belts_mod.machine_axes(SimpleNamespace(max_accel=3000.0),
+                               SimpleNamespace(gcode=gcode, request=live_accel(2500.0)))
     assert stop.value.code == 143
 
 

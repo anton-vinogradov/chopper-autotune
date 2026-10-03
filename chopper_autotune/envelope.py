@@ -340,7 +340,7 @@ def envelope(kl: Klippy, args) -> int:
                     or guard.check() or skips(ref.slipped()),
                     lambda a, sk: report(a, sk, 'mm/s2'))
             finally:
-                run_restore(lambda: kl.gcode('M204 S%.0f' % board.max_accel),
+                run_restore(lambda: kl.gcode('M204 S%.0f' % limits['max_accel']),
                             lambda mm=m: exit_spreadcycle(kl, hw[mm]))
             print(' => speed: %s' % verdict(s_hold, s_skip, 'mm/s'))
             print(' => accel: %s' % verdict(a_hold, a_skip, 'mm/s2'))
@@ -351,7 +351,7 @@ def envelope(kl: Klippy, args) -> int:
             if short:
                 shorts[label] = short
     finally:
-        run_restore(lambda: kl.gcode('M204 S%.0f' % board.max_accel), *restores,
+        run_restore(lambda: kl.gcode('M204 S%.0f' % limits['max_accel']), *restores,
                     lambda: rehome_unless_hot(kl))
 
     finale = short = ''
