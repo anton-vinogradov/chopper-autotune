@@ -1223,7 +1223,7 @@ def test_the_self_check_names_a_replaced_macro_once(source, tmp_path):
     errors = [message for message in console if message.startswith('!!')]
     assert len(errors) == 1 and 'chopper-autotune: CHOPPER_TUNE runs another tool' in errors[0]
     message = dispatch.printer.objects['display_status'].get_status(0)['message']
-    assert message.startswith('chopper-autotune: CHOPPER_TUNE runs another tool')
+    assert message == 'Clash TUNE'
 
 
 @pytest.mark.parametrize('source', fetched('delayed_gcode.py'))
@@ -1320,15 +1320,16 @@ def test_the_screen_writes_only_where_klipper_takes_it(source, respond, display)
     require(source)
     kl, console, status = console_printer(source, respond, display)
     screen = collect.Screen(kl, True)
-    screen.update('Chopper 42% 17/40 ETA 1:05', force=True)
-    screen.update('WARNING: a "quoted" note (issue #129)', force=True)
-    screen.final('Tune done: A 2/3/5/0 -42%')
+    screen.update('Chopper 42% 17/40 ETA 1:05', force=True, short='A 42% ETA 1:05')
+    screen.update('WARNING: a "quoted" note (issue #129)', force=True, short='AWD: approx.')
+    screen.final('Tune done: A 2/3/5/0 -42%', 'Done A-42%')
     assert not [line for line in console if 'Unknown command' in line or line.startswith('!!')]
-    # one space after the prefix, no 'Chopper: Chopper', one console line for the verdict
+    # one space after the prefix, no 'Chopper: Chopper', one console line for the verdict;
+    # the console keeps the whole text, the display what a 16-character LCD row shows
     assert console == (["Chopper: 42% 17/40 ETA 1:05", "Chopper: WARNING: a 'quoted' note (issue #129)",
                         'echo: Tune done: A 2/3/5/0 -42%'] if respond else [])
     if display:
-        assert status.message == 'Tune done: A 2/3/5/0 -42%'
+        assert status.message == 'Done A-42%'
 
 
 @pytest.mark.parametrize('source', fetched('respond.py'))

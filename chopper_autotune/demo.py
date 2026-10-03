@@ -132,7 +132,8 @@ def showcase_together(kl, args) -> int:
             for name, regs in configs:
                 for axis in MOTORS:
                     kl.gcode(tmc.set_fields_script(hw[axis].stepper, regs[axis].fields()))
-                screen.update('%d/%d  %s' % (r, args.rounds, playing[name]), force=True)
+                screen.update('%d/%d  %s' % (r, args.rounds, playing[name]), force=True,
+                              short='%d/%d %s' % (r, args.rounds, name.upper()))
                 print('\n>> round %d/%d  %s — listen (both motors)' % (r, args.rounds, playing[name]))
                 mags = _sweep(board, speed, accel, span, args, guard.check)
                 if mags:
@@ -141,7 +142,7 @@ def showcase_together(kl, args) -> int:
             if 'default' in round_avg and 'tuned' in round_avg:
                 factor = round_avg['default'] / round_avg['tuned']
                 summary = 'both motors: %.1fx less vibration' % factor
-                screen.update(summary, force=True)
+                screen.update(summary, force=True, short='%.1fx less vib' % factor)
                 print('   => %s' % summary)
     finally:
         run_restore(
@@ -154,7 +155,7 @@ def showcase_together(kl, args) -> int:
         raise SystemExit('show failed to collect measurements')
     d, t = statistics.mean(results['default']), statistics.mean(results['tuned'])
     print('\nboth motors together: %.2fx less vibration overall' % (d / t))
-    screen.final('Chopper: both motors %.1fx less vibration' % (d / t))
+    screen.final('Chopper: both motors %.1fx less vibration' % (d / t), '%.1fx less vib' % (d / t))
     for axis in MOTORS:
         write_state(axis, tuned[axis], d / t)   # combined factor, shown per motor by the panel
     return 0
@@ -286,7 +287,9 @@ def demo(kl: Klippy, args) -> int:
                                                  travel, accel, before_move)
                         if record['status'] == 'ok':
                             results[name].append(record['score']['median_magnitude'])
-                    screen.update('Chopper demo %s %d/%d' % (name, iteration + 1, args.iterations))
+                    screen.update('Chopper demo %s %d/%d' % (name, iteration + 1, args.iterations),
+                                  short='%s %s %d/%d' % (hw.motor, name, iteration + 1,
+                                                         args.iterations))
     finally:
         run_restore(
             lambda: restore_chopper(kl, hw),
@@ -306,7 +309,7 @@ def demo(kl: Klippy, args) -> int:
     print('\n  %.2fx less vibration overall' % (d / t))
     if noise and t > noise and d > noise:
         print('  %.2fx less vibration above the %.0f noise floor' % ((d - noise) / (t - noise), noise))
-    screen.final('Chopper demo: %.1fx less vibration' % (d / t))
+    screen.final('Chopper demo: %.1fx less vibration' % (d / t), '%s %.1fx less vib' % (hw.motor, d / t))
     write_state(args.axis, tuned, d / t)
     return 0
 
@@ -332,7 +335,8 @@ def _showcase(kl, hw, args, ds, configs, speed, travel, accel, before_move, scre
         round_avg = {}
         for name, combo in configs:
             kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
-            screen.update('%d/%d  %s' % (r, args.rounds, playing[name]), force=True)
+            screen.update('%d/%d  %s' % (r, args.rounds, playing[name]), force=True,
+                          short='%d/%d %s' % (r, args.rounds, name.upper()))
             print('\n>> round %d/%d  %s  (%s) — listen' % (r, args.rounds, playing[name],
                                                            combo.label()))
             mags = []
@@ -350,7 +354,7 @@ def _showcase(kl, hw, args, ds, configs, speed, travel, accel, before_move, scre
             factor = round_avg['default'] / round_avg['tuned']
             summary = 'def %.0f -> tuned %.0f  %.1fx less vibration' % (
                 round_avg['default'], round_avg['tuned'], factor)
-            screen.update(summary, force=True)
+            screen.update(summary, force=True, short='%s %.1fx less vib' % (hw.motor, factor))
             print('   => %s' % summary)
     return results
 

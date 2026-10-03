@@ -150,11 +150,12 @@ def test_the_referee_marks_only_its_own_axis_homed():
 
 
 def test_the_refusal_keeps_its_instruction_on_the_display():
-    # announce_failure shows '<command> FAILED: <message>' cut at 120 characters
+    # announce_failure puts failure_display on the display
+    from chopper_autotune.collect import failure_display
     kl = SafeZHomeKl(homed='xy')
     with pytest.raises(ZNotHomed) as refused:
         refuse_blind_z_hop(kl, kl.settings())
-    assert 'run G28, then retry' in ('find-speed FAILED: %s' % refused.value.code)[:120]
+    assert 'run G28, then retry' in failure_display('find-speed FAILED: %s' % refused.value.code)
 
 
 @pytest.mark.parametrize('homed, left', [('xyz', {'z'}), ('xy', set()), ('', set())])

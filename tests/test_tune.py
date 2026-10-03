@@ -135,7 +135,7 @@ def test_tune_reports_the_outcome_on_screen(tmp_path, monkeypatch):
         def __init__(self, kl, display):
             pass
 
-        def final(self, text):
+        def final(self, text, short=None):
             finals.append(text)
 
     monkeypatch.setattr(tune, 'Screen', FakeScreen)
@@ -238,7 +238,7 @@ def test_autotune_on_one_motor_marks_only_that_one(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58))
     monkeypatch.setattr(tune, 'collect', lambda kl, args, popup: (0, roots[args.axis]))
     finals = []
-    monkeypatch.setattr(tune.Screen, 'final', lambda self, text: finals.append(text))
+    monkeypatch.setattr(tune.Screen, 'final', lambda self, text, short=None: finals.append(text))
     assert tune.run_tune(tune_args()) == 0
     out = capsys.readouterr().out
     assert 'stepper_x: klipper_tmc_autotune' in out and 'driver_SGTHRS: 80' in out

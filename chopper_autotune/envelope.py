@@ -11,8 +11,8 @@ import math
 import os
 
 from .collect import (KLIPPY_DIR, Screen, ThermalGuard, detect_hardware, enter_spreadcycle,
-                      exit_spreadcycle, full_steps_per_mm, home_xy, rail_twins, refuse_blind_z_hop,
-                      refuse_if_printing, rehome_unless_hot, run_restore)
+                      exit_spreadcycle, fit_row, full_steps_per_mm, home_xy, rail_twins,
+                      refuse_blind_z_hop, refuse_if_printing, rehome_unless_hot, run_restore)
 from .current import (Referee, belt_top, free_strokes, live_limits, referee_axis, stress_vector,
                       stroke_accel, stroke_peak)
 from .dataset import save_json
@@ -163,7 +163,7 @@ def stroke_ladders(kinematics: str, motor: str, axis_span: float, speeds, accel:
             + (['ACCEL to %d' % stroke_accel(speed, span, vec)]
                if stroke_peak(span, vec, accel) < speed else []))
     if not kept:
-        # the action first: the display keeps 120 characters of '<command> FAILED: ...'
+        # the action first: the display shows its first characters (failure_display)
         raise SystemExit('raise %s or more: motor %s runs under %d mm/s, MIN_SPEED %d (max_velocity '
                          '%g%s, accel %.0f). Nothing was moved'
                          % (needs(speeds[0]), label, math.floor(top) + 1, speeds[0], max_velocity,
@@ -277,7 +277,7 @@ def envelope(kl: Klippy, args) -> int:
     screen = Screen(kl, board.display)
     guard = ThermalGuard(kl, settings)
     if note:
-        screen.update('WARNING: ' + note, force=True)
+        screen.update('WARNING: ' + note, force=True, short='AWD: approx.')
     achieved = {}
     speed_holds, accel_holds = {}, {}
     refuse_blind_z_hop(kl, settings)
@@ -296,7 +296,8 @@ def envelope(kl: Klippy, args) -> int:
                 return slip is None or abs(slip) > SKIP_HEAD_MM
 
             def report(value, skipped, unit, label=label):
-                screen.update('Chopper envelope %s %g%s' % (label, value, unit), force=True)
+                screen.update('Chopper envelope %s %g%s' % (label, value, unit), force=True,
+                              short='%s %g%s' % (label, value, unit))
                 print('   %-8g %-6s : %s' % (value, unit, 'SLIP' if skipped else 'holds'))
 
             enter_spreadcycle(kl, hw[m], restores=False)
@@ -333,12 +334,14 @@ def envelope(kl: Klippy, args) -> int:
         run_restore(lambda: kl.gcode('M204 S%.0f' % board.max_accel), *restores,
                     lambda: rehome_unless_hot(kl))
 
-    finale = ''
+    finale = short = ''
     if achieved:
         save_state(achieved)                        # the panel's Results shows these
         finale = 'Envelope: ' + ' · '.join(
             '%s %s mm/s, %s acc' % (label, values['speed'], values['accel'])
             for label, values in achieved.items())
+        short = fit_row('vel', ['%s%s' % (label, values['speed'])
+                                for label, values in achieved.items()])
 
     # no motor skipped and the slowest ladder stopped short: the test ran out, not the motor
     untested = {} if skipped or not speed_holds else {
@@ -367,8 +370,8 @@ def envelope(kl: Klippy, args) -> int:
                              over='untested above, not a limit' if untested
                              else 'a 45 deg travel would outrun the tested ceiling'),
                  rec['belt_ceiling'], rec['max_velocity_margin'], MARGIN))
-        for label, short in untested.items():
-            print('    untested above %g mm/s on motor %s: %s' % (speed_holds[label], label, short))
+        for label, why in untested.items():
+            print('    untested above %g mm/s on motor %s: %s' % (speed_holds[label], label, why))
         print('[printer] max_accel: %d%s\n    the MACHINE cap: motor torque /%.1f;'
               ' travels use it — smoothing costs nothing where no plastic is laid'
               % (rec['max_accel'],
@@ -406,7 +409,7 @@ def envelope(kl: Klippy, args) -> int:
     if finale and note:
         finale += ' · AWD: approximate (#129)'
     if finale:
-        screen.final(finale)
+        screen.final(finale, short)
     print('\nThis is the motor (torque) limit only. For which speeds are quiet vs ringy, '
           'run CHOPPER_FIND_SPEED; and the real top-speed limit is usually the hotend flow '
           'rate, which is not a motion measurement.')

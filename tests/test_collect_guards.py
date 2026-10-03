@@ -73,8 +73,8 @@ def test_screen_final_adds_a_popup():
     screen = Screen(kl, display=True)
     screen.update('progress 1/10', force=True)
     assert not any(cmd.startswith('M118') for cmd in kl.sent)
-    screen.final('Belts matched: A 105 / B 105 Hz')
-    assert 'M117 Belts matched: A 105 / B 105 Hz' in kl.sent
+    screen.final('Belts matched: A 105 / B 105 Hz', 'Matched 105/105')
+    assert 'M117 Matched 105/105' in kl.sent             # a 16-character LCD row
     assert 'M118 Belts matched: A 105 / B 105 Hz' in kl.sent
 
 
@@ -86,10 +86,10 @@ def test_the_grid_verdict_pops_up_only_when_no_validation_follows(monkeypatch, v
     import chopper_autotune.collect as collect
     monkeypatch.setattr(collect, 'measure_combo', lambda *args: (2, 0, [100.0, 101.0], 0))
     shown = []
-    screen = SimpleNamespace(update=lambda text, force=False: shown.append(('update', force)),
-                             final=lambda text: shown.append(('final', True)))
+    screen = SimpleNamespace(update=lambda text, force=False, short=None: shown.append(('update', force)),
+                             final=lambda text, short=None: shown.append(('final', True)))
     plan = [(collect.tmc.Chopper(2, 3, 5, 0), 58)]
-    collect.run_grid(None, None, None, SimpleNamespace(iterations=1, validate=validate), plan,
+    collect.run_grid(None, SimpleNamespace(motor='A'), None, SimpleNamespace(iterations=1, validate=validate), plan,
                      70.0, 1000.0, set(), None, screen)
     assert shown[-1] == (('final', True) if pops else ('update', True))
 
@@ -211,9 +211,9 @@ def test_report_winner_reports_improvement_vs_defaults(tmp_path, monkeypatch, ca
                        'score': {'median_magnitude': magnitude, 'clicks': 0}})
 
     finals = []
-    hw = SimpleNamespace(driver=tmc.DRIVERS['2209'], stepper='stepper_x', autotune=None)
+    hw = SimpleNamespace(driver=tmc.DRIVERS['2209'], stepper='stepper_x', autotune=None, motor='A')
     args = SimpleNamespace(trim=0.1, audible_weight=0.25)
-    screen = SimpleNamespace(final=finals.append)
+    screen = SimpleNamespace(final=lambda text, short=None: finals.append(text))
     winner = report_winner(hw, ds, args, screen, top=5)
 
     assert winner['chopper'] == tmc.Chopper(0, 2, 4, 7)
@@ -363,9 +363,10 @@ def test_report_winner_finds_the_stock_reference_when_tpfd_is_not_swept(tmp_path
             ds.append({'id': '%s_%d' % (combo.label(), direction), 'kind': 'move',
                        'status': 'ok', **combo.fields(), 'tpfd': None,
                        'score': {'median_magnitude': magnitude, 'clicks': 0}})
-    hw = SimpleNamespace(driver=tmc.DRIVERS['2240'], stepper='stepper_x', baseline={}, autotune=None)
+    hw = SimpleNamespace(driver=tmc.DRIVERS['2240'], stepper='stepper_x', baseline={}, autotune=None,
+                         motor='A')
     args = SimpleNamespace(trim=0.1, audible_weight=0.25, tpfd=None)
-    report_winner(hw, ds, args, SimpleNamespace(final=lambda text: None), top=5)
+    report_winner(hw, ds, args, SimpleNamespace(final=lambda text, short=None: None), top=5)
     assert ds.manifest()['improvement'] == 2.0
     # the panel reads the fifth (TPFD) register from the config or Klipper's stock value
     state = json.loads((tmp_path / 'state.json').read_text())
@@ -528,3 +529,46 @@ def test_only_the_current_klipper_is_supported(tmp_path, monkeypatch, force_move
     with pytest.raises(UnsupportedKlipper, match=refusal):
         detect_hardware(kl, 'x')                    # every tool that moves starts there
 
+
+
+def test_a_display_text_is_what_an_lcd_can_draw():
+    # an LCD draws bytes: a character beyond ASCII came out as 'ΓÇö', and '~' is glyph markup
+    from chopper_autotune.collect import display_text
+    assert display_text('Belt A \u2014 moves \u00b7 B \u2192 C\u2026 ~5 \u00b0') == \
+        'Belt A - moves | B > C... -5 '
+
+
+def test_a_row_takes_the_items_that_fit_first_first():
+    from chopper_autotune.collect import fit_row
+    assert fit_row('A pk', ['60', '120', '180', '240']) == 'A pk 60,120,180+'      # '+': more
+    assert fit_row('A pk', ['60', '120']) == 'A pk 60,120'
+    assert fit_row('A pk', ['-']) == 'A pk -'
+
+
+def test_every_display_text_has_its_lcd_form():
+    # a run path no test drives still reaches the display: every Screen call names the
+    # form a 16-character LCD row shows, unless its text is a short literal itself
+    import ast
+    import glob
+
+    from chopper_autotune.collect import LCD_WIDTH
+    missing = []
+    for path in sorted(glob.glob(os.path.join(os.path.dirname(__file__), '..', 'chopper_autotune', '*.py'))):
+        with open(path) as source:
+            tree = ast.parse(source.read())
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if isinstance(func, ast.Attribute) and func.attr in ('update', 'final') \
+                    and 'screen' in ast.unparse(func.value).lower():
+                positional_short = func.attr == 'final' and len(node.args) >= 2
+            elif isinstance(func, ast.Name) and func.id == 'cue':
+                positional_short = len(node.args) >= 2
+            else:
+                continue
+            text = node.args[0] if node.args else None
+            literal = isinstance(text, ast.Constant) and len(text.value) <= LCD_WIDTH
+            if not (positional_short or literal or any(k.arg == 'short' for k in node.keywords)):
+                missing.append('%s:%d %s' % (os.path.basename(path), node.lineno, ast.unparse(node)[:60]))
+    assert missing == []

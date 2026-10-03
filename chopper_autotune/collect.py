@@ -317,8 +317,8 @@ def autotune_advice(settings: dict, driver_name: str, stepper: str) -> str:
 
 
 def autotune_refusal(driver_name: str, stepper: str, settings: 'dict | None' = None) -> str:
-    """The display shows '<command> FAILED: ' and 120 characters: they point at the log,
-    since removing the section alone would drop the StallGuard threshold with it."""
+    """The display shows the first 120 characters (failure_display): they point at the
+    log, since removing the section alone would drop the StallGuard threshold with it."""
     return ('not saving [tmc%s %s]: autotune resets its chopper at start; the log says what to '
             'do. %s' % (driver_name, stepper, autotune_advice(settings or {}, driver_name, stepper)))
 
@@ -330,7 +330,7 @@ AUTOTUNE_MEASURED = ('klipper_tmc_autotune managed the motor during the run, and
 
 
 def measured_under_autotune(driver_name: str, stepper: str) -> str:
-    """The display's 120 characters point at the log, like autotune_refusal."""
+    """The display's 120 characters (failure_display) point at the log, like autotune_refusal."""
     return ('not saving [tmc%s %s]: measured under autotune; the log says what to do. %s'
             % (driver_name, stepper, AUTOTUNE_MEASURED))
 
@@ -498,7 +498,7 @@ def refuse_blind_z_hop(kl: Klippy, settings: dict):
               'it; home all axes (G28) after the run and watch the Z travel')
     hop = homing_z_hop(settings)
     if hop and 'z' not in kl.homed_axes():
-        # the display shows the first 120 characters of '<command> FAILED: ' + this
+        # the display shows 'FAIL ' and the first characters of this (failure_display)
         raise ZNotHomed('Z not homed: clear the bed, run G28, then retry (G28 X Y would lift Z %g mm '
                         'blind)' % hop)
 
@@ -578,7 +578,7 @@ class ThermalGuard:
             if flags or (temperature is not None and temperature >= THERMAL_LIMIT_C):
                 why = flags[0] if flags else '%.0f C' % temperature
                 hint = '; set driver_SLOPE_CONTROL: 3' if section in self.slow else ''
-                # the display shows the first 120 characters of '<command> FAILED: ' + this
+                # the display shows 'FAIL ' and the first characters of this (failure_display)
                 raise DriverTooHot('%s overheating (%s): motors off, let it cool%s (#133)'
                                    % (section, why, hint))
 
@@ -907,6 +907,10 @@ class Screen:
     panel and swallow touch input (e.g. the Stop button). A non-`echo:` prefix still
     shows in every console but raises no popup.
 
+    The display gets `short` when a text does not fit a 16-character LCD row (a 12864's;
+    a 2004 shows 20): the main part first, ASCII only (display_text). The console always
+    gets the whole text.
+
     Each channel is used only where Klipper takes its command (accepted_commands), and
     disables itself on error so a missing one never stops a run. A stage of a longer run
     (`popup=False`: the speed scan and the register search inside CHOPPER_TUNE) ends in
@@ -925,24 +929,24 @@ class Screen:
         self.popup = popup and (commands is None or 'M118' in commands)
         self.last = 0.0
 
-    def update(self, text: str, force: bool = False):
+    def update(self, text: str, force: bool = False, short: 'str | None' = None):
         if not (self.display or self.console):
             return
         if not force and time.monotonic() - self.last < self.INTERVAL_SEC:
             return
         self.last = time.monotonic()
         if self.display:
-            self.display = self._send('M117 %s' % text)
+            self.display = self._send('M117 %s' % display_text(short or text))
         if self.console:
             self.console = self._send('RESPOND PREFIX="%s" MSG="%s"' % (
                 self.CONSOLE_PREFIX, console_text(text)))
 
-    def final(self, text: str):
+    def final(self, text: str, short: 'str | None' = None):
         """End-of-run verdict: the display line PLUS a KlipperScreen popup (M118's `echo:`
         raises one), which is the console line too. Popups are banned for progress —
         mid-run they cover the panel and its Stop button — but one is right at the end."""
         if self.display:
-            self.display = self._send('M117 %s' % text)
+            self.display = self._send('M117 %s' % display_text(short or text))
         if self.popup:
             self._send('M118 %s' % console_safe(text))
         elif self.console:
@@ -956,6 +960,38 @@ class Screen:
             return True
         except Exception:
             return False
+
+
+LCD_WIDTH = 16
+DISPLAY_ASCII = (('\u2014', '-'), ('\u00b7', '|'), ('\u2192', '>'), ('\u2026', '...'), ('~', '-'))
+
+
+def display_text(text: str) -> str:
+    """A text as M117 shows it on an LCD: it draws bytes, so a character beyond ASCII
+    comes out as two or three glyphs of garbage, and '~' starts glyph markup there."""
+    for char, plain in DISPLAY_ASCII:
+        text = text.replace(char, plain)
+    return text.encode('ascii', 'ignore').decode()
+
+
+def fit_row(head: str, items: 'list[str]') -> str:
+    """`head` and as many of `items` as a 16-character LCD row takes, the first first;
+    a '+' says some did not fit."""
+    row = head
+    for index, item in enumerate(items):
+        longer = row + (' ' if index == 0 else ',') + item
+        rest = index + 1 < len(items)
+        if len(longer) + rest > LCD_WIDTH:
+            return row + '+'
+        row = longer
+    return row
+
+
+def failure_display(message: str) -> str:
+    """A failure on the display: 'FAIL' and the reason, which starts with what to do or
+    what failed. A 16-character LCD row keeps its first words, the Mainsail header and
+    KlipperScreen's status line up to 120 characters."""
+    return display_text('FAIL ' + message.split(' FAILED: ', 1)[-1])[:120]
 
 
 def console_text(text: str) -> str:
@@ -1220,6 +1256,7 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
     # unvalidated one floats to the top of a later full re-rank
     ds.update_manifest(winner=winner['chopper'].fields())
     finale = 'Chopper: %s' % winner['chopper'].label()
+    short = '%s %s' % (hw.motor, winner['chopper'].compact())
     magnitudes = {entry['chopper']: entry['magnitude'] for entry in ranked}
     stock = tmc.stock_chopper(hw.driver, getattr(args, 'tpfd', None) is not None)
     reference = magnitudes.get(stock)
@@ -1235,6 +1272,7 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
         pct = round((1 - 1 / quieter) * 100)
         if pct >= 1:                                # a statistical tie is not a win
             finale += ' — %d%% less vibration' % pct
+            short += ' -%d%%' % pct
     if autotune_tag(hw.driver.name, hw.autotune):
         print('\nBest measured (not for saving: %s):\n' % AUTOTUNE_MEASURED)
     elif hw.autotune is not None:
@@ -1243,7 +1281,7 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
     else:
         print('\nRecommended for printer.cfg:\n')
     print(tmc.cfg_snippet(hw.driver, hw.stepper, winner['chopper']))
-    screen.final(finale)
+    screen.final(finale, short)
     return winner
 
 
@@ -1267,12 +1305,15 @@ def run_grid(kl: Klippy, hw: Hardware, ds: Dataset, args, plan, travel: float, a
             remaining = (len(plan) - index) * args.iterations * 2
             eta = remaining * (time.monotonic() - started) / (ok + failed)
             screen.update('Chopper %d%% %d/%d ETA %s'
-                          % (100 * index // len(plan), index, len(plan), eta_text(eta)))
+                          % (100 * index // len(plan), index, len(plan), eta_text(eta)),
+                          short='%s %d%% ETA %s' % (hw.motor, 100 * index // len(plan),
+                                                    eta_text(eta)))
     done_text = 'Chopper grid done: %d ok, %d failed' % (ok, failed)
+    short = '%s grid %d fail' % (hw.motor, failed)
     if args.validate:
-        screen.update(done_text, force=True)        # the validation still moves the motors
+        screen.update(done_text, force=True, short=short)     # the validation still moves the motors
     else:
-        screen.final(done_text)
+        screen.final(done_text, short)
     return ok, failed
 
 
@@ -1355,7 +1396,8 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
         if score != float('inf'):
             # without the bound the counter reads as endless (field: run stopped by hand)
             screen.update('Chopper %s cand %d of max %d: %.0f'
-                          % (hw.motor, len(cache), budget, score))
+                          % (hw.motor, len(cache), budget, score),
+                          short='%s %d/%d %.0f' % (hw.motor, len(cache), budget, score))
         return score
 
     if args.seed_from:
@@ -1400,7 +1442,7 @@ def check_resume(manifest: dict, speeds: 'list[int]', accel: float, measure_time
         if stored is not None and stored != current]
     stored = manifest.get('autotune', autotune)
     if stored != autotune:
-        # the action first: the display keeps 120 characters
+        # the action first: the display shows its first characters (failure_display)
         raise SystemExit('refusing to resume: klipper_tmc_autotune was %s, now %s; start a new '
                          'dataset (no DATASET=)' % (stored or 'off', autotune or 'off'))
     if mismatched:

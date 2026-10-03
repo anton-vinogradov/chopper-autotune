@@ -267,7 +267,7 @@ def current_tune(kl: Klippy, args) -> int:
         vec = stress_vector(board.kinematics, m)
         top = BELT_SPEEDS[-1]
         if limits['max_velocity'] * math.hypot(*vec) < top:
-            # the action first: the display keeps 120 characters of '<command> FAILED: ...'
+            # the action first: the display shows its first characters (failure_display)
             raise SystemExit('raise max_velocity to %d or more: now %g, it caps motor %s at %.0f '
                              'of the %d mm/s the pattern needs. Nothing was moved'
                              % (math.ceil(top / math.hypot(*vec)), limits['max_velocity'],
@@ -310,7 +310,8 @@ def current_tune(kl: Klippy, args) -> int:
             rungs = []
 
             def holds(current, m=m, vec=vec, ref=ref, label=label):
-                screen.update('Chopper current %s @ %.2fA' % (label, current), force=True)
+                screen.update('Chopper current %s @ %.2fA' % (label, current), force=True,
+                              short='%s test %.2fA' % (label, current))
                 run_rung(kl, board, m, current, configured[m], vec, span, accel, guard.check)
                 guard.check()                        # before the referee's crawl
                 slip = ref.slipped()
@@ -335,7 +336,8 @@ def current_tune(kl: Klippy, args) -> int:
             recommended[m] = min(configured[m], round(threshold * args.margin, 2))
             print('  skip threshold ~%.2f A -> recommended run_current %.2f A (%.1fx margin)'
                   % (threshold, recommended[m], args.margin))
-            screen.update('Chopper: %s current %.2fA' % (label, recommended[m]), force=True)
+            screen.update('Chopper: %s current %.2fA' % (label, recommended[m]), force=True,
+                          short='%s run %.2fA' % (label, recommended[m]))
     finally:
         run_restore(
             *[lambda m=m: kl.gcode('SET_TMC_CURRENT STEPPER=stepper_%s CURRENT=%r'
@@ -357,7 +359,7 @@ def current_tune(kl: Klippy, args) -> int:
               merge=True)                              # the panel's Results shows these
     screen.final('Current: ' + ' \u00b7 '.join(
         '%s skip %.2fA -> run %.2fA' % (motor_label(m), thresholds[m], recommended[m])
-        for m in motors))
+        for m in motors), ' '.join('%s %.2fA' % (motor_label(m), recommended[m]) for m in motors))
     print('\n=== Summary ===')
     for m in motors:
         print('[tmc%s stepper_%s]\nrun_current: %.2f' % (hw[m].driver.name, m, recommended[m]))

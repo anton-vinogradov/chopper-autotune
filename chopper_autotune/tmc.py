@@ -55,6 +55,11 @@ class Chopper:
     def label(self) -> str:
         return '_'.join('%s%d' % (name, value) for name, value in self.fields().items())
 
+    def compact(self) -> str:
+        """0/2/4/7: tbl/toff/hstrt/hend, the shape the panel's register table and the
+        display use (without tpfd, which a 16-character LCD line has no room for)."""
+        return '/'.join(str(value) for value in (self.tbl, self.toff, self.hstrt, self.hend))
+
 
 # the registers Klipper programs when the config carries no driver_* lines — they
 # differ per driver (klippy/extras/tmcXXXX.py), so "stock" is a driver property

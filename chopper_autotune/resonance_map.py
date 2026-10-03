@@ -22,7 +22,7 @@ from pathlib import Path
 from . import __version__
 from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen, ThermalGuard,
                       default_dataset_root, detect_hardware, enter_spreadcycle, exit_spreadcycle,
-                      make_parker, measure_baseline, now, park, refuse_blind_z_hop,
+                      fit_row, make_parker, measure_baseline, now, park, refuse_blind_z_hop,
                       refuse_if_printing, refuse_multi_motor, rehome_unless_hot, run_restore)
 from .dataset import Dataset, save_json
 from .find_speed import (build_curve, build_speed_plan, find_peaks, find_valleys, planned_ids,
@@ -192,7 +192,10 @@ def resonance_map(kl: Klippy, args) -> int:
         hw.motor,
         ','.join(str(s) for s in peak_speeds) or '—',
         ','.join(str(s) for s in dip_speeds) or '—',
-        ' · %s' % advice if advice else ''))
+        ' · %s' % advice if advice else ''),
+        # PRINT_SPEED asked a question: its answer first
+        '%s %s' % (hw.motor, advice) if advice
+        else fit_row('%s pk' % hw.motor, [str(s) for s in peak_speeds] or ['-']))
     print('\nVFAs (fine vertical banding) come from cruising on a motor resonance — that is what '
           'this map catches, so avoid the peaks above. It is NOT your top print speed: the motor '
           'holds torque far past any commanded speed (CHOPPER_ENVELOPE), the real ceiling is '

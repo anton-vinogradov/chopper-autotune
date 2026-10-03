@@ -51,8 +51,9 @@ def test_a_macro_replaced_by_a_file_read_later_is_named(tmp_path, name):
     assert error.startswith('chopper-autotune: %s runs another tool.' % name)
     assert named(error) == [name]
     assert "Keep one of the two tools: see 'Macro name conflicts'" in error
-    # the display keeps it when a frontend still starting up misses the console line
-    assert display == 'chopper-autotune: %s runs another tool. README: Macro name conflicts' % name
+    # the display keeps it when a frontend still starting up misses the console line, in
+    # what a 16-character LCD row shows
+    assert display == 'Clash %s' % name[len('CHOPPER_'):] and len(display) <= 16
 
 
 def test_every_replaced_macro_is_named_in_one_error(tmp_path):

@@ -526,10 +526,10 @@ def test_run_save_latest_skips_a_managed_motor_and_names_why(monkeypatch):
                                                        ('extruder', '5160', 'extruder'),
                                                        ('save', '2209', 'stepper_y')])
 def test_the_autotune_refusal_points_the_display_at_the_log(command, driver, stepper):
-    # announce_failure shows '<command> FAILED: <message>' cut at 120 characters: a bare
-    # "remove it" there would drop the StallGuard threshold sensorless homing stops on
-    from chopper_autotune.collect import autotune_refusal
-    shown = ('%s FAILED: %s' % (command, autotune_refusal(driver, stepper)))[:120]
+    # announce_failure puts failure_display on the display: a bare "remove it" there would
+    # drop the StallGuard threshold sensorless homing stops on
+    from chopper_autotune.collect import autotune_refusal, failure_display
+    shown = failure_display('%s FAILED: %s' % (command, autotune_refusal(driver, stepper)))
     assert 'the log says what to do' in shown and 'remove' not in shown
 
 

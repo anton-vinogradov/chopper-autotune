@@ -16,11 +16,6 @@ from .moonraker import Moonraker
 DRY_RUN_SPEED = 60
 
 
-def compact_label(combo: tmc.Chopper) -> str:
-    """0/2/4/7 — the shape the panel's register table uses."""
-    return '/'.join(str(getattr(combo, field)) for field in ('tbl', 'toff', 'hstrt', 'hend'))
-
-
 def sub_args(args, argv: 'list[str]'):
     """Build sub-command args through the real parser, so defaults live in one place."""
     from .cli import build_parser
@@ -79,7 +74,7 @@ def winner_of(root: str, args=None) -> 'tuple[dict, tmc.Chopper]':
     aggregates = aggregate(ds, False, manifest.get('trim') or 0.1)
     ranked = rank(aggregates, driver, hearing)
     if not ranked and aggregates and hearing.skip:
-        # the action first: the display keeps 120 characters of 'save FAILED: ...'
+        # the action first: the display shows its first characters (failure_display)
         raise NothingInaudible('re-run CHOPPER_TUNE with AUDIBLE_KHZ=%g: SKIP_AUDIBLE skips all of %s'
                                % (hearing.limit_hz / 1000, ds.root.name))
     if not ranked:
@@ -150,7 +145,7 @@ def run_tune(args) -> int:
             # a motor klipper_tmc_autotune manages now is marked: Save skips it
             labels = ' · '.join(
                 '%s %s%s%s' % (motor_label(manifest['stepper'].rsplit('_', 1)[-1]),
-                               compact_label(combo), improvement_note(manifest),
+                               combo.compact(), improvement_note(manifest),
                                ' (autotune)' if managed(manifest) else '')
                 for manifest, combo in winners)
             free = [motor_label(manifest['stepper'].rsplit('_', 1)[-1])
@@ -163,7 +158,9 @@ def run_tune(args) -> int:
                     else ' — autotune resets these at start' if not free
                     else ' — CHOPPER_SAVE to persist' if exact
                     else ' — to save: see tune.log')
-            screen.final('Tune done: %s%s' % (labels, tail))
+            screen.final('Tune done: %s%s' % (labels, tail), 'Done ' + ' '.join(
+                motor_label(manifest['stepper'].rsplit('_', 1)[-1]) + improvement_note(manifest).strip()
+                for manifest, _ in winners))
     finally:
         kl.close()
 

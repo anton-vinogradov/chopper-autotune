@@ -145,18 +145,19 @@ def test_a_failure_reaches_the_console_even_when_the_display_is_refused(monkeypa
     monkeypatch.delenv('CHOPPER_SYNC', raising=False)
     monkeypatch.setattr(klippy_mod, 'Klippy', Kl)
     monkeypatch.setattr(klippy_mod, 'find_socket', lambda explicit=None: '<sock>')
-    announce_failure(type('A', (), {'socket': None})(), 'tune FAILED: Klipper shut down')
-    assert sent == ['M118 tune FAILED: Klipper shut down', 'M117 tune FAILED: Klipper shut down']
-    # the display keeps 120 characters, the console the whole line: the action comes last
+    announce_failure(type('A', (), {'socket': None, 'command': 'tune'})(), 'tune FAILED: Klipper shut down')
+    assert sent == ['M118 tune FAILED: Klipper shut down', 'M117 FAIL Klipper shut down']
+    # the console gets the whole line: the action comes last
     sent.clear()
     message = ("collect FAILED: Klipper shut down (TMC 'stepper_x' reports error: GSTAT: 00000002 "
                "drv_err=1(ErrorShutdown!)): the run stops here; fix the cause, then FIRMWARE_RESTART")
-    announce_failure(type('A', (), {'socket': None})(), message)
-    assert sent == ['M118 ' + message, 'M117 ' + message[:120]]
+    announce_failure(type('A', (), {'socket': None, 'command': 'find-speed'})(), message)
+    # the display: the reason's first 120 characters, its first words on an LCD row
+    assert sent == ['M118 ' + message, 'M117 ' + ('FAIL ' + message.split(': ', 1)[1])[:120]]
     # KlipperScreen's console reads the line as Pango markup: a '<' would drop it
     sent.clear()
-    announce_failure(type('A', (), {'socket': None})(), 'collect FAILED: 3 < 4 & more')
-    assert sent == ['M118 collect FAILED: 3 \u2039 4 and more', 'M117 collect FAILED: 3 < 4 & more']
+    announce_failure(type('A', (), {'socket': None, 'command': 'collect'})(), 'collect FAILED: 3 < 4 & more')
+    assert sent == ['M118 collect FAILED: 3 \u2039 4 and more', 'M117 FAIL 3 < 4 & more']
 
 
 @pytest.mark.parametrize('value, problem', [('2,16,5,0', 'toff out of range'),
