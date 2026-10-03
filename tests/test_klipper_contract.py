@@ -7,6 +7,7 @@ import ast
 import collections
 import configparser
 import contextlib
+import copy
 import fnmatch
 import importlib.util
 import json
@@ -1011,7 +1012,7 @@ def test_every_rung_the_envelope_keeps_is_reached(source, kinematics, motor, acc
                                                    max_velocity, speeds):
     # a rung the strokes never reached 'held' and topped the max_velocity advice
     require(source)
-    from chopper_autotune.current import belt_top
+    from chopper_autotune.current import belt_cap, belt_top
     from chopper_autotune.envelope import stroke_ladders
     _, vec, kept, _, _ = stroke_ladders(kinematics, motor, span * 8, speeds, accel, (accel,), 0,
                                         max_velocity)
@@ -1026,7 +1027,8 @@ def test_every_rung_the_envelope_keeps_is_reached(source, kinematics, motor, acc
         assert [stroke['length'] for stroke in strokes] == pytest.approx(
             [2 * span * math.hypot(*vec)] * len(strokes))
         assert [stroke['accel'] for stroke in strokes] == pytest.approx([accel] * len(strokes))
-        expected = rung['speed'] if rung['speed'] in kept else belt_top(span, vec, accel, max_velocity)
+        expected = rung['speed'] if rung['speed'] in kept else belt_top(
+            span, vec, accel, belt_cap(kinematics, vec, max_velocity))
         assert stroke_speeds(rung) == pytest.approx([expected] * len(strokes), abs=0.5), rung
 
 
@@ -1345,3 +1347,102 @@ def test_a_failure_after_a_shutdown_reaches_the_console_alone(source, monkeypatc
     announce_failure(types.SimpleNamespace(socket=None), 'tune FAILED: Klipper shut down')
     assert console == ['echo: tune FAILED: Klipper shut down']
 
+
+
+def limited_kinematics(source: str, name: str, **state):
+    """Kalico's limited_corexy or limited_cartesian, with the state its __init__ reads
+    from [printer]; the base class it extends only checks endstops here."""
+    tag = 'contract_%s_kin' % source.replace('.', '_').replace('-', '_')
+    package = sys.modules.get(tag) or types.ModuleType(tag)
+    package.__path__ = [os.path.join(SRC, source)]
+    sys.modules[tag] = package
+    base_name, class_name = (('corexy', 'CoreXYKinematics') if name == 'limited_corexy'
+                             else ('cartesian', 'CartKinematics'))
+    base = types.ModuleType('%s.%s' % (tag, base_name))
+    setattr(base, class_name, type(class_name, (), {'_check_endstops': lambda self, move: None}))
+    setattr(package, base_name, base)
+    sys.modules[base.__name__] = base
+    spec = importlib.util.spec_from_file_location('%s.%s' % (tag, name),
+                                                  os.path.join(SRC, source, name + '.py'))
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    cls = module.LimitedCoreXYKinematics if name == 'limited_corexy' else module.LimitedCartKinematics
+    kinematics = cls.__new__(cls)
+    kinematics.__dict__.update(state)
+    return kinematics
+
+
+class KinematicsKl:
+    """Our client's view of a dispatcher: scripts run, gcode_output returns the console."""
+
+    def __init__(self, dispatch):
+        self.dispatch, self.console = dispatch, []
+        dispatch.register_output_handler(self.console.append)
+
+    def gcode(self, script):
+        self.dispatch.run_script(script)
+
+    def gcode_output(self, script):
+        del self.console[:]
+        self.dispatch.run_script(script)
+        return list(self.console)
+
+
+class StrokeMove:
+    """One stress stroke as Kalico's check_move sees it: the limits it sets are kept."""
+
+    def __init__(self, vec, max_velocity, accel, length=50.0):
+        unit = math.hypot(*vec)
+        self.move_d = length
+        self.axes_d = (length * vec[0] / unit, length * vec[1] / unit, 0.0)
+        self.axes_r = (vec[0] / unit, vec[1] / unit, 0.0)
+        self.is_kinematic_move = True
+        self.toolhead = types.SimpleNamespace(get_max_velocity=lambda: (max_velocity, accel))
+        self.limits = None
+
+    def limit_speed(self, speed, accel):
+        self.limits = (speed, accel)
+
+
+LIMITED = [
+    ('limited_corexy', {'max_x_accel': 3000.0, 'max_y_accel': 2000.0, 'max_z_accel': 100.0,
+                        'max_z_velocity': 15.0, 'scale_per_axis': True}),
+    ('limited_cartesian', {'max_velocities': [300.0, 200.0, 15.0],
+                           'max_accels': [3000.0, 2000.0, 100.0], 'xy_hypot_accel': math.hypot(3000, 2000),
+                           'scale_per_axis': True, 'config_max_velocity': 400.0,
+                           'config_max_accel': 5000.0}),
+]
+
+
+@pytest.mark.parametrize('name, state', LIMITED)
+@pytest.mark.parametrize('motor', ['x', 'y'])
+def test_the_strokes_run_past_kalicos_per_axis_limits_and_put_them_back(name, state, motor):
+    # Kalico caps each axis whatever M204 asks: the ladders' rungs above the caps 'held'
+    # without being run. The tool reads the limits, lifts them for the run, puts them back
+    from chopper_autotune.current import axis_limits, belt_cap, lift_axis_limits
+    source = next((s for s in fetched('limited_corexy.py') if s and s.startswith('kalico')), None)
+    require(source)
+    kinematics = limited_kinematics(source, name, **copy.deepcopy(state))
+    _, dispatch, _ = ready_dispatch(load_gcode(source), GCONF_STEALTH)
+    dispatch.register_command('SET_KINEMATICS_LIMIT', kinematics.cmd_SET_KINEMATICS_LIMIT)
+    kl = KinematicsKl(dispatch)
+    vec, max_velocity, accel = stress_vector(name, motor), 400.0, 12000.0
+
+    capped = StrokeMove(vec, max_velocity, accel)
+    kinematics.check_move(capped)
+    assert capped.limits[1] < accel                  # the per-axis cap would cut the rung
+
+    limits = axis_limits(kl, name)
+    restores = []
+    lift_axis_limits(kl, limits, restores)
+    stroke = StrokeMove(vec, max_velocity, accel)
+    kinematics.check_move(stroke)
+    speed, stroke_accel = stroke.limits
+    # the belt runs |vec| times the head speed, up to what belt_cap planned; the rung's accel
+    assert min(speed, max_velocity) * math.hypot(*vec) == pytest.approx(belt_cap(name, vec, max_velocity))
+    assert stroke_accel >= accel
+
+    for restore in restores:
+        restore()
+    assert {key: getattr(kinematics, key) for key in state} == state

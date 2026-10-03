@@ -38,7 +38,7 @@ for file in gcode.py configfile.py printer.py webhooks.py extras/resonance_teste
             extras/force_move.py extras/tmc2240.py toolhead.py extras/gcode_move.py \
             kinematics/extruder.py extras/input_shaper.py extras/gcode_macro.py \
             extras/gcode_shell_command.py extras/respond.py extras/display_status.py \
-            extras/delayed_gcode.py; do
+            extras/delayed_gcode.py kinematics/limited_corexy.py kinematics/limited_cartesian.py; do
     fetch "https://raw.githubusercontent.com/KalicoCrew/kalico/$kalico_main/klippy/$file" \
           "$dest/kalico-$kalico_main/$(basename "$file")"
 done

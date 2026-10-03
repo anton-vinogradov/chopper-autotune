@@ -141,6 +141,9 @@ class Referee:
         return None if offset is None else offset - self.bias
 
 
+AXIS_LIMIT_LIFTED = 1000000
+
+
 def stroke_peak(span: float, vec: 'tuple[float, float]', accel: float) -> float:
     """The belt speed a stress stroke reaches: standstill to standstill over 2*span along
     vec, braking as hard as it accelerates (free_strokes)."""
@@ -153,10 +156,54 @@ def stroke_accel(speed: float, span: float, vec: 'tuple[float, float]') -> int:
     return int(math.ceil(speed ** 2 / (2 * span * math.hypot(*vec) ** 3) / 100.0)) * 100
 
 
-def belt_top(span: float, vec: 'tuple[float, float]', accel: float, max_velocity: float) -> float:
-    """The fastest belt speed a stress stroke runs: its peak, or max_velocity, which caps
-    the head (a belt runs |vec| times the head speed)."""
-    return min(stroke_peak(span, vec, accel), max_velocity * math.hypot(*vec))
+def belt_cap(kinematics: str, vec: 'tuple[float, float]', max_velocity: float) -> float:
+    """The belt speed max_velocity allows a stroke along vec: Klipper caps the head and a
+    belt runs |vec| times the head speed; Kalico's limited_corexy caps the belt itself."""
+    return max_velocity if kinematics == 'limited_corexy' else max_velocity * math.hypot(*vec)
+
+
+def velocity_for(kinematics: str, vec: 'tuple[float, float]', belt_speed: float) -> int:
+    """The max_velocity a stroke along vec needs to reach this belt speed."""
+    return math.ceil(belt_speed if kinematics == 'limited_corexy' else belt_speed / math.hypot(*vec))
+
+
+def belt_top(span: float, vec: 'tuple[float, float]', accel: float, cap: float) -> float:
+    """The fastest belt speed a stress stroke runs: its peak, or the belt_cap."""
+    return min(stroke_peak(span, vec, accel), cap)
+
+
+def axis_limits(kl: Klippy, kinematics: str) -> 'dict | None':
+    """The per-axis limits Kalico's limited_* kinematics hold now, set at runtime or not:
+    SET_KINEMATICS_LIMIT without parameters reports them. None on other kinematics."""
+    if not kinematics.startswith('limited_'):
+        return None
+    report = '\n'.join(kl.gcode_output('SET_KINEMATICS_LIMIT'))
+
+    def values(name):
+        found = re.search(r'max_%s: [(\[]([^)\]]*)' % name, report)
+        return [float(value) for value in found.group(1).split(',')] if found else None
+    accels, velocities = values('accels'), values('velocities')
+    if not accels or (kinematics == 'limited_cartesian') != bool(velocities):
+        raise SystemExit('SET_KINEMATICS_LIMIT did not report the %s limits (%r). Nothing was '
+                         'moved' % (kinematics, report))
+    return {'accels': accels[:2], 'velocities': (velocities or [])[:2],
+            'scale': 'limits scale with' in report}
+
+
+def lift_axis_limits(kl: Klippy, limits: 'dict | None', restores: list):
+    """Kalico's limited_* kinematics cap each axis (max_x_accel, max_y_accel; on
+    limited_cartesian max_x_velocity and max_y_velocity too) whatever M204 asks: a stroke
+    would not reach its rung, and a rung it never ran would 'hold'. Out of the way for
+    the run, the values in force back after, the way back registered first."""
+    if limits is None:
+        return
+    names = [('X_ACCEL', 'Y_ACCEL', limits['accels'])]
+    if limits['velocities']:
+        names.append(('X_VELOCITY', 'Y_VELOCITY', limits['velocities']))
+    restores.append(lambda: kl.gcode('SET_KINEMATICS_LIMIT SCALE=%d %s' % (limits['scale'], ' '.join(
+        '%s=%r %s=%r' % (x, values[0], y, values[1]) for x, y, values in names))))
+    kl.gcode('SET_KINEMATICS_LIMIT SCALE=0 %s' % ' '.join(
+        '%s=%d %s=%d' % (x, AXIS_LIMIT_LIFTED, y, AXIS_LIMIT_LIFTED) for x, y, _ in names))
 
 
 def live_limits(kl: Klippy) -> dict:
@@ -254,24 +301,20 @@ def current_tune(kl: Klippy, args) -> int:
     board = hw[motors[0]]
     configured = {m: float(settings['tmc%s stepper_%s' % (hw[m].driver.name, m)]['run_current'])
                   for m in motors}
-    if board.kinematics.startswith('limited_'):
-        # Kalico caps each belt there (max_x/y_velocity and accel; on limited_corexy
-        # max_velocity caps the belt, not the head): the pattern would not reach its rungs
-        raise SystemExit('%s is not supported by CHOPPER_CURRENT yet: Kalico caps each belt, so '
-                         'the 200 mm/s rung would not be reached. Nothing was moved'
-                         % board.kinematics)
     accel = args.accel or board.max_accel
     span = min(25.0, board.axis_span / 8)
     limits = live_limits(kl)
+    per_axis = axis_limits(kl, board.kinematics)
     for m in motors:
         vec = stress_vector(board.kinematics, m)
         top = BELT_SPEEDS[-1]
-        if limits['max_velocity'] * math.hypot(*vec) < top:
+        cap = belt_cap(board.kinematics, vec, limits['max_velocity'])
+        if cap < top:
             # the action first: the display shows its first characters (failure_display)
             raise SystemExit('raise max_velocity to %d or more: now %g, it caps motor %s at %.0f '
                              'of the %d mm/s the pattern needs. Nothing was moved'
-                             % (math.ceil(top / math.hypot(*vec)), limits['max_velocity'],
-                                motor_label(m), limits['max_velocity'] * math.hypot(*vec), top))
+                             % (velocity_for(board.kinematics, vec, top), limits['max_velocity'],
+                                motor_label(m), cap, top))
         if stroke_peak(span, vec, accel) < top:
             raise SystemExit('raise ACCEL to %d or more: at %.0f a stroke of motor %s peaks at %.0f '
                              'of the %d mm/s the pattern needs. Nothing was moved'
@@ -300,6 +343,7 @@ def current_tune(kl: Klippy, args) -> int:
     try:
         home_xy(kl, 'G28 X Y\nG90')
         free_strokes(kl, settings, limits, restores)
+        lift_axis_limits(kl, per_axis, restores)
         for m in motors:
             label = motor_label(m)
             ref = Referee(kl, referee_axis(board.kinematics, m), settings,

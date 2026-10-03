@@ -496,3 +496,55 @@ def test_the_demo_show_stops_at_the_first_stroke_after_klipper_shut_down(monkeyp
     with pytest.raises(KlipperShutdown):
         demo_mod._sweep(board, {'x': 58, 'y': 34}, 1000, 100.0, SimpleNamespace(repeats=2))
     assert len(strokes) == 1
+
+
+class LimitedKl(StatusKl):
+    """A Kalico printer on limited_corexy: SET_KINEMATICS_LIMIT reports its per-axis caps."""
+
+    def gcode_output(self, script):
+        if script == 'SET_KINEMATICS_LIMIT':
+            return ['// x,y,z max_accels: (3000.0, 2000.0, 100.0)\n'
+                    '// Per axis accelerations limits are independent of current acceleration.']
+        return []
+
+
+def assert_axis_limits_lifted_and_put_back(scripts):
+    lifted = scripts.index('SET_KINEMATICS_LIMIT SCALE=0 X_ACCEL=1000000 Y_ACCEL=1000000')
+    first_stroke = next(i for i, script in enumerate(scripts) if script.count('\nG1 ') == 1)
+    assert lifted < first_stroke < scripts.index(
+        'SET_KINEMATICS_LIMIT SCALE=0 X_ACCEL=3000.0 Y_ACCEL=2000.0')
+
+
+@pytest.mark.parametrize('tool', ['current', 'envelope'])
+def test_kalicos_per_axis_limits_step_aside_for_the_strokes_and_come_back_after_a_stop(
+        monkeypatch, tool):
+    # limited_corexy caps each axis whatever M204 asks: a rung above the caps 'held' unrun
+    import dataclasses
+
+    import chopper_autotune.current as cur
+    import chopper_autotune.envelope as env
+    module = cur if tool == 'current' else env
+    kl = LimitedKl()
+    monkeypatch.setattr(module, 'detect_hardware', lambda kl_, axis, accel=False: dataclasses.replace(
+        hardware(kl_), kinematics='limited_corexy'))
+    monkeypatch.setattr(module, 'Referee', lambda *a: SimpleNamespace(calibrate=lambda: None,
+                                                                        slipped=lambda: 0.0))
+    if tool == 'envelope':
+        monkeypatch.setattr(env, 'enter_spreadcycle', lambda kl_, hw, restores=False: None)
+        monkeypatch.setattr(env, 'exit_spreadcycle', lambda kl_, hw: None)
+    real_gcode = kl.gcode
+    strokes = []
+
+    def gcode(script):
+        real_gcode(script)
+        if script.count('\nG1 ') == 1 and script.startswith('G1 '):
+            strokes.append(script)
+            if len(strokes) == 3:
+                kl.status_map = HOT_X
+    kl.gcode = gcode
+    with pytest.raises(DriverTooHot):
+        if tool == 'current':
+            cur.current_tune(kl, build_parser().parse_args(['current', '--motor', 'a', '--yes']))
+        else:
+            env.envelope(kl, build_parser().parse_args(['envelope', '--motor', 'a', '--yes']))
+    assert_axis_limits_lifted_and_put_back(kl.scripts)

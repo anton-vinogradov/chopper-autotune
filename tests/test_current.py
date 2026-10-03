@@ -259,22 +259,69 @@ def test_a_stop_during_the_first_change_still_puts_it_back():
     assert len(restores) == 1
 
 
-@pytest.mark.parametrize('kinematics', ['limited_corexy', 'limited_cartesian'])
-def test_kalicos_limited_kinematics_are_refused_before_any_motion(monkeypatch, kinematics):
-    # Kalico caps each belt there (max_x/y_velocity and accel): the pattern would not
-    # reach its 200 mm/s, as the envelope already refuses
+KINEMATICS_REPORTS = {
+    # SET_KINEMATICS_LIMIT without parameters, as Kalico's limited_* kinematics answer it
+    'limited_corexy': ['// x,y,z max_accels: (3000.0, 2000.0, 100.0)\n'
+                       '// Per axis accelerations limits scale with current acceleration.\n'
+                       '// Minimum XY acceleration of 1664 mm/s\u00b2 reached on 56\u00b0 diagonals.'],
+    'limited_cartesian': ['// x,y,z max_velocities: [300.0, 200.0, 15.0]\n'
+                          '// x,y,z max_accels: [3000.0, 2000.0, 100.0]\n'
+                          '// Per axis accelerations limits are independent of current acceleration.'],
+}
+
+
+@pytest.mark.parametrize('kinematics, lifted, restored', [
+    ('limited_corexy', 'SET_KINEMATICS_LIMIT SCALE=0 X_ACCEL=1000000 Y_ACCEL=1000000',
+     'SET_KINEMATICS_LIMIT SCALE=1 X_ACCEL=3000.0 Y_ACCEL=2000.0'),
+    ('limited_cartesian', 'SET_KINEMATICS_LIMIT SCALE=0 X_ACCEL=1000000 Y_ACCEL=1000000 '
+                          'X_VELOCITY=1000000 Y_VELOCITY=1000000',
+     'SET_KINEMATICS_LIMIT SCALE=0 X_ACCEL=3000.0 Y_ACCEL=2000.0 X_VELOCITY=300.0 Y_VELOCITY=200.0'),
+])
+def test_kalicos_per_axis_limits_are_lifted_for_the_run_and_put_back(kinematics, lifted, restored):
+    from types import SimpleNamespace
+
+    from chopper_autotune.current import axis_limits, lift_axis_limits
+    scripts = []
+    kl = SimpleNamespace(gcode=scripts.append,
+                         gcode_output=lambda script: KINEMATICS_REPORTS[kinematics])
+    restores = []
+    lift_axis_limits(kl, axis_limits(kl, kinematics), restores)
+    assert scripts == [lifted]
+    restores[0]()
+    assert scripts == [lifted, restored]
+    assert axis_limits(kl, 'corexy') is None
+    with pytest.raises(SystemExit, match='did not report the limited_corexy limits'):
+        axis_limits(SimpleNamespace(gcode_output=lambda script: ['// Unknown command']),
+                    'limited_corexy')
+
+
+@pytest.mark.parametrize('kinematics, max_velocity, refusal', [
+    # limited_corexy caps the belt itself: 180 lets no belt reach 200
+    ('limited_corexy', 180.0, 'raise max_velocity to 200 or more: now 180, it caps motor A at 180'),
+    # Klipper caps the head: on corexy 180 lets a belt reach 254
+    ('corexy', 180.0, None),
+    ('limited_corexy', 200.0, None),
+])
+def test_a_limited_corexy_belt_is_capped_by_max_velocity_itself(monkeypatch, kinematics,
+                                                               max_velocity, refusal):
     from types import SimpleNamespace
 
     import chopper_autotune.current as cur
     from chopper_autotune.cli import build_parser
-    hw = SimpleNamespace(kinematics=kinematics, axis_span=300.0, max_accel=3000.0,
+    hw = SimpleNamespace(kinematics=kinematics, axis_span=300.0, max_accel=10000.0,
                          driver=SimpleNamespace(name='2209'))
     monkeypatch.setattr(cur, 'detect_hardware', lambda kl, axis, accel=False: hw)
     scripts = []
-    kl = SimpleNamespace(gcode=scripts.append, request=status(), settings=lambda: {
-        'tmc2209 stepper_x': {'run_current': 0.8}, 'stepper_x': {}})
-    with pytest.raises(SystemExit, match='%s is not supported by CHOPPER_CURRENT' % kinematics):
-        cur.current_tune(kl, build_parser().parse_args(['current', '--motor', 'a', '--yes']))
+    kl = SimpleNamespace(gcode=scripts.append, request=status(max_velocity),
+                         gcode_output=lambda script: KINEMATICS_REPORTS['limited_corexy'],
+                         settings=lambda: {'tmc2209 stepper_x': {'run_current': 0.8}, 'stepper_x': {}})
+    args = build_parser().parse_args(['current', '--motor', 'a', '--yes', '--dry-run'])
+    if refusal:
+        with pytest.raises(SystemExit) as refused:
+            cur.current_tune(kl, args)
+        assert str(refused.value.code).startswith(refusal)
+    else:
+        assert cur.current_tune(kl, args) == 0
     assert scripts == []
 
 
