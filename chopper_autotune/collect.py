@@ -1737,10 +1737,12 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
     if done:
         print('Resuming %s: %d measurements already present' % (root, len(done)))
 
-    motion.prepare()
-    started = time.time()
+    # Screen asks Klipper first: a Stop there must not land between a rail's prepare and
+    # the way back
     screen = Screen(kl, hw.display, popup)
+    motion.prepare()
     try:
+        started = time.time()
         # the noise floor: one motor's are off, a rail's hold (motion.standstill)
         measure_baseline(hw, ds, args, done, *motion.standstill)
         for drive in hw.rail:

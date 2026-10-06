@@ -143,6 +143,25 @@ def test_a_rail_run_moves_the_rail_by_g1_with_every_driver_on_the_same_registers
 
 
 @pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('run', RUNS)
+def test_a_stop_as_the_run_starts_leaves_the_toolhead_as_a_print_left_it(source, run, tmp_path,
+                                                                        monkeypatch):
+    # SIGTERM's exit (CHOPPER_STOP) landing on the run's first status read, the display's
+    require(source)
+    front = klipper_front.Front(source, awd_cfg('meijjaa'))
+    front.run(AT_RUNTIME)
+    limits = limits_in_force(front)
+
+    def stopped(kl):
+        raise SystemExit(143)
+    monkeypatch.setattr(collect, 'accepted_commands', stopped)
+    tool, argv = RUNS[run]
+    with pytest.raises(SystemExit):
+        run_tool(front, tool, argv + ['--axis', 'x', '--dataset', str(tmp_path / 'dataset')])
+    assert limits_in_force(front) == limits
+
+
+@pytest.mark.parametrize('source', SOURCES)
 @pytest.mark.parametrize('printer', AWD)
 @pytest.mark.parametrize('run', list(RUNS) + ['tune'])
 def test_a_dry_run_says_how_the_rail_moves_and_sends_no_gcode(source, printer, run, capsys,
