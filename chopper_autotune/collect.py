@@ -12,7 +12,7 @@ import re
 import sys
 import tempfile
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -76,10 +76,17 @@ class Hardware:
     autotune: 'str | None' = None                  # the klipper_tmc_autotune goal, if any
     settled: bool = False                          # mode and registers to put back are known
     measure_chip: str = ''                         # CHIP= of ACCELEROMETER_MEASURE (--csv)
+    twins: 'list[Hardware]' = field(default_factory=list)     # the rail's other drivers (rail_of)
 
     @property
     def motor(self) -> str:
         return motor_label(self.stepper.rsplit('_', 1)[-1])
+
+    @property
+    def rail(self) -> 'list[Hardware]':
+        """The drivers of this motor's rail, which Klipper steps together: its own, then the
+        twins rail_of found."""
+        return [self, *self.twins]
 
 
 ACCEL_SECTIONS = ('adxl345', 'lis2dw', 'lis3dh', 'mpu9250', 'icm20948', 'bmi160')
@@ -633,20 +640,32 @@ def driver_of(settings: dict, stepper: str) -> 'str | None':
     return next((name for name in tmc.DRIVERS if 'tmc%s %s' % (name, stepper) in settings), None)
 
 
-def detect_hardware(kl: Klippy, axis: str, accel: bool = True) -> Hardware:
-    require_current_klipper(kl)                     # every tool that moves starts here
-    settings = kl.settings()
-    stepper = 'stepper_' + axis
+def driver_config(settings: dict, stepper: str) -> dict:
+    """One driver as the config sets it up, as Hardware fields: its supported TMC model,
+    the chopper registers of its driver_* lines, the stealthChop the config asks for, the
+    klipper_tmc_autotune goal."""
     name = driver_of(settings, stepper)
     if name is None:
         raise SystemExit('no supported TMC driver section found for %s' % stepper)
     driver, section = tmc.DRIVERS[name], settings['tmc%s %s' % (name, stepper)]
 
     baseline = {}
-    for field in ('tbl', 'toff', 'hstrt', 'hend') + (('tpfd',) if driver.has_tpfd else ()):
-        value = section.get('driver_' + field)
+    for register in ('tbl', 'toff', 'hstrt', 'hend') + (('tpfd',) if driver.has_tpfd else ()):
+        value = section.get('driver_' + register)
         if value is not None:
-            baseline[field] = int(value)
+            baseline[register] = int(value)
+
+    stealth = None
+    if driver.spreadcycle_switch and float(section.get('stealthchop_threshold') or 0) > 0:
+        stealth = driver.spreadcycle_switch
+    return {'stepper': stepper, 'driver': driver, 'baseline': baseline, 'stealth': stealth,
+            'autotune': autotune_goal(settings, stepper)}
+
+
+def detect_hardware(kl: Klippy, axis: str, accel: bool = True) -> Hardware:
+    require_current_klipper(kl)                     # every tool that moves starts here
+    settings = kl.settings()
+    own = driver_config(settings, 'stepper_' + axis)
 
     spans, centers = {}, {}
     for ax in ('x', 'y'):
@@ -659,29 +678,37 @@ def detect_hardware(kl: Klippy, axis: str, accel: bool = True) -> Hardware:
     kinematics = settings['printer']['kinematics']
     span = min(spans.values()) if 'core' in kinematics or 'hbot' in kinematics else spans[axis]
 
-    stealth = None
-    if driver.spreadcycle_switch and float(section.get('stealthchop_threshold') or 0) > 0:
-        stealth = driver.spreadcycle_switch
-
     # the endstop-referee tools never stream: no demanding a chip they won't use
     chip = resolve_accel_chip(settings, axis, lambda: kl.config_sections()) if accel else ''
     return Hardware(
         kl=kl,
-        stepper=stepper,
-        driver=driver,
         accel_chip=chip,
         kinematics=kinematics,
         axis_span=span,
         center=(centers['x'], centers['y']),
         max_accel=float(settings['printer']['max_accel']),
-        baseline=baseline,
-        stealth=stealth,
         # display_status is usually an implicit runtime object (auto-loaded on
         # Mainsail/Fluidd setups), not a config section — check the live objects
         display='display_status' in kl.object_list(),
-        autotune=autotune_goal(settings, stepper),
         measure_chip=accel_command_chip(settings, chip) if chip else '',
+        **own,
     )
+
+
+def rail_of(hw: Hardware) -> Hardware:
+    """hw with the other drivers of its rail (rail_twins) in hw.twins, each set up from
+    its own section as detect_hardware sets up the motor's. Asked for by the runs that
+    write the rail's registers; the other tools keep driving stepper_x/stepper_y alone."""
+    settings = hw.kl.settings()
+    hw.twins = [replace(hw, twins=[], **driver_config(settings, twin))
+                for twin in rail_twins(settings, hw.stepper.rsplit('_', 1)[-1])]
+    return hw
+
+
+def set_rail_fields(kl: Klippy, hw: Hardware, fields: dict):
+    """The same registers into every driver of the rail, in one script: SET_TMC_FIELD
+    writes at the toolhead's last move time, so all of them switch at one instant."""
+    kl.gcode('\n'.join(tmc.set_fields_script(drive.stepper, fields) for drive in hw.rail))
 
 
 def build_plan(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range, hend: Range,
@@ -1134,18 +1161,18 @@ def refuse_after_shutdown(error: Exception):
 
 
 def measure_move(hw: Hardware, ds: Dataset, args, record: dict, speed: float, cruise: float,
-                 travel: float, direction: int, accel: float, before_move) -> dict:
-    """One FORCE_MOVE with capture and scoring; cruise is the steady-window duration.
+                 travel: float, direction: int, accel: float, motion: 'ForceMove') -> dict:
+    """One move of the run's motion with capture and scoring; cruise is the steady-window
+    duration.
 
-    before_move is consulted per attempt: a retry re-runs the physical move, so drift
+    motion is called before each attempt: a retry re-runs the physical move, so drift
     accounting must see it too.
     """
-    move = 'FORCE_MOVE STEPPER=%s DISTANCE=%.3f VELOCITY=%.1f ACCEL=%.0f' \
-           % (hw.stepper, travel * direction, speed, accel)
     duration = travel / speed + speed / accel
     for attempt in (1, 2):
         try:
-            before_move(direction, travel)
+            motion(direction, travel)
+            move = motion.script(travel * direction, speed, accel)
             if args.csv:
                 data = capture_csv(hw, record['id'], move, duration)
                 record['score'] = vibration_score(data, args.trim)
@@ -1179,12 +1206,12 @@ def measure_move(hw: Hardware, ds: Dataset, args, record: dict, speed: float, cr
 
 def run_measurement(hw: Hardware, ds: Dataset, args, combo: tmc.Chopper, speed: int,
                     iteration: int, direction: int, travel: float, accel: float,
-                    before_move) -> dict:
+                    motion: 'ForceMove') -> dict:
     record = {'id': measurement_id(combo, speed, iteration, direction), 'kind': 'move',
               'source': args.source, **combo.fields(), 'speed': speed,
               'direction': direction, 'iteration': iteration, 'ts': now()}
     return measure_move(hw, ds, args, record, speed, args.measure_time, travel, direction, accel,
-                        before_move)
+                        motion)
 
 
 def make_parker(kl: Klippy, hw: Hardware, guard: 'ThermalGuard | None' = None):
@@ -1208,12 +1235,55 @@ def make_parker(kl: Klippy, hw: Hardware, guard: 'ThermalGuard | None' = None):
     return before_move
 
 
+class ForceMove:
+    """How a run moves the motor it measures, the one way so far: a FORCE_MOVE of its
+    stepper alone, out from the center of the bed and back. Klipper keeps no position for
+    it: the gantry and head motors go off before the first move, and make_parker re-homes
+    before the drift could reach a rail. The run takes from here the G-code of each move,
+    the travel a move may take, the default accel, the preparation and the way back, and
+    calls it before each attempt of a move."""
+
+    def __init__(self, kl: Klippy, hw: Hardware):
+        self.kl = kl
+        self.hw = hw
+        self.limit = hw.axis_span * MOVE_MARGIN
+        self.default_accel = hw.max_accel / 10
+        self.guard = None
+        self.parker = None
+
+    def script(self, distance: float, speed: float, accel: float) -> str:
+        return ('FORCE_MOVE STEPPER=%s DISTANCE=%.3f VELOCITY=%.1f ACCEL=%.0f'
+                % (self.hw.stepper, distance, speed, accel))
+
+    def prepare(self):
+        """Home XY, park at the center and switch the gantry and head motors off, for the
+        noise floor and the first move; a driver still hot from an earlier stop ends the
+        run first."""
+        print('Preparing: home XY, park at center, switch the gantry and head motors off')
+        self.guard = ThermalGuard(self.kl, self.kl.settings())
+        refuse_blind_z_hop(self.kl, self.kl.settings())     # before any motion or motor enable
+        self.guard.preflight()
+        park(self.kl, self.hw)
+        self.parker = make_parker(self.kl, self.hw, self.guard)
+
+    def __call__(self, direction: int, travel: float):
+        self.parker(direction, travel)
+
+    def restore(self, *after):
+        """Every step of the way back gets its chance (run_restore): each driver of the
+        rail its own registers, then its own mode, then the closing re-home; `after` last."""
+        kl, rail = self.kl, self.hw.rail
+        run_restore(*[lambda drive=drive: restore_chopper(kl, drive) for drive in rail],
+                    *[lambda drive=drive: exit_spreadcycle(kl, drive) for drive in rail],
+                    lambda: rehome_unless_hot(kl), *after)
+
+
 def measure_combo(hw: Hardware, ds: Dataset, args, combo: tmc.Chopper, speeds: 'list[int]',
                   iterations: int, first_iteration: int, travel: float, accel: float,
-                  done: set, before_move) -> 'tuple[int, int, list[float], int]':
+                  done: set, motion: ForceMove) -> 'tuple[int, int, list[float], int]':
     """The one measurement loop shared by grid, descent and validation: applies the
     registers, measures every missing (speed, iteration, direction) and reports counts."""
-    hw.kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
+    set_rail_fields(hw.kl, hw, combo.fields())
     ok = failed = clicks = 0
     magnitudes = []
     for speed in speeds:
@@ -1222,7 +1292,7 @@ def measure_combo(hw: Hardware, ds: Dataset, args, combo: tmc.Chopper, speeds: '
                 if measurement_id(combo, speed, iteration, direction) in done:
                     continue
                 record = run_measurement(hw, ds, args, combo, speed, iteration, direction,
-                                         travel, accel, before_move)
+                                         travel, accel, motion)
                 if record['status'] == 'ok':
                     ok += 1
                     magnitudes.append(record['score']['median_magnitude'])
@@ -1291,7 +1361,7 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
 
 
 def run_grid(kl: Klippy, hw: Hardware, ds: Dataset, args, plan, travel: float, accel: float,
-             done: set, before_move, screen: Screen) -> 'tuple[int, int]':
+             done: set, motion: ForceMove, screen: Screen) -> 'tuple[int, int]':
     ok = failed = 0
     started = time.monotonic()
     for index, (combo, speed) in enumerate(plan, 1):
@@ -1299,7 +1369,7 @@ def run_grid(kl: Klippy, hw: Hardware, ds: Dataset, args, plan, travel: float, a
                for i in range(args.iterations) for d in (1, -1)):
             continue
         combo_ok, combo_failed, magnitudes, clicks = measure_combo(
-            hw, ds, args, combo, [speed], args.iterations, 0, travel, accel, done, before_move)
+            hw, ds, args, combo, [speed], args.iterations, 0, travel, accel, done, motion)
         ok += combo_ok
         failed += combo_failed
         if magnitudes:
@@ -1323,7 +1393,7 @@ def run_grid(kl: Klippy, hw: Hardware, ds: Dataset, args, plan, travel: float, a
 
 
 def validate_top(kl: Klippy, hw: Hardware, ds: Dataset, args, speeds: 'list[int]', travel: float,
-                 accel: float, done: set, before_move, screen: Screen) -> 'tuple[int, int]':
+                 accel: float, done: set, motion: ForceMove, screen: Screen) -> 'tuple[int, int]':
     """Re-measure the top candidates until they hold their place.
 
     Validating the top-N once and re-ranking the whole grid just floats a fresh
@@ -1346,7 +1416,7 @@ def validate_top(kl: Klippy, hw: Hardware, ds: Dataset, args, speeds: 'list[int]
         for combo in pending:
             combo_ok, combo_failed, _, _ = measure_combo(
                 hw, ds, args, combo, speeds, VALIDATE_EXTRA_ITERATIONS, args.iterations,
-                travel, accel, done, before_move)
+                travel, accel, done, motion)
             ok += combo_ok
             failed += combo_failed
             validated.add(combo)
@@ -1357,7 +1427,7 @@ def validate_top(kl: Klippy, hw: Hardware, ds: Dataset, args, speeds: 'list[int]
 
 def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None',
                 speeds: 'list[int]', travel: float, accel: float, done: set,
-                before_move, screen: Screen) -> 'tuple[int, int]':
+                motion: ForceMove, screen: Screen) -> 'tuple[int, int]':
     from .search import (dataset_history, dataset_transients, descent_budget,
                          multi_start_descent, penalized_score, seed_start)
 
@@ -1379,7 +1449,7 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
     def measure_candidate(combo: tmc.Chopper, iterations: int, first_iteration: int = 0):
         combo_ok, combo_failed, magnitudes, combo_clicks = measure_combo(
             hw, ds, args, combo, speeds, iterations, first_iteration, travel, accel,
-            done, before_move)
+            done, motion)
         stats['ok'] += combo_ok
         stats['failed'] += combo_failed
         history[combo].extend(magnitudes)
@@ -1471,7 +1541,8 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
         args.trim = 0.25 if args.csv else 0.1
 
     refuse_multi_motor(kl.settings(), args.axis)
-    hw = detect_hardware(kl, args.axis)
+    hw = rail_of(detect_hardware(kl, args.axis))
+    motion = ForceMove(kl, hw)
     print('Driver tmc%s on %s (motor %s), accelerometer %s, kinematics %s, baseline %s'
           % (hw.driver.name, hw.stepper, hw.motor, hw.accel_chip, hw.kinematics, hw.baseline))
 
@@ -1487,8 +1558,8 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
     speeds = list(args.speed.values())
     if min(speeds) <= 0:
         raise SystemExit('SPEED must be positive, got %s' % min(speeds))
-    accel = args.accel or hw.max_accel / 10
-    limit = hw.axis_span * MOVE_MARGIN
+    accel = args.accel or motion.default_accel
+    limit = motion.limit
     fitted = fit_measure_time(speeds, accel, limit, args.measure_time)
     if fitted < args.measure_time:
         print('Cruise %.2fs does not fit the axis at %d mm/s: shrinking to %.2fs '
@@ -1545,7 +1616,7 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
         'kinematics': hw.kinematics,
         'baseline_registers': hw.baseline,
         'autotune': autotune_tag(hw.driver.name, hw.autotune),
-        'forced_spreadcycle': bool(hw.stealth),
+        'forced_spreadcycle': any(drive.stealth for drive in hw.rail),
         **hearing.manifest_fields(),
         'ranges': {'tbl': [args.tbl.lo, args.tbl.hi], 'toff': [args.toff.lo, args.toff.hi],
                    'hstrt': [args.hstrt.lo, args.hstrt.hi], 'hend': [args.hend.lo, args.hend.hi],
@@ -1573,35 +1644,27 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
     if done:
         print('Resuming %s: %d measurements already present' % (root, len(done)))
 
-    print('Preparing: home XY, park at center, switch the gantry and head motors off')
-    guard = ThermalGuard(kl, kl.settings())
-    refuse_blind_z_hop(kl, kl.settings())       # before any motion or motor enable
-    guard.preflight()                           # before the first move: not on a hot driver
-    park(kl, hw)
+    motion.prepare()
     started = time.time()
-    before_move = make_parker(kl, hw, guard)
     screen = Screen(kl, hw.display, popup)
     try:
         measure_baseline(hw, ds, args, done)       # the noise floor: motors still off
-        enter_spreadcycle(kl, hw)
-        ds.update_manifest(forced_spreadcycle=bool(hw.stealth))
+        for drive in hw.rail:
+            enter_spreadcycle(kl, drive)
+        ds.update_manifest(forced_spreadcycle=any(drive.stealth for drive in hw.rail))
         if args.search == 'descent':
             ok, failed = run_descent(kl, hw, ds, args, tpfd, speeds, travel, accel, done,
-                                     before_move, screen)
+                                     motion, screen)
         else:
-            ok, failed = run_grid(kl, hw, ds, args, plan, travel, accel, done, before_move, screen)
+            ok, failed = run_grid(kl, hw, ds, args, plan, travel, accel, done, motion, screen)
             if args.validate:
                 extra_ok, extra_failed = validate_top(kl, hw, ds, args, speeds, travel, accel,
-                                                      done, before_move, screen)
+                                                      done, motion, screen)
                 ok += extra_ok
                 failed += extra_failed
     finally:
         print('Restoring baseline registers, homing')
-        run_restore(
-            lambda: restore_chopper(kl, hw),
-            lambda: exit_spreadcycle(kl, hw),
-            lambda: rehome_unless_hot(kl),
-            ds.flush_raw)
+        motion.restore(ds.flush_raw)
 
     print('Done in %dm: %d ok, %d failed -> %s' % ((time.time() - started) // 60, ok, failed, root))
     print('Next: chopper-autotune analyze %s' % root)

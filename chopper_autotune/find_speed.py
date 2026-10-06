@@ -7,12 +7,11 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-from . import __version__, tmc
-from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen, ThermalGuard,
-                      default_dataset_root, detect_hardware, enter_spreadcycle, exit_spreadcycle,
-                      make_parker, measure_baseline, measure_move, now, park, refuse_blind_z_hop,
-                      refuse_if_printing, refuse_multi_motor, rehome_unless_hot, restore_chopper,
-                      run_restore, travel_for)
+from . import __version__
+from .collect import (OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, ForceMove, Screen,
+                      default_dataset_root, detect_hardware, enter_spreadcycle, measure_baseline,
+                      measure_move, now, rail_of, refuse_if_printing, refuse_multi_motor,
+                      set_rail_fields, travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, find_socket
 
@@ -145,7 +144,7 @@ def refuse_a_failed_scan(ds: Dataset, motor: str, planned: 'set[str]'):
 
 
 def run_sweep(hw, ds: Dataset, args, plan: 'list[tuple[int, float]]', accel: float,
-              screen: Screen, before_move, done: set) -> int:
+              screen: Screen, motion: ForceMove, done: set) -> int:
     """Measure vibration at every planned speed, both directions, into ds; return the failed
     count. Whatever chopper registers the caller left in effect are what gets measured."""
     failed = 0
@@ -161,7 +160,7 @@ def run_sweep(hw, ds: Dataset, args, plan: 'list[tuple[int, float]]', accel: flo
                           'cruise': round(cruise, 3), 'direction': direction,
                           'iteration': iteration, 'ts': now()}
                 measure_move(hw, ds, args, record, speed, cruise, travel, direction, accel,
-                             before_move)
+                             motion)
                 if record['status'] == 'ok':
                     magnitudes.append(record['score']['median_magnitude'])
                 else:
@@ -210,12 +209,13 @@ def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None]':
         args.trim = 0.25 if args.csv else 0.1
 
     refuse_multi_motor(kl.settings(), args.axis)
-    hw = detect_hardware(kl, args.axis)
+    hw = rail_of(detect_hardware(kl, args.axis))
+    motion = ForceMove(kl, hw)
     print('Driver tmc%s on %s (motor %s), accelerometer %s, kinematics %s, registers %s'
           % (hw.driver.name, hw.stepper, hw.motor, hw.accel_chip, hw.kinematics, hw.baseline))
 
-    accel = args.accel or hw.max_accel / 10
-    limit = hw.axis_span * MOVE_MARGIN
+    accel = args.accel or motion.default_accel
+    limit = motion.limit
     plan = build_speed_plan(args, accel, limit)
 
     n_moves = len(plan) * args.iterations * 2
@@ -259,24 +259,20 @@ def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None]':
     if done:
         print('Resuming %s: %d measurements already present' % (root, len(done)))
 
-    print('Preparing: home XY, park at center, switch the gantry and head motors off')
-    guard = ThermalGuard(kl, kl.settings())
-    refuse_blind_z_hop(kl, kl.settings())
-    guard.preflight()
-    park(kl, hw)
+    motion.prepare()
     started = time.time()
     screen = Screen(kl, hw.display, popup)
-    before_move = make_parker(kl, hw, guard)
     planned = planned_ids(plan, args.iterations)
     try:
         measure_baseline(hw, ds, args, done)       # the noise floor: motors still off
-        enter_spreadcycle(kl, hw)
+        for drive in hw.rail:
+            enter_spreadcycle(kl, drive)
         # scan with the stock chopper: a well-tuned config suppresses the very resonance
         # peaks the scan is looking for (measured: 897 vs 2676 at the same speed)
-        kl.gcode(tmc.set_fields_script(hw.stepper, hw.driver.default.fields()))
+        set_rail_fields(kl, hw, hw.driver.default.fields())
         print('Scanning with Klipper default registers %s — the current tuning would mask the peaks'
               % hw.driver.default.label())
-        failed = run_sweep(hw, ds, args, plan, accel, screen, before_move, done)
+        failed = run_sweep(hw, ds, args, plan, accel, screen, motion, done)
         curve = build_curve(ds)
         peaks = find_peaks(smooth([magnitude for _, magnitude in curve])) if curve else []
         # a curve still rising at the range edge means the peak is clipped, not absent
@@ -292,16 +288,12 @@ def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None]':
             args.min_speed, args.max_speed = args.max_speed + args.step, new_max
             extension = build_speed_plan(args, accel, limit)
             planned |= planned_ids(extension, args.iterations)
-            failed += run_sweep(hw, ds, args, extension, accel, screen, before_move, done)
+            failed += run_sweep(hw, ds, args, extension, accel, screen, motion, done)
             curve = build_curve(ds)
             peaks = find_peaks(smooth([magnitude for _, magnitude in curve]))
     finally:
         print('Restoring registers, homing')
-        run_restore(
-            lambda: restore_chopper(kl, hw),
-            lambda: exit_spreadcycle(kl, hw),
-            lambda: rehome_unless_hot(kl),
-            ds.flush_raw)
+        motion.restore(ds.flush_raw)
 
     refuse_a_failed_scan(ds, hw.motor, planned)
     if not curve:

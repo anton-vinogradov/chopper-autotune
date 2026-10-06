@@ -48,6 +48,32 @@ def test_rail_twins_follows_klippers_rule():
     assert rail_twins(settings, 'y') == []
 
 
+RAIL = {'printer': {'kinematics': 'cartesian', 'max_accel': 500},
+        'stepper_x': {'position_min': 0, 'position_max': 300}, 'stepper_x1': {},
+        'stepper_y': {'position_min': 0, 'position_max': 210},
+        'tmc5160 stepper_x': {'driver_toff': 3, 'driver_hend': 2},
+        'tmc5160 stepper_x1': {'driver_toff': 5, 'stealthchop_threshold': 999999},
+        'resonance_tester': {'accel_chip': 'adxl345'}}
+
+
+def test_only_the_rail_query_brings_in_the_twins():
+    # the tools that drive stepper_x alone (MAP, DEMO, ENVELOPE, CURRENT, BELTS, EXTRUDER)
+    # get no twin; a run asking for the rail reads each twin from its own section, no G-code
+    from chopper_autotune.collect import detect_hardware, rail_of
+    kl = RecordingKl(RAIL)
+    hw = detect_hardware(kl, 'x')
+    assert hw.twins == [] and hw.rail == [hw]
+    assert rail_of(hw) is hw
+    assert [(drive.stepper, drive.driver.name, drive.baseline, bool(drive.stealth))
+            for drive in hw.rail] == [('stepper_x', '5160', {'toff': 3, 'hend': 2}, False),
+                                      ('stepper_x1', '5160', {'toff': 5}, True)]
+    assert kl.scripts == []
+    without = dict(RAIL)
+    del without['tmc5160 stepper_x1']
+    with pytest.raises(SystemExit, match='no supported TMC driver section found for stepper_x1'):
+        rail_of(detect_hardware(RecordingKl(without), 'x'))
+
+
 def test_two_wheel_drive_passes_and_awd_is_refused():
     refuse_multi_motor({'stepper_x': {}, 'stepper_y': {}, 'stepper_z': {}, 'stepper_z1': {}})
     with pytest.raises(SystemExit, match='stepper_x1, stepper_y1: several motors drive one axis'):

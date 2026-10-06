@@ -12,7 +12,7 @@ import pytest
 
 import fake_klipper
 import klipper_front
-from chopper_autotune import collect, current, tmc
+from chopper_autotune import collect, current, find_speed, tmc
 from chopper_autotune.cli import build_parser
 from chopper_autotune.metrics import vibration_score
 
@@ -546,6 +546,57 @@ def test_a_g1_stroke_streams_the_vibration_of_every_driver_on_its_rail(source, p
     stroke = front.head_moves[-1]
     assert (stroke['belts']['x'], stroke['belts']['y']) == pytest.approx((60, 0), abs=1e-3)
     assert stroke['chips']['tmc%s stepper_x1' % AWD[printer]['driver']]['toff'] == loud.toff
+
+
+RAIL_RUNS = {
+    'collect': (collect.collect, ['collect', '--axis', 'x', '--speed', '60', '--tbl', '1:1',
+                                  '--toff', '3:4', '--hstrt', '4:4', '--hend', '3:3',
+                                  '--iterations', '1', '--yes', '--no-raw']),
+    'find-speed': (find_speed.scan, ['find-speed', '--axis', 'x', '--min-speed', '50',
+                                     '--max-speed', '70', '--step', '10', '--yes', '--no-raw']),
+}
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('printer', AWD)
+@pytest.mark.parametrize('run', RAIL_RUNS)
+def test_a_run_writes_every_driver_of_the_rail_and_puts_each_back(source, printer, run, tmp_path,
+                                                                    monkeypatch):
+    # the rail's registers, spreadCycle and the way back reach the twin too, and each driver
+    # gets back its own registers and mode, the twin's other than its main motor's here. The
+    # refusal of #129 lifted for that alone: FORCE_MOVE still drives stepper_x by itself
+    require(source)
+    for module in (collect, find_speed):
+        monkeypatch.setattr(module, 'refuse_multi_motor', lambda settings, axes='xy': None)
+    driver = AWD[printer]['driver']
+    cfg = awd_cfg(printer)
+    for name, base in (('stepper_x', 'driver_TOFF: 3\ndriver_HEND: 2\n'),
+                       ('stepper_x1', 'driver_TOFF: 5\ndriver_HEND: 6\n')):
+        section = '[tmc%s %s]\n' % (driver, name)
+        cfg = cfg.replace(section, section + 'stealthchop_threshold: 999999\n' + base)
+    front = klipper_front.Front(source, cfg)
+    configured = {section: chip.chopper() for section, chip in front.chips.items()}
+    tool, argv = RAIL_RUNS[run]
+    assert run_tool(front, tool, argv + ['--dataset', str(tmp_path / 'dataset')])[0] == 0
+    assert_clean(front)
+    rail = ['tmc%s %s' % (driver, name) for name in ('stepper_x', 'stepper_x1')]
+    field, spread, _ = tmc.DRIVERS[driver].spreadcycle_switch
+    moves = front.moves
+    assert moves and {move['stepper'] for move in moves} == {'stepper_x'}
+    for move in moves:
+        held = [move['chips'][section] for section in rail]
+        assert held[0] == held[1] and held[0][field] == spread
+        if run == 'find-speed':
+            assert all(held[0][name] == value
+                       for name, value in tmc.DRIVERS[driver].default.fields().items())
+    if run == 'collect':
+        assert {move['chips'][rail[1]]['toff'] for move in moves} == {3, 4}
+    # each driver woken before the first write to it: an enable re-sends the registers
+    woken = front.scripts.index('SET_STEPPER_ENABLE STEPPER=stepper_x1 ENABLE=1')
+    assert woken < min(index for index, script in enumerate(front.scripts)
+                       if 'SET_TMC_FIELD STEPPER=stepper_x1 ' in script)
+    assert {section: chip.chopper() for section, chip in front.chips.items()} == configured
+    assert front.status({'toolhead': ['homed_axes']})['toolhead']['homed_axes'] == 'xy'
 
 
 @pytest.mark.parametrize('source', SOURCES)
