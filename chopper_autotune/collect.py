@@ -77,6 +77,7 @@ class Hardware:
     settled: bool = False                          # mode and registers to put back are known
     measure_chip: str = ''                         # CHIP= of ACCELEROMETER_MEASURE (--csv)
     twins: 'list[Hardware]' = field(default_factory=list)     # the rail's other drivers (rail_of)
+    candidate: 'dict | None' = None                # the registers set_rail_fields wrote last
 
     @property
     def motor(self) -> str:
@@ -370,18 +371,27 @@ def refuse_corexz(settings: dict):
                          'there, nothing was moved' % kinematics)
 
 
-def refuse_multi_motor(settings: dict, axes: str = 'xy'):
-    """The tools that move or tune one motor act on stepper_x/stepper_y only. With a
-    second motor on the same axis (AWD, a two-motor gantry) the twin first idles on the
-    belt, then, after a re-home, holds against it, and registers, current and saves
-    reach one driver of the pair (#129). Refuse before anything moves, dry run included;
-    only the axes the run drives count (a dual-Y gantry can still tune X)."""
+def refuse_multi_motor(settings: dict, axes: str = 'xy', rails: bool = False):
+    """A second motor on an axis (AWD, a two-motor gantry, #129) makes the axis a rail
+    Klipper steps whole. The runs that tune a rail whole (rails: COLLECT, FIND_SPEED,
+    TUNE) take the rails they support (rail.refuse_unsupported); the tools that drive or
+    tune one motor refuse such an axis, where the twin would idle on the belt, hold
+    against it after a re-home, and miss the registers and the current. Before anything
+    moves, dry run included; only the axes the run drives count (a dual-Y gantry can
+    still tune X)."""
     refuse_corexz(settings)
     twins = [name for axis in axes for name in rail_twins(settings, axis)]
-    if twins:
-        raise SystemExit('%s: several motors drive one axis (AWD or a two-motor gantry); '
-                         'this tool does not support that yet, nothing was moved (see issue #129)'
-                         % ', '.join(twins))
+    if not twins:
+        return
+    if rails:
+        from .rail import refuse_unsupported
+        for axis in axes:
+            if rail_twins(settings, axis):
+                refuse_unsupported(settings, axis)
+        return
+    raise SystemExit('not on two-motor axes yet (#129): %s share%s an axis with stepper_x/stepper_y. '
+                     'CHOPPER_TUNE, CHOPPER_COLLECT and CHOPPER_FIND_SPEED tune such an axis. '
+                     'Nothing was moved' % (', '.join(twins), '' if len(twins) > 1 else 's'))
 
 
 def motors_off_but_z(kl: Klippy, cycle: bool = False) -> str:
@@ -707,8 +717,10 @@ def rail_of(hw: Hardware) -> Hardware:
 
 def set_rail_fields(kl: Klippy, hw: Hardware, fields: dict):
     """The same registers into every driver of the rail, in one script: SET_TMC_FIELD
-    writes at the toolhead's last move time, so all of them switch at one instant."""
+    writes at the toolhead's last move time, so all of them switch at one instant. A
+    rail's re-home puts them back after (rail.RailMove)."""
     kl.gcode('\n'.join(tmc.set_fields_script(drive.stepper, fields) for drive in hw.rail))
+    hw.candidate = dict(fields)
 
 
 def build_plan(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range, hend: Range,
@@ -1133,7 +1145,9 @@ def capture_csv(hw: Hardware, name: str, script: str, min_span_sec: float = 0.0)
     return data
 
 
-def measure_baseline(hw: Hardware, ds: Dataset, args, done: set):
+def measure_baseline(hw: Hardware, ds: Dataset, args, done: set, *check):
+    """The noise floor; check: the guard, when the motors hold under current meanwhile
+    (capture_stream)."""
     if 'baseline' in done:
         return
     record = {'id': 'baseline', 'kind': 'baseline', 'source': args.source, 'ts': now()}
@@ -1141,7 +1155,7 @@ def measure_baseline(hw: Hardware, ds: Dataset, args, done: set):
     if args.csv:
         data = capture_csv(hw, 'baseline', dwell, args.measure_time)
     else:
-        _, data = capture_stream(hw, dwell, args.measure_time)
+        _, data = capture_stream(hw, dwell, args.measure_time, *check)
     record['score'] = vibration_score(data, args.trim if args.csv else 0.0)
     if not args.no_raw:
         record['raw'] = ds.store_raw_samples('baseline', data)
@@ -1166,7 +1180,7 @@ def measure_move(hw: Hardware, ds: Dataset, args, record: dict, speed: float, cr
     duration.
 
     motion is called before each attempt: a retry re-runs the physical move, so drift
-    accounting must see it too.
+    accounting must see it too; it hears of each failed attempt (motion.failed).
     """
     duration = travel / speed + speed / accel
     for attempt in (1, 2):
@@ -1196,6 +1210,7 @@ def measure_move(hw: Hardware, ds: Dataset, args, record: dict, speed: float, cr
             break
         except (KlippyError, TimeoutError, ValueError, OSError) as e:
             refuse_after_shutdown(e)
+            motion.failed(e)
             if attempt == 2:
                 record['status'] = 'failed'
                 record['error'] = str(e)
@@ -1236,12 +1251,16 @@ def make_parker(kl: Klippy, hw: Hardware, guard: 'ThermalGuard | None' = None):
 
 
 class ForceMove:
-    """How a run moves the motor it measures, the one way so far: a FORCE_MOVE of its
-    stepper alone, out from the center of the bed and back. Klipper keeps no position for
-    it: the gantry and head motors go off before the first move, and make_parker re-homes
-    before the drift could reach a rail. The run takes from here the G-code of each move,
-    the travel a move may take, the default accel, the preparation and the way back, and
-    calls it before each attempt of a move."""
+    """How a run moves the motor it measures when it is alone on its axis: a FORCE_MOVE of
+    its stepper alone, out from the center of the bed and back. Klipper keeps no position
+    for it: the gantry and head motors go off before the first move, and make_parker
+    re-homes before the drift could reach a rail. The run takes from here the G-code of
+    each move, the travel a move may take, the accel, the preparation and the way back,
+    and calls it before each attempt of a move. A motor with twins moves as a rail
+    (rail.RailMove), the same way round."""
+
+    standstill = ()                     # no check while the noise floor runs: motors off
+    speed_cap = float('inf')            # FORCE_MOVE knows no max_velocity
 
     def __init__(self, kl: Klippy, hw: Hardware):
         self.kl = kl
@@ -1250,6 +1269,15 @@ class ForceMove:
         self.default_accel = hw.max_accel / 10
         self.guard = None
         self.parker = None
+
+    def accel(self, asked: 'float | None', top: float, cruise: float) -> float:
+        return asked or self.default_accel
+
+    def plan(self, moves: 'list[tuple[float, float]]', extension: 'int | None' = None):
+        """A rail says here what it will do; one motor's plan line is the run's own."""
+
+    def manifest_fields(self) -> dict:
+        return {}
 
     def script(self, distance: float, speed: float, accel: float) -> str:
         return ('FORCE_MOVE STEPPER=%s DISTANCE=%.3f VELOCITY=%.1f ACCEL=%.0f'
@@ -1268,6 +1296,9 @@ class ForceMove:
 
     def __call__(self, direction: int, travel: float):
         self.parker(direction, travel)
+
+    def failed(self, error: Exception):
+        """The retry runs the same move again."""
 
     def restore(self, *after):
         """Every step of the way back gets its chance (run_restore): each driver of the
@@ -1540,9 +1571,10 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
     if args.trim is None:
         args.trim = 0.25 if args.csv else 0.1
 
-    refuse_multi_motor(kl.settings(), args.axis)
+    from .rail import motion_for
+    refuse_multi_motor(kl.settings(), args.axis, rails=True)
     hw = rail_of(detect_hardware(kl, args.axis))
-    motion = ForceMove(kl, hw)
+    motion = motion_for(kl, hw, args)
     print('Driver tmc%s on %s (motor %s), accelerometer %s, kinematics %s, baseline %s'
           % (hw.driver.name, hw.stepper, hw.motor, hw.accel_chip, hw.kinematics, hw.baseline))
 
@@ -1558,7 +1590,7 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
     speeds = list(args.speed.values())
     if min(speeds) <= 0:
         raise SystemExit('SPEED must be positive, got %s' % min(speeds))
-    accel = args.accel or motion.default_accel
+    accel = motion.accel(args.accel, max(speeds), args.measure_time)
     limit = motion.limit
     fitted = fit_measure_time(speeds, accel, limit, args.measure_time)
     if fitted < args.measure_time:
@@ -1567,6 +1599,7 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
               % (args.measure_time, max(speeds), fitted))
         args.measure_time = fitted
     travel = max(travel_for(s, accel, args.measure_time) for s in speeds)
+    motion.plan([(s, travel_for(s, accel, args.measure_time)) for s in speeds])
 
     overhead = OVERHEAD_CSV_SEC if args.csv else OVERHEAD_STREAM_SEC
     per_move = args.measure_time + 2 * max(speeds) / accel + overhead
@@ -1630,6 +1663,7 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
         'travel_distance': round(travel, 3),
         'speeds': speeds,
         'total_moves': n_moves,
+        **motion.manifest_fields(),
     })
     if resuming:
         check_resume(ds.manifest(), speeds, accel, args.measure_time, autotune_tag(hw.driver.name, hw.autotune))
@@ -1648,7 +1682,8 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
     started = time.time()
     screen = Screen(kl, hw.display, popup)
     try:
-        measure_baseline(hw, ds, args, done)       # the noise floor: motors still off
+        # the noise floor: one motor's are off, a rail's hold (motion.standstill)
+        measure_baseline(hw, ds, args, done, *motion.standstill)
         for drive in hw.rail:
             enter_spreadcycle(kl, drive)
         ds.update_manifest(forced_spreadcycle=any(drive.stealth for drive in hw.rail))

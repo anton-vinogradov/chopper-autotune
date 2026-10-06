@@ -10,9 +10,10 @@ only records that it stepped; a toolhead move is recorded as the release queues 
 TMC chip (it keeps what is written and answers a read with it), the kinematics (the homing
 state, the range check, where the head is, the rails a move turns), G28 (each axis lands
 on its endstop), a FORCE_MOVE's motion (recorded; the toolhead dwells as long as it would
-run), a heater reaching its target in a second, and an accelerometer streaming the
-vibration of a modeled printer (shake()). Options no real module here reads land in the
-settings the way Klipper records them, numbers as floats.
+run), a heater reaching its target in a second, [bed_mesh] (its profiles and commands;
+a loaded mesh moves Z under every move), and an accelerometer streaming the vibration of
+a modeled printer (shake()). Options no real module here reads land in the settings the
+way Klipper records them, numbers as floats.
 """
 import ast
 import configparser
@@ -394,6 +395,7 @@ class Kinematics:
     """What a tool meets of the kinematics: the homing state, the range check of
     cartesian.py and corexy.py (an unhomed axis must not move), and the rails a move
     turns (Front.belts())."""
+    supports_dual_carriage = True                   # Kalico's toolhead asks, with [dual_carriage]
 
     def __init__(self, front, toolhead, config):
         self.front = front
@@ -405,6 +407,10 @@ class Kinematics:
                        for axis in 'xyz' if fileconfig.has_section('stepper_' + axis)}
 
     def check_move(self, move):
+        mesh = self.front.printer.lookup_object('bed_mesh', None)
+        if mesh is not None and mesh.loaded and 'z' not in self.homed and any(move.axes_d[:2]):
+            # bed_mesh splits the move and lifts each piece by the mesh: a Z move
+            raise move.move_error('Must home axis first')
         for index, axis in enumerate('xyz'):
             if not move.axes_d[index]:
                 continue
@@ -465,7 +471,7 @@ def release_modules(source: str, front):
              'extras.bus': types.ModuleType(prefix + 'extras.bus'), 'extras.tmc_uart': tmc_uart,
              'extras.bulk_sensor': bulk_sensor}
     for kinematics in ('cartesian', 'corexy', 'hbot', 'corexz', 'limited_corexy',
-                       'limited_cartesian'):
+                       'limited_cartesian', 'hybrid_corexy', 'hybrid_corexz'):
         stubs['kinematics.' + kinematics] = kinematics_stub
     packages = ['extras', 'kinematics']
     if kalico:
@@ -589,6 +595,32 @@ class Printer:
         return self.objects[section]
 
 
+class BedMesh:
+    """[bed_mesh] as the tools meet it (extras/bed_mesh.py; test_klipper_contract.py holds
+    the names to its source): the profiles the config saves ([bed_mesh <name>]), the one
+    loaded, BED_MESH_CLEAR and BED_MESH_PROFILE LOAD=. A loaded mesh moves Z under every
+    X/Y move (Kinematics.check_move)."""
+
+    def __init__(self, front):
+        self.profiles = {section.split(' ', 1)[1]: {} for section in front.fileconfig.sections()
+                         if section.startswith('bed_mesh ')}
+        self.loaded = ''
+        front.gcode.register_command('BED_MESH_CLEAR', self.cmd_BED_MESH_CLEAR)
+        front.gcode.register_command('BED_MESH_PROFILE', self.cmd_BED_MESH_PROFILE)
+
+    def cmd_BED_MESH_CLEAR(self, gcmd):
+        self.loaded = ''
+
+    def cmd_BED_MESH_PROFILE(self, gcmd):
+        name = gcmd.get('LOAD')
+        if name not in self.profiles:
+            raise gcmd.error('bed_mesh: Unknown profile [%s]' % name)
+        self.loaded = name
+
+    def get_status(self, eventtime):
+        return {'profile_name': self.loaded, 'profiles': self.profiles}
+
+
 class Configfile:
     """The configfile status: the config as written, the settings as read."""
 
@@ -612,9 +644,10 @@ class Front:
     """The printer of `source` (a directory in tests/.klipper-src) with `printer_cfg`.
     scripts: every script run; console: every line Klipper printed; moves: each
     FORCE_MOVE and what the chips held while it ran; head_moves: each move the toolhead
-    queued (G0/G1), the same way; chips: the TMC chip of each section; crashes: what
-    failed in this stand-in itself. A section with no module here (an accelerometer,
-    [resonance_tester]) is config only."""
+    queued (G0/G1), the same way; homings: each G28, its axes and what the chips held
+    then; chips: the TMC chip of each section; crashes: what failed in this stand-in
+    itself. A section with no module here (an accelerometer, [resonance_tester]) is
+    config only."""
 
     @staticmethod
     def shake(speed: float, chopper: dict) -> float:
@@ -675,6 +708,7 @@ class Front:
         self.tracking = {}
         self.homing = False
         self.console, self.moves, self.head_moves, self.chips = [], [], [], {}
+        self.homings = []
         self.steppers, self.sensors = {}, []
         self.crashes, self.scripts, self.listeners = [], [], []
         with release_modules(source, self) as import_module:
@@ -702,6 +736,8 @@ class Front:
             printer.objects['force_move'].manual_move = self.manual_move
             self.calc_move_time = import_module('extras.force_move').calc_move_time
             self.gcode.register_command('G28', self.cmd_G28)
+            if self.fileconfig.has_section('bed_mesh'):
+                printer.objects['bed_mesh'] = BedMesh(self)
             for section in self.fileconfig.sections():
                 if section.startswith(STEPPER_SECTIONS):
                     self.add_stepper(section)
@@ -770,8 +806,8 @@ class Front:
     def trapq_append(self, trapq, print_time, accel_t, cruise_t, decel_t, start_x, start_y,
                      start_z, axes_r_x, axes_r_y, axes_r_z, start_v, cruise_v, accel):
         """The toolhead queues a move as the release planned it: its window and cruise,
-        where it starts and ends, the head's speed and accel, each rail's belt speed, and
-        what the chips held while it ran."""
+        where it starts and ends, the head's speed and accel, each rail's belt speed, the
+        toolhead's minimum_cruise_ratio, and what the chips held while it ran."""
         start, direction = (start_x, start_y, start_z), (axes_r_x, axes_r_y, axes_r_z)
         end_v = cruise_v - accel * decel_t
         distance = ((start_v + cruise_v) * accel_t / 2 + cruise_v * cruise_t
@@ -782,6 +818,7 @@ class Front:
             'belts': self.belts([r * cruise_v for r in direction]),
             'window': (print_time, print_time + accel_t + cruise_t + decel_t),
             'cruise': (print_time + accel_t, print_time + accel_t + cruise_t),
+            'cruise_ratio': self.toolhead.get_status(0.)['minimum_cruise_ratio'],
             'chips': {section: chip.chopper() for section, chip in self.chips.items()}})
 
     def manual_move(self, stepper, dist, speed, accel=0.):
@@ -802,6 +839,8 @@ class Front:
         """Homing as the tools meet it: each axis named (all without one) on its
         position_endstop, its steppers stepped, homed."""
         axes = [axis for axis in 'XYZ' if gcmd.get(axis, None) is not None] or list('XYZ')
+        self.homings.append({'axes': ''.join(axes).lower(),
+                             'chips': {section: chip.chopper() for section, chip in self.chips.items()}})
         position = self.toolhead.get_position()
         for axis in axes:
             position['XYZ'.index(axis)] = self.fileconfig.getfloat(

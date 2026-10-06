@@ -7,7 +7,8 @@ from __future__ import annotations
 
 from . import tmc
 from .collect import (Range, Screen, autotune_advice, autotune_goal, collect, driver_of,
-                      motor_label, refuse_autotune_save, refuse_multi_motor, refuse_unhearable)
+                      motor_label, rail_twins, refuse_autotune_save, refuse_multi_motor,
+                      refuse_unhearable)
 from .dataset import Dataset
 from .find_speed import scan
 from .klippy import Klippy, find_socket
@@ -100,7 +101,11 @@ def run_tune(args) -> int:
         carries no 'measured under autotune' tag): pasting or saving would be undone."""
         return autotune_goal(settings, manifest['stepper']) is not None
 
-    refuse_multi_motor(settings, args.axis)
+    refuse_multi_motor(settings, args.axis, rails=True)
+    if any(rail_twins(settings, axis) for axis in axes):
+        # say it now, not after the other motor's tune
+        from .rail import refuse_rail_run
+        refuse_rail_run(kl, args.csv)
     for axis in axes:
         # say it now, not after the speed scan
         name = driver_of(settings, 'stepper_' + axis)

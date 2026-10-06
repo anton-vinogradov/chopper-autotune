@@ -1147,6 +1147,30 @@ def test_freeing_the_strokes_lets_a_g1_stroke_reach_its_speed(source, limit):
     assert all(min(stroke['window']) > 0 for stroke in result['rungs'])
 
 
+@pytest.mark.parametrize('source', fetched('bed_mesh.py'))
+def test_a_rail_run_clears_the_bed_mesh_and_loads_its_profile_back_by_klippers_names(source):
+    # rail.RailMove.clear_mesh, and the stand's BedMesh the rail runs meet (klipper_front.py)
+    require(source)
+    with open(os.path.join(SRC, source, 'bed_mesh.py')) as module:
+        tree = ast.parse(module.read())
+    functions = {node.name: node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
+
+    def strings(node, keys=False):
+        found = set()
+        for child in ast.walk(node):
+            if keys and isinstance(child, ast.Dict):
+                found |= {key.value for key in child.keys if isinstance(key, ast.Constant)}
+            elif not keys and isinstance(child, ast.Call) and getattr(child.func, 'attr', '') \
+                    == 'register_command' and isinstance(child.args[0], ast.Constant):
+                found.add(child.args[0].value)
+        return found
+    assert {'BED_MESH_CLEAR', 'BED_MESH_PROFILE'} <= strings(tree)
+    assert 'LOAD' in strings(functions['cmd_BED_MESH_PROFILE'], keys=True)
+    assert {'profile_name', 'profiles'} <= strings(functions['update_status'], keys=True)
+    # the saved profiles by name, the loaded mesh's name among them
+    assert 'return self.profiles' in ast.unparse(functions['get_profiles'])
+
+
 @pytest.mark.parametrize('source', fetched('input_shaper.py'))
 def test_the_input_shaper_frequencies_come_back_as_klipper_reports_them(source):
     """SET_INPUT_SHAPER without parameters reports each axis; free_strokes reads the
@@ -1514,3 +1538,48 @@ def test_the_strokes_get_what_the_tools_plan_under_kalicos_per_axis_limits(name,
     for restore in restores:
         restore()
     assert {key: getattr(kinematics, key) for key in state} == state
+
+
+class LimitsConfig:
+    """[printer] as Kalico's limited_* read it: every option read lands in the settings,
+    a default too (Klipper's configfile)."""
+
+    def __init__(self, options: dict, dispatch):
+        self.options, self.settings = options, {}
+        self.printer = types.SimpleNamespace(lookup_object=lambda name: dispatch)
+
+    def get_printer(self):
+        return self.printer
+
+    def getfloat(self, option, default=None, **limits):
+        self.settings[option] = float(self.options.get(option, default))
+        return self.settings[option]
+
+    def getboolean(self, option, default=None):
+        self.settings[option] = self.options.get(option, default)
+        return self.settings[option]
+
+
+@pytest.mark.parametrize('name', ['limited_corexy', 'limited_cartesian'])
+@pytest.mark.parametrize('options', [{}, {'max_x_accel': 3000.0, 'max_y_accel': 2000.0,
+                                          'max_x_velocity': 300.0, 'max_y_velocity': 200.0,
+                                          'scale_xy_accel': True}])
+def test_a_rail_dry_run_reads_the_per_axis_limits_the_run_will_get(name, options):
+    # a dry run sends no G-code: what the config sets is what SET_KINEMATICS_LIMIT
+    # reports at the start of the run, until something sets others
+    from chopper_autotune import rail
+    from chopper_autotune.current import axis_limits
+    source = next((s for s in fetched('limited_corexy.py') if s and s.startswith('kalico')), None)
+    require(source)
+    if name == 'limited_corexy':
+        options = {key: value for key, value in options.items() if 'velocity' not in key}
+    kinematics = limited_kinematics(source, name)
+    type(kinematics).__bases__[0].__init__ = lambda self, toolhead, config: setattr(
+        self, 'max_z_accel', 100.0)
+    _, dispatch, _ = ready_dispatch(load_gcode(source), GCONF_STEALTH)
+    config = LimitsConfig(options, dispatch)
+    type(kinematics).__init__(kinematics, types.SimpleNamespace(get_max_velocity=lambda: (400.0, 5000.0)),
+                              config)
+    settings = {'printer': dict(config.settings, kinematics=name, max_velocity=400.0, max_accel=5000.0)}
+    assert rail.config_limits(settings, name) == axis_limits(KinematicsKl(dispatch), name)
+

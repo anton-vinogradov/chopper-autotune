@@ -14,6 +14,7 @@ from .collect import (OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, ForceMove, Screen,
                       set_rail_fields, travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, find_socket
+from .rail import motion_for
 
 MIN_CRUISE_SEC = 0.25
 
@@ -208,15 +209,20 @@ def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None]':
     if args.trim is None:
         args.trim = 0.25 if args.csv else 0.1
 
-    refuse_multi_motor(kl.settings(), args.axis)
+    refuse_multi_motor(kl.settings(), args.axis, rails=True)
     hw = rail_of(detect_hardware(kl, args.axis))
-    motion = ForceMove(kl, hw)
+    motion = motion_for(kl, hw, args)
     print('Driver tmc%s on %s (motor %s), accelerometer %s, kinematics %s, registers %s'
           % (hw.driver.name, hw.stepper, hw.motor, hw.accel_chip, hw.kinematics, hw.baseline))
 
-    accel = args.accel or motion.default_accel
+    accel = motion.accel(args.accel, args.max_speed, args.measure_time)
     limit = motion.limit
     plan = build_speed_plan(args, accel, limit)
+    # how far a curve still rising at the top may extend the scan: as far as the travel
+    # allows, and on a rail no faster than G1 runs (max_velocity cuts a move silently)
+    ceiling = min(fit_max_speed(accel, limit, args.measure_time, args.step), motion.speed_cap)
+    motion.plan([(speed, travel_for(speed, accel, cruise)) for speed, cruise in plan],
+                ceiling if ceiling >= args.max_speed + args.step else None)
 
     n_moves = len(plan) * args.iterations * 2
     overhead = OVERHEAD_CSV_SEC if args.csv else OVERHEAD_STREAM_SEC
@@ -254,6 +260,7 @@ def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None]':
         'trim': args.trim,
         'iterations': args.iterations,
         'speeds': [speed for speed, _ in plan],
+        **motion.manifest_fields(),
     })
     done = ds.done_ids()
     if done:
@@ -264,7 +271,8 @@ def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None]':
     screen = Screen(kl, hw.display, popup)
     planned = planned_ids(plan, args.iterations)
     try:
-        measure_baseline(hw, ds, args, done)       # the noise floor: motors still off
+        # the noise floor: one motor's are off, a rail's hold (motion.standstill)
+        measure_baseline(hw, ds, args, done, *motion.standstill)
         for drive in hw.rail:
             enter_spreadcycle(kl, drive)
         # scan with the stock chopper: a well-tuned config suppresses the very resonance
@@ -278,7 +286,6 @@ def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None]':
         # a curve still rising at the range edge means the peak is clipped, not absent
         # (measured: after a belt re-tension the resonance moved past the default 120) —
         # extend the scan upward as far as the axis allows instead of aborting the tune
-        ceiling = fit_max_speed(accel, limit, args.measure_time, args.step)
         while curve and not peaks and rising_at_edge(curve, args.max_speed, args.step) \
                 and args.max_speed + args.step <= ceiling:
             refuse_a_failed_scan(ds, hw.motor, planned)      # no faster moves on a failing setup
