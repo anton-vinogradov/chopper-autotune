@@ -643,10 +643,10 @@ class Front:
     """The printer of `source` (a directory in tests/.klipper-src) with `printer_cfg`.
     scripts: every script run; console: every line Klipper printed; moves: each
     FORCE_MOVE and what the chips held while it ran; head_moves: each move the toolhead
-    queued (G0/G1), the same way; homings: each G28, its axes and what the chips held
-    then; chips: the TMC chip of each section; crashes: what failed in this stand-in
-    itself. A section with no module here (an accelerometer, [resonance_tester]) is
-    config only."""
+    queued (G0/G1), the same way; homings: each G28, its axes, its accel and what the
+    chips held then; chips: the TMC chip of each section; crashes: what failed in this
+    stand-in itself. A section with no module here (an accelerometer, [resonance_tester])
+    is config only."""
 
     @staticmethod
     def shake(speed: float, chopper: dict) -> float:
@@ -848,9 +848,11 @@ class Front:
 
     def cmd_G28(self, gcmd):
         """Homing as the tools meet it: each axis named (all without one) on its
-        position_endstop, its steppers stepped, homed."""
+        position_endstop, its steppers stepped, homed; the accel it runs on is the
+        toolhead's (homing.py's drip moves)."""
         axes = [axis for axis in 'XYZ' if gcmd.get(axis, None) is not None] or list('XYZ')
         self.homings.append({'axes': ''.join(axes).lower(),
+                             'accel': self.toolhead.get_status(0.)['max_accel'],
                              'chips': {section: chip.chopper() for section, chip in self.chips.items()}})
         position = self.toolhead.get_position()
         for axis in axes:

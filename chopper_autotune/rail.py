@@ -358,7 +358,7 @@ class RailMove:
         refuse_blind_z_hop(kl, settings)        # before any motion or motor enable
         self.guard.preflight()
         try:
-            limits = live_limits(kl)
+            self.limits = limits = live_limits(kl)
             self.restores.append(lambda: kl.gcode('M204 S%s' % limits['max_accel']))
             free_strokes(kl, settings, limits, self.restores)
             self.clear_mesh()
@@ -385,9 +385,13 @@ class RailMove:
         kl.gcode('BED_MESH_CLEAR')
 
     def home(self):
+        """G28 on the accel the run found, as the closing one: a homing takes the
+        toolhead's, and a sensorless one was tuned on that, not on the run's M204; then
+        the run's to the center."""
         center = [at - origin for at, origin in zip(self.hw.center, self.origin)]
-        home_xy(self.kl, 'G28 X Y\nG90\nM204 S%.3f\nG1 X%.3f Y%.3f F%d\nM400'
-                % (self.asked / self.k, center[0], center[1], APPROACH_FEED))
+        home_xy(self.kl, 'M204 S%s\nG28 X Y\nG90\nM204 S%.3f\nG1 X%.3f Y%.3f F%d\nM400'
+                % (self.limits['max_accel'], self.asked / self.k, center[0], center[1],
+                   APPROACH_FEED))
         self.moves = 0
 
     def __call__(self, direction: int, travel: float):

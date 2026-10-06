@@ -308,6 +308,12 @@ def test_a_twin_driver_error_mid_run_stops_it_at_the_next_command(source, printe
             if script.startswith('SET_TMC_FIELD STEPPER=stepper_x1 ')]
 
 
+def approach(script: str) -> bool:
+    """The head's way to the start of a move, before each attempt (a homing's starts with
+    M204 too)."""
+    return script.startswith('M204 S') and 'G28' not in script
+
+
 @pytest.mark.parametrize('source', SOURCES)
 @pytest.mark.parametrize('when', ['noise floor', 'moves'])
 def test_a_twin_hot_mid_run_stops_it_and_the_gantry_goes_off(source, when, tmp_path):
@@ -321,7 +327,7 @@ def test_a_twin_hot_mid_run_stops_it_and_the_gantry_goes_off(source, when, tmp_p
     send = kl.gcode
 
     def gcode(script):
-        if script.startswith('G4 P') if when == 'noise floor' else script.startswith('M204 S'):
+        if script.startswith('G4 P') if when == 'noise floor' else approach(script):
             chip.reads['DRV_STATUS'] = chip.fields.all_fields['DRV_STATUS']['otpw']
         return send(script)
     kl.gcode = gcode
@@ -342,16 +348,16 @@ def test_a_twin_hot_mid_run_stops_it_and_the_gantry_goes_off(source, when, tmp_p
     assert not [name for name, on in steppers.items() if on and name != 'stepper_z']
 
 
-def running_client(front, failures: int = 0, after: int = 0):
-    """Our client on the printer; `failures` captures after the first `after` (the noise
-    floor counts) fail as a stalled stream does."""
+def running_client(front, failing=()):
+    """Our client on the printer; the captures numbered in `failing` (1 the noise floor's,
+    then one an attempt) fail as a stalled stream does."""
     kl = front.connect()
     waits = kl.wait_for_sample
     count = {'waits': 0}
 
     def wait_for_sample(t, timeout=5.0):
         count['waits'] += 1
-        if after < count['waits'] <= after + failures:
+        if count['waits'] in failing:
             raise KlippyError('accelerometer stream stalled, no samples past %.3f' % t)
         return waits(t, timeout)
     kl.wait_for_sample = wait_for_sample
@@ -362,28 +368,33 @@ def running_client(front, failures: int = 0, after: int = 0):
 @pytest.mark.parametrize('printer', ['meijjaa', 'voron-5160'])
 def test_every_homing_of_a_rail_run_is_on_the_drivers_own_registers(source, printer, tmp_path,
                                                                     monkeypatch, capsys):
-    # sensorless homing was tuned on the config's registers: the periodic re-home and the
-    # one after a failed attempt put them back first, then the candidate again
+    # sensorless homing was tuned on the config's registers and the printer's accel: the
+    # periodic re-home and the one after a failed attempt put them back first, then the
+    # candidate and the run's M204 again
     require(source)
     monkeypatch.setattr(collect, 'PARK_INTERVAL_MOVES', 3)
     front = klipper_front.Front(source, own_cfg(printer))
     configured = {section: chip.chopper() for section, chip in front.chips.items()}
-    kl = running_client(front, failures=1, after=4)
+    accel = limits_in_force(front)['max_accel']
+    kl = running_client(front, {5})                 # the first attempt of the 4th move
     root = tmp_path / 'grid'
     try:
         code, _ = collect.collect(kl, build_parser().parse_args(
-            RUNS['collect'][1] + ['--axis', 'x', '--validate', '0', '--dataset', str(root)]))
+            RUNS['collect'][1] + ['--axis', 'x', '--iterations', '2', '--validate', '0',
+                                  '--dataset', str(root)]))
     finally:
         kl.close()
     assert code == 0
     assert_clean(front)
-    assert capsys.readouterr().out.count("Re-homing on the drivers' own registers") >= 2
-    assert len(front.homings) >= 4                  # the first, periodic ones, the last
+    # before the 4th move, its retry, the 7th: a re-home every 3 moves since the last
+    assert capsys.readouterr().out.count("Re-homing on the drivers' own registers") == 3
+    assert len(front.homings) == 5
     for homing in front.homings:
-        assert homing['axes'] == 'xy' and homing['chips'] == configured
+        assert (homing['axes'], homing['accel'], homing['chips']) == ('xy', accel, configured)
     field, spread, _ = tmc.DRIVERS[AWD[printer]['driver']].spreadcycle_switch
     pairs = measured(front, root)
-    assert len(pairs) == 4
+    assert len(pairs) == 8
+    assert {move['accel'] for _, move in pairs} == {Dataset.open(root).manifest()['head_accel']}
     for record, move in pairs:                      # the run's own again after each homing
         for section in rail_sections(printer, 'x'):
             assert (move['chips'][section]['toff'], move['chips'][section][field]) \
@@ -402,7 +413,7 @@ def test_x_and_y_switched_off_mid_run_stop_it_and_the_gantry_is_handed_over(sour
     send, approaches = kl.gcode, []
 
     def gcode(script):
-        if script.startswith('M204 S') and 'G1 ' in script:
+        if approach(script):
             approaches.append(script)
             if len(approaches) == 3:
                 front.run('M84')                    # the user's Disable motors
@@ -433,7 +444,7 @@ def test_a_move_that_needs_z_homed_stops_the_run_and_the_gantry_is_handed_over(s
     send, approaches = kl.gcode, []
 
     def gcode(script):
-        if script.startswith('M204 S') and 'G1 ' in script:
+        if approach(script):
             approaches.append(script)
             if len(approaches) == 3:
                 front.run('BED_MESH_PROFILE LOAD=default')
@@ -461,7 +472,7 @@ def test_moves_that_fail_in_a_row_stop_the_run_instead_of_re_homing_before_each(
     require(source)
     front = klipper_front.Front(source, own_cfg('meijjaa'))
     configured = {section: chip.chopper() for section, chip in front.chips.items()}
-    kl = running_client(front, failures=1000, after=2)
+    kl = running_client(front, range(3, 1003))
     try:
         with pytest.raises(collect.RunStopped, match='fix what fails, then run again: 4 moves of '
                                                      'motor A failed in a row') as stopped:
@@ -476,6 +487,26 @@ def test_moves_that_fail_in_a_row_stop_the_run_instead_of_re_homing_before_each(
     assert all(homing['chips'] == configured for homing in front.homings)
     assert {section: chip.chopper() for section, chip in front.chips.items()} == configured
     assert front.status({'toolhead': ['homed_axes']})['toolhead']['homed_axes'] == 'xy'
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_failed_attempts_apart_do_not_stop_the_run(source, tmp_path):
+    # the first attempt of each move fails, its retry works: as many failures as stop a run
+    # in a row, never two in a row
+    require(source)
+    front = klipper_front.Front(source, own_cfg('meijjaa'))
+    kl = running_client(front, range(2, 2 * rail.FAILED_IN_A_ROW + 1, 2))
+    root = tmp_path / 'grid'
+    try:
+        code, _ = collect.collect(kl, build_parser().parse_args(
+            RUNS['collect'][1] + ['--axis', 'x', '--validate', '0', '--dataset', str(root)]))
+    finally:
+        kl.close()
+    assert code == 0
+    assert_clean(front)
+    assert len(measured(front, root)) == rail.FAILED_IN_A_ROW
+    # the first, one before each retry, the last
+    assert len(front.homings) == rail.FAILED_IN_A_ROW + 2
 
 
 @pytest.mark.parametrize('source', SOURCES)
