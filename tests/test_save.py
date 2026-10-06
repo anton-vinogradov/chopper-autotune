@@ -186,16 +186,16 @@ def test_run_save_latest_saves_a_rail_whole_and_skips_a_dataset_of_one_of_its_mo
     from chopper_autotune import analyze
     from chopper_autotune.dataset import Dataset
     for name, manifest in (('01_x', {'axis': 'x', 'search': 'descent', 'motion': 'rail',
-                                     'steppers': ['stepper_x', 'stepper_x1']}),
-                           ('02_y', {'axis': 'y', 'search': 'descent'})):
+                                     'driver': '2209', 'steppers': ['stepper_x', 'stepper_x1']}),
+                           ('02_y', {'axis': 'y', 'search': 'descent', 'driver': '2209'})):
         Dataset.create(tmp_path / name, manifest)
     monkeypatch.setattr(analyze, 'dataset_dirs', lambda: sorted(tmp_path.iterdir()))
     monkeypatch.setattr('chopper_autotune.tune.winner_of',
                         lambda root, weight: (Dataset(root).manifest(), tmc.Chopper(0, 8, 7, 5)))
     state = {'driver': '2209', 'fields': {'tbl': 3, 'toff': 7, 'hstrt': 6, 'hend': 0}}
     monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: state)
-    monkeypatch.setattr(analyze, 'Moonraker', lambda url: FakeMoonraker({}, settings={
-        'stepper_x': {}, 'stepper_x1': {}, 'stepper_y': {}, 'stepper_y1': {}}))
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: FakeMoonraker({}, settings=dict(
+        RAIL_SETTINGS, stepper_y={}, stepper_y1={})))
     saved = {}
     monkeypatch.setattr(analyze, 'run_save',
                         lambda mk, items, extruder_state=None: saved.update(
@@ -436,11 +436,13 @@ uart_pin: PC12
 driver_TOFF: 4
 """
 RAIL = {'driver': '2209', 'stepper': 'stepper_x', 'motion': 'rail', 'steppers': ['stepper_x', 'stepper_x1']}
+RAIL_SETTINGS = {'stepper_x': {}, 'stepper_x1': {}, 'tmc2209 stepper_x': {},
+                 'tmc2209 stepper_x1': {}}
 
 
 def test_run_save_writes_a_rails_winner_into_each_of_its_sections_in_one_restart():
     # AWD: stepper_x1 drives the same belt (#129), the rail run measured both drivers
-    mk = FakeMoonraker({'printer.cfg': RAIL_CFG}, settings={'stepper_x': {}, 'stepper_x1': {}})
+    mk = FakeMoonraker({'printer.cfg': RAIL_CFG}, settings=RAIL_SETTINGS)
     run_save(mk, [(RAIL, tmc.Chopper(0, 8, 7, 5))])
     assert mk.uploads == ['printer.chopper-backup.cfg', 'printer.cfg']
     assert mk.scripts == ['RESTART']
@@ -452,6 +454,14 @@ def test_run_save_writes_a_rails_winner_into_each_of_its_sections_in_one_restart
 
 
 @pytest.mark.parametrize('settings, manifest, refusal', [
+    # a twin with no section of the model the rail measured: no save of half the rail
+    ({'stepper_x': {}, 'stepper_x1': {}, 'tmc2209 stepper_x': {}}, RAIL,
+     'tune motor A again: its dataset measured TMC2209 drivers, the config gives stepper_x1 no '
+     'TMC section now'),
+    # the drivers swapped for another model since the run
+    (RAIL_SETTINGS, dict(RAIL, driver='5160'),
+     'its dataset measured TMC5160 drivers, the config gives stepper_x TMC2209, stepper_x1 '
+     'TMC2209'),
     # a dataset of stepper_x alone would leave the twin on its old registers
     ({'stepper_x': {}, 'stepper_x1': {}}, {'driver': '2209', 'stepper': 'stepper_x'},
      'tune motor A again: its dataset measured stepper_x alone, the config drives the axis with '
@@ -470,19 +480,20 @@ def test_run_save_refuses_a_dataset_of_another_rail_than_the_configs(settings, m
 
 
 def test_apply_sets_every_driver_of_a_rail_and_refuses_one_of_them(capsys):
-    # the rail's motors go on first, then each driver gets the set; a twin without an
-    # enable pin of its own gets the warning, its main motor does not
+    # the rail's motors go on first, then every driver gets the set in one script, as a run
+    # writes it; a twin without an enable pin of its own gets the warning, its main motor
+    # does not
     from chopper_autotune.analyze import run_apply
-    mk = FakeMoonraker({}, settings={'stepper_x': {'enable_pin': '!PA1'}, 'stepper_x1': {}})
+    mk = FakeMoonraker({}, settings=dict(RAIL_SETTINGS, stepper_x={'enable_pin': '!PA1'}))
     combo = tmc.Chopper(0, 8, 7, 5)
     with pytest.raises(SystemExit, match='tune motor A again: its dataset measured stepper_x alone'):
-        run_apply(mk, ['stepper_x'], combo)
+        run_apply(mk, '2209', ['stepper_x'], combo)
     assert mk.scripts == []
-    run_apply(mk, ['stepper_x', 'stepper_x1'], combo)
-    assert mk.scripts[:3] == ['SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=1\n'
+    run_apply(mk, '2209', ['stepper_x', 'stepper_x1'], combo)
+    assert mk.scripts[:2] == ['SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=1\n'
                               'SET_STEPPER_ENABLE STEPPER=stepper_x1 ENABLE=1',
-                              tmc.set_fields_script('stepper_x', combo.fields()),
-                              tmc.set_fields_script('stepper_x1', combo.fields())]
+                              tmc.set_fields_script('stepper_x', combo.fields()) + '\n'
+                              + tmc.set_fields_script('stepper_x1', combo.fields())]
     assert [script for script in mk.scripts if script.startswith('M118')] \
         == ['M118 WARNING: stepper_x1 has no enable pin of its own: at the next motors off and on '
             'Klipper puts toff back to the config value and keeps the other applied registers; '
@@ -501,7 +512,7 @@ def test_apply_enables_the_motor_before_its_registers(enable_pins, shared, capsy
     from chopper_autotune.analyze import run_apply
     settings = {name: {'enable_pin': pin} for name, pin in enable_pins.items()}
     mk = FakeMoonraker({}, settings=dict({'stepper_x': {}}, **settings))
-    run_apply(mk, ['stepper_x'], tmc.Chopper(2, 3, 5, 0))
+    run_apply(mk, '2209', ['stepper_x'], tmc.Chopper(2, 3, 5, 0))
     assert mk.scripts[0] == 'SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=1'
     assert mk.scripts[1].startswith('SET_TMC_FIELD')
     assert ('no enable pin of its own' in capsys.readouterr().out) is shared
@@ -513,7 +524,7 @@ def test_apply_sends_its_warning_only_where_klipper_takes_m118(capsys):
     # without [respond] the M118 drew an 'Unknown command' line and a KlipperScreen error
     from chopper_autotune.analyze import run_apply
     mk = FakeMoonraker({}, settings={'stepper_x': {}}, commands={'M117', 'SET_TMC_FIELD'})
-    run_apply(mk, ['stepper_x'], tmc.Chopper(2, 3, 5, 0))
+    run_apply(mk, '2209', ['stepper_x'], tmc.Chopper(2, 3, 5, 0))
     assert 'no enable pin of its own' in capsys.readouterr().out
     assert not any(script.startswith('M118') for script in mk.scripts)
 
@@ -535,7 +546,7 @@ def test_apply_refuses_while_printing():
     from chopper_autotune.analyze import run_apply
     mk = FakeMoonraker({}, printing=True, settings={'stepper_x': {}})
     with pytest.raises(SystemExit, match='busy printing'):
-        run_apply(mk, ['stepper_x'], tmc.Chopper(2, 3, 5, 0))
+        run_apply(mk, '2209', ['stepper_x'], tmc.Chopper(2, 3, 5, 0))
     assert mk.scripts == []
 
 
@@ -691,7 +702,7 @@ def test_save_skips_a_rail_autotune_manages_any_driver_of_and_saves_the_other(mo
     x = dict(RAIL, axis='x', search='descent')
     y = {'axis': 'y', 'search': 'descent', 'driver': '2209', 'stepper': 'stepper_y'}
     combo = tmc.Chopper(0, 8, 7, 5)
-    settings = {'stepper_x1': {}, 'autotune_tmc stepper_x1': {'tuning_goal': 'performance'}}
+    settings = dict(RAIL_SETTINGS, **{'autotune_tmc stepper_x1': {'tuning_goal': 'performance'}})
     saved = save_latest_with(monkeypatch, {'/d/x': x, '/d/y': y}, {'/d/x': (x, combo), '/d/y': (y, combo)},
                              settings)
     assert saved['items'] == [(y, combo)]
@@ -703,7 +714,7 @@ def test_save_skips_a_rail_autotune_manages_any_driver_of_and_saves_the_other(mo
 
 
 def test_a_rail_measured_under_autotune_names_each_of_its_sections():
-    mk = FakeMoonraker({'printer.cfg': RAIL_CFG}, settings={'stepper_x': {}, 'stepper_x1': {}})
+    mk = FakeMoonraker({'printer.cfg': RAIL_CFG}, settings=RAIL_SETTINGS)
     with pytest.raises(SystemExit, match=re.escape(
             'not saving [tmc2209 stepper_x] and [tmc2209 stepper_x1]: measured under autotune')):
         run_save(mk, [(dict(RAIL, autotune='performance'), tmc.Chopper(0, 8, 7, 5))])

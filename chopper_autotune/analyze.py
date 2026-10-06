@@ -12,7 +12,7 @@ from pathlib import Path
 
 from . import tmc
 from .dataset import Dataset, RESULTS_HOME, measured_steppers
-from .moonraker import Moonraker
+from .moonraker import Moonraker, MoonrakerError
 
 
 def dataset_dirs(bases=(RESULTS_HOME / 'datasets', Path('datasets'))) -> 'list[Path]':
@@ -307,23 +307,31 @@ def refuse_unloadable(driver_name: str, stepper: str, fields: dict):
                          % (tmc.Chopper(**fields).label(), driver_name, stepper, why))
 
 
-def rail_mismatch(settings: dict, steppers: 'list[str]') -> 'str | None':
+def rail_mismatch(settings: dict, steppers: 'list[str]', driver_name: str) -> 'str | None':
     """Why a dataset's registers may not go to the config's drivers, None when they may:
     they go to the whole rail of the axis (stepper_x and its twins, #129), and only when
-    the dataset measured that rail. A dataset of one motor on an axis that has a twin now,
-    or of a rail changed since, would leave a driver on registers no run measured with."""
-    from .collect import motor_label, rail_steppers
+    the dataset measured that rail, on drivers of the model it measured. A dataset of one
+    motor on an axis that has a twin now, or of a rail changed since, would leave a driver
+    on registers no run measured with. One motor's dataset keeps the checks it had before
+    rails (decision 19): a section of another model then stops the save, naming it."""
+    from .collect import driver_of, motor_label, rail_steppers
     axis = steppers[0].rsplit('_', 1)[-1]
     rail = rail_steppers(settings, axis)
-    if steppers == rail:
-        return None
 
     def drivers(names):
         return '%s alone' % names[0] if len(names) == 1 else ', '.join(names)
     # the action first: the display shows its first characters (failure_display)
-    return ('tune motor %s again: its dataset measured %s, the config drives the axis with %s '
-            'now, and the registers go to every driver of an axis or to none (see issue #129)'
-            % (motor_label(axis), drivers(steppers), drivers(rail)))
+    if steppers != rail:
+        return ('tune motor %s again: its dataset measured %s, the config drives the axis with %s '
+                'now, and the registers go to every driver of an axis or to none (see issue #129)'
+                % (motor_label(axis), drivers(steppers), drivers(rail)))
+    models = {stepper: driver_of(settings, stepper) for stepper in steppers}
+    if len(steppers) > 1 and set(models.values()) != {driver_name}:
+        return ('tune motor %s again: its dataset measured TMC%s drivers, the config gives %s now'
+                % (motor_label(axis), driver_name, ', '.join(
+                    '%s %s' % (stepper, 'TMC%s' % model if model else 'no TMC section')
+                    for stepper, model in models.items() if model != driver_name)))
+    return None
 
 
 def shares_enable(settings: dict, stepper: str) -> bool:
@@ -336,7 +344,7 @@ def shares_enable(settings: dict, stepper: str) -> bool:
     return not own or any(pin(name) == own for name in settings if name != stepper)
 
 
-def run_apply(mk, steppers: 'list[str]', chopper: tmc.Chopper):
+def run_apply(mk, driver_name: str, steppers: 'list[str]', chopper: tmc.Chopper):
     """Set a combo live (SET_TMC_FIELD), not persisted, into every driver of the motor's rail.
     The motors go on first, in a request of their own (see collect.wake_stepper): toff
     written to a motor Klipper counts as off energizes it, and Klipper's own enable would
@@ -344,12 +352,14 @@ def run_apply(mk, steppers: 'list[str]', chopper: tmc.Chopper):
     if mk.is_printing():
         raise SystemExit('printer is busy printing, not touching the drivers')
     settings = mk.settings()
-    why = rail_mismatch(settings, steppers)
+    why = rail_mismatch(settings, steppers, driver_name)
     if why:
         raise SystemExit(why)
     mk.gcode('\n'.join('SET_STEPPER_ENABLE STEPPER=%s ENABLE=1' % stepper for stepper in steppers))
-    for stepper in steppers:
-        mk.set_tmc_fields(stepper, chopper.fields())
+    if len(steppers) > 1:
+        apply_rail(mk, settings, steppers, chopper)
+    else:
+        mk.set_tmc_fields(steppers[0], chopper.fields())
     for stepper in steppers:
         if not shares_enable(settings, stepper):
             continue
@@ -366,6 +376,40 @@ def run_apply(mk, steppers: 'list[str]', chopper: tmc.Chopper):
                 pass
 
 
+def apply_rail(mk, settings: dict, steppers: 'list[str]', chopper: tmc.Chopper):
+    """The set into every driver of a rail in one script, as a run writes a candidate: all
+    of them switch at one print time. Klipper stops a script at its first line that fails,
+    so a driver may have the set and its twin not: then each driver gets back the registers
+    its config gives it, as a restart would. Under klipper_tmc_autotune only a restart
+    knows them."""
+    from .collect import autotune_goal, driver_config, motor_label
+    try:
+        mk.gcode('\n'.join(tmc.set_fields_script(stepper, chopper.fields())
+                            for stepper in steppers))
+        return
+    except MoonrakerError as failure:
+        why = ' '.join(str(failure).split())
+    motor = motor_label(steppers[0].rsplit('_', 1)[-1])
+    if any(autotune_goal(settings, stepper) is not None for stepper in steppers):
+        stuck = list(steppers)
+    else:
+        stuck = []
+        for stepper in steppers:
+            own = driver_config(settings, stepper)
+            try:
+                mk.set_tmc_fields(stepper, dict(own['driver'].default.fields(), **own['baseline']))
+            except MoonrakerError:
+                stuck.append(stepper)
+    # the action first: the display shows its first characters (failure_display)
+    if stuck:
+        raise SystemExit('restart Klipper (RESTART): setting %s on motor %s failed (%s), and %s '
+                         'could not be put back, so the drivers of the motor may run different '
+                         'registers' % (chopper.label(), motor, why, ', '.join(stuck)))
+    raise SystemExit('check the drivers of motor %s (DUMP_TMC): setting %s failed (%s), so each of '
+                     '%s is back on the registers of its config' % (motor, chopper.label(), why,
+                                                                    ', '.join(steppers)))
+
+
 def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]', extruder_state: 'dict | None' = None):
     """Persist chopper winners into the Klipper config, each into every section of the
     rail its dataset measured, one restart for the batch; the extruder's stored winner
@@ -376,7 +420,7 @@ def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]', extruder_state: 'dict 
         steppers = measured_steppers(manifest)
         for stepper in steppers:
             refuse_unloadable(manifest['driver'], stepper, combo.fields())
-        why = rail_mismatch(settings, steppers)
+        why = rail_mismatch(settings, steppers, manifest['driver'])
         if why:
             raise SystemExit(why)
         refuse_autotune_save(settings, manifest['driver'], *steppers)
@@ -500,8 +544,8 @@ def run_save_latest(args) -> int:
                 settings = mk.settings()
             # run_save's checks of the axis, made here: a failing one skips the axis whole, like
             # a stale extruder winner, and the rest still saves
-            steppers = info.get('steppers') or ['stepper_' + axis]
-            why = rail_mismatch(settings, steppers)
+            steppers = measured_steppers(dict({'stepper': 'stepper_' + axis}, **info))
+            why = rail_mismatch(settings, steppers, info.get('driver', 'XXXX'))
             managed = [stepper for stepper in steppers if autotune_goal(settings, stepper) is not None]
             if why is None and managed:
                 why = autotune_refusal(info.get('driver', 'XXXX'), *managed, settings=settings)
@@ -756,7 +800,7 @@ def run_analyze(args) -> int:
         print('\nRecommended for printer.cfg:\n')
     print(rail_snippet(driver, steppers, best['chopper']))
     if args.apply and not args.save:
-        run_apply(Moonraker(args.url), steppers, best['chopper'])
+        run_apply(Moonraker(args.url), driver.name, steppers, best['chopper'])
         print('\nApplied via SET_TMC_FIELD (runtime only%s)'
               % ('' if manifest.get('autotune') else ', use SAVE=1 to persist'))
     if args.save:

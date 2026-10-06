@@ -790,6 +790,77 @@ def test_a_dataset_of_one_motor_is_not_saved_on_an_axis_that_has_a_twin_now(sour
 
 
 @pytest.mark.parametrize('source', SOURCES)
+def test_a_rail_whose_twin_runs_another_driver_now_is_skipped_and_the_rest_saved(
+        source, tmp_path, monkeypatch, capsys):
+    # stepper_x1 got a TMC2209 after the run: no section of the model the rail measured.
+    # CHOPPER_SAVE skips motor A whole and still saves motor B; ANALYZE refuses before a write
+    from chopper_autotune import analyze
+    require(source)
+    mk = klipper_front.FrontMoonraker(source, awd_cfg('meijjaa'))
+    roots = [tmp_path / axis for axis in 'xy']
+    for axis, root in zip('xy', roots):
+        assert run_tool(mk.front, collect.collect, RUNS['collect'][1] + [
+            '--axis', axis, '--dataset', str(root)])[0] == 0
+    mk.files['printer.cfg'] = mismatched_model(mk.files['printer.cfg'])
+    mk.gcode('RESTART')
+    stock = chips(mk.front)
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    refusal = ('tune motor A again: its dataset measured TMC5160 drivers, the config gives '
+               'stepper_x1 TMC2209 now')
+    for flag in ('--apply', '--save'):
+        with pytest.raises(SystemExit, match=re.escape(refusal)):
+            analyze.run_analyze(build_parser().parse_args(['analyze', str(roots[0]), '--no-html',
+                                                           flag]))
+    assert mk.uploads == [] and mk.restarts == 1 and chips(mk.front) == stock
+    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: roots)
+    assert analyze.run_save_latest(build_parser().parse_args(['save'])) == 0
+    assert 'motor A: NOT saving x: ' + refusal in capsys.readouterr().out
+    assert mk.restarts == 2
+    for section in ('tmc5160 stepper_x', 'tmc2209 stepper_x1'):
+        assert mk.front.chips[section].chopper() == stock[section]
+    for section in rail_sections('meijjaa', 'y'):
+        assert held(mk.front.chips[section], GRID_WINNER) == GRID_WINNER
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('failing', [1, 2])
+def test_an_apply_the_twin_fails_puts_every_driver_of_the_rail_back(source, failing, tmp_path,
+                                                                     monkeypatch):
+    # Klipper stops the script at the line that fails, after the main motor took the set:
+    # each driver gets the registers of its config back, or, when that fails too, a restart
+    from chopper_autotune import analyze
+    require(source)
+    mk = klipper_front.FrontMoonraker(source, own_cfg('meijjaa'))
+    root = tmp_path / 'x'
+    assert run_tool(mk.front, collect.collect, RUNS['collect'][1] + [
+        '--axis', 'x', '--dataset', str(root)])[0] == 0
+    configured = chips(mk.front)
+    twin = mk.front.chips[rail_sections('meijjaa', 'x')[1]]
+    write, refused = twin.set_register, []
+
+    def set_register(reg_name, val, print_time=None):
+        if reg_name == 'CHOPCONF' and len(refused) < failing:
+            refused.append(val)
+            raise mk.front.printer.command_error("Unable to write tmc spi 'stepper_x1' register "
+                                                 'CHOPCONF')
+        write(reg_name, val, print_time)
+    twin.set_register = set_register
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    with pytest.raises(SystemExit) as stopped:
+        analyze.run_analyze(build_parser().parse_args(['analyze', str(root), '--no-html',
+                                                       '--apply']))
+    shown = collect.failure_display('analyze FAILED: %s' % stopped.value.code)
+    if failing == 1:
+        assert shown.startswith('FAIL check the drivers of motor A (DUMP_TMC): setting ')
+        assert chips(mk.front) == configured
+    else:
+        assert shown.startswith('FAIL restart Klipper (RESTART): setting ')
+        assert 'stepper_x1 could not be put back' in stopped.value.code
+        assert chips(mk.front)[rail_sections('meijjaa', 'x')[0]] \
+            == configured[rail_sections('meijjaa', 'x')[0]]
+
+
+@pytest.mark.parametrize('source', SOURCES)
 def test_tune_save_refuses_a_rail_autotune_manages_before_anything_moves(source, monkeypatch):
     # klipper_tmc_autotune writes its own chopper at every start: say it now, naming every
     # section of the rail, not after the tuning
