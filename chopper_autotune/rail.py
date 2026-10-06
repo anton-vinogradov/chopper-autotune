@@ -24,6 +24,7 @@ EDGE_MM = 25.0              # kept between a move and each bed edge, or EDGE_SHA
 EDGE_SHARE = 0.1
 MIN_Z_MM = 5.0
 APPROACH_FEED = 6000
+FAILED_IN_A_ROW = 4         # attempts: then the run stops instead of re-homing before each next
 STEP_OPTIONS = ('rotation_distance', 'gear_ratio', 'full_steps_per_rotation', 'microsteps')
 # what runs a driver otherwise than its twin under the same chopper registers: named
 # before the run, not refused (the current, the mode switch, CoolStep, the high-velocity
@@ -35,8 +36,10 @@ RUNNING_OPTIONS = ('run_current', 'hold_current', 'stealthchop_threshold', 'cool
 
 
 class GantryUnhomed(RunStopped):
-    """X or Y lost its homing mid-run (M84, a failed G28): the motors of a rail may have
-    settled apart while off, and a [motors_sync] lost its sync."""
+    """A move needs an axis homed that is not, and the run stops and hands the gantry over
+    (decision 7): X or Y lost its homing mid-run (M84, a failed G28), where the motors of a
+    rail may have settled apart while off and a [motors_sync] lost its sync; or Z, which a
+    mesh or [z_thermal_adjust] moves under the moves."""
 
 
 class RegistersStuck(RunStopped):
@@ -155,11 +158,9 @@ class RailMove:
         self.limit = min(2 * self.k * ((hi - lo) / 2 - edge) / abs(part)
                          for (lo, hi), edge, part in zip(self.bed, self.edges, self.unit) if part)
         status = kl.request('objects/query', {'objects': {
-            'toolhead': ['homed_axes'], 'gcode_move': ['homing_origin'],
-            'bed_mesh': ['profile_name', 'profiles']}})['status']
+            'toolhead': ['homed_axes'], 'bed_mesh': ['profile_name', 'profiles']}})['status']
         self.homed = status['toolhead']['homed_axes']
-        # Klipper adds it to every G1 after a homing (gcode_move base_position)
-        self.origin = status['gcode_move']['homing_origin'][:2]
+        self.origin = self.offset()
         self.mesh = status.get('bed_mesh') or {}
         self.limits = live_limits(kl)
         self.per_axis, self.per_axis_source = ((config_limits(settings, hw.kinematics), 'by config')
@@ -172,12 +173,19 @@ class RailMove:
         self.guard = None
         self.moves = 0
         self.stumbled = False
+        self.failures = 0
         self.restores, self.reloads = [], []
 
     @property
     def standstill(self) -> tuple:
         """The noise floor runs with the motors holding: the guard checks it too."""
         return (self.guard.check,)
+
+    def offset(self) -> 'list[float]':
+        """The G-code offset in X and Y (homing_origin): Klipper adds it to every G1 after a
+        homing (gcode_move base_position)."""
+        return self.kl.request('objects/query', {'objects': {'gcode_move': ['homing_origin']}})[
+            'status']['gcode_move']['homing_origin'][:2]
 
     def reach(self, asked: float) -> float:
         """The belt accel a move gets for M204 S<asked/k>: Kalico's limited_* may cap it."""
@@ -383,10 +391,14 @@ class RailMove:
         self.moves = 0
 
     def __call__(self, direction: int, travel: float):
-        """Before each attempt: the guard, a re-home when due, then the head to the start
-        of this move. A repeat from where the last move ended would run no distance (Klipper
+        """Before each attempt: the guard, the G-code offset in force (a SET_GCODE_OFFSET
+        mid-run moves every G1 by it), a re-home when due, then the head to the start of
+        this move. A repeat from where the last move ended would run no distance (Klipper
         skips it) and the window would land on the standstill."""
         self.guard.check()
+        if not self.stumbled:
+            self.failures = 0
+        self.origin = self.offset()
         if self.stumbled or self.moves >= collect.PARK_INTERVAL_MOVES:
             self.rehome()
         self.moves += 1
@@ -399,20 +411,25 @@ class RailMove:
         return 'G1 X%.3f Y%.3f F%.3f' % (end[0], end[1], speed / self.k * 60)
 
     def failed(self, error: Exception):
-        """After a failed attempt the next move starts from a fresh homing. Unless a move
-        needs an axis homed: the run stops, as after a shutdown, X or Y lost (M84, a
-        failed G28) or Z (a mesh or [z_thermal_adjust] lifts it under the moves)."""
-        lost = not set('xy') <= set(self.kl.homed_axes())
+        """After a failed attempt the next move starts from a fresh homing, up to
+        FAILED_IN_A_ROW attempts in a row: a cause that fails every move would re-home
+        before each one to the end of the run. A move that needs an axis homed stops the
+        run at once, as a shutdown does: X or Y lost (M84, a failed G28), or Z (a mesh or
+        [z_thermal_adjust] lifts it under the moves)."""
+        why = ' '.join(str(error).split())
+        sync = '; then SYNC_MOTORS, the motors were off' if 'motors_sync' in self.settings else ''
         # the display shows 'FAIL ' and the first characters of these (failure_display)
-        if lost:
+        if not set('xy') <= set(self.kl.homed_axes()):
             raise GantryUnhomed('home X and Y again: they lost their homing mid-run (%s), so the run '
-                                'stopped; the X/Y motors are off%s'
-                                % (' '.join(str(error).split()),
-                                   '; then SYNC_MOTORS, the motors were off'
-                                   if 'motors_sync' in self.settings else ''))
+                                'stopped; the X/Y motors are off%s' % (why, sync))
         if 'Must home axis first' in str(error):
-            raise RunStopped('home Z (G28), then retry: a move needs it homed (%s), so the run '
-                             'stopped' % ' '.join(str(error).split()))
+            raise GantryUnhomed('home all axes (G28), then retry: a move needs Z homed (%s), so the '
+                                'run stopped; the X/Y motors are off%s' % (why, sync))
+        self.failures += 1
+        if self.failures >= FAILED_IN_A_ROW:
+            raise RunStopped('fix what fails, then run again: %d moves of motor %s failed in a row, '
+                             'the last with: %s. The run stopped rather than re-home before every '
+                             'move' % (self.failures, self.hw.motor, why))
         self.stumbled = True
 
     def rehome(self):

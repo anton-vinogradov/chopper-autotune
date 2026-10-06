@@ -104,10 +104,20 @@ def run_tune(args) -> int:
                    for stepper in measured_steppers(manifest))
 
     refuse_multi_motor(settings, args.axis, rails=True)
-    if any(rail_twins(settings, axis) for axis in axes):
+    rails = [axis for axis in axes if rail_twins(settings, axis)]
+    if rails:
         # say it now, not after the other motor's tune
         from .rail import refuse_rail_run
         refuse_rail_run(kl, args.csv)
+    if rails and len(rails) < len(axes):
+        # a motor alone on its axis runs with every X/Y motor off (FORCE_MOVE): before the
+        # rail's run its motors would come back on apart, unsynced
+        axes.sort(key=lambda axis: axis not in rails)
+        alone = next(axis for axis in axes if axis not in rails)
+        print('note: motor %s, with two motors, is tuned first: motor %s runs alone on its axis, '
+              'with every X/Y motor off%s'
+              % (motor_label(rails[0]), motor_label(alone), '; run G28 and SYNC_MOTORS again after '
+                 'the tune' if 'motors_sync' in settings else ''))
     for axis in axes:
         # say it now, not after the speed scan
         name = driver_of(settings, 'stepper_' + axis)
@@ -144,6 +154,7 @@ def run_tune(args) -> int:
                 winners.append(winner_of(root, args))
                 roots[winners[-1][0]['stepper']] = root
                 seed_root = root
+        winners.sort(key=lambda winner: winner[0]['stepper'])      # A, B: the order shown
 
         # the run's outcome must reach the screen: the console summary below only lands
         # in the detached log, and SAVE=1 restarts Klipper, wiping the status line — so

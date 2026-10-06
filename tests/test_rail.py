@@ -218,6 +218,38 @@ def test_a_whole_tune_finds_the_quietest_chopper_of_each_rail(source, printer, m
     assert {section: chip.chopper() for section, chip in front.chips.items()} == stock
 
 
+def dual_y(printer: str) -> str:
+    """The AWD printer with one motor on X: two on Y alone."""
+    return re.sub(r'\[(tmc\d+ )?stepper_x1\]\n.*?\n\n', '', awd_cfg(printer), flags=re.S)
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('sync', [False, True])
+def test_a_tune_of_both_motors_runs_the_pair_before_the_motor_alone(source, sync, monkeypatch,
+                                                                     capsys):
+    # the motor alone runs with every X/Y motor off: before the pair's run its motors would
+    # come back on apart, a [motors_sync] lost
+    from chopper_autotune import tune
+    require(source)
+    front = klipper_front.Front(source, dual_y('meijjaa') + '\n[motors_sync]\naxes: x,y\n' * sync)
+    kl = front.connect()
+    monkeypatch.setattr(tune, 'Klippy', lambda path: types.SimpleNamespace(connect=lambda: kl))
+    monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<front>')
+    assert tune.run_tune(build_parser().parse_args(['tune', '--speed', '60', '--no-raw'])) == 0
+    assert_clean(front)
+    pair_off = min(index for index, script in enumerate(front.scripts)
+                   if re.search(r'STEPPER="stepper_y1?" ENABLE=0', script))
+    assert max(index for index, script in enumerate(front.scripts)
+               if script.startswith('G1 ')) < pair_off
+    assert front.moves and {move['stepper'] for move in front.moves} == {'stepper_x'}
+    runs, summary = capsys.readouterr().out.split('=== Summary ===')
+    assert 'note: motor B, with two motors, is tuned first: motor A runs alone' in runs
+    assert ('SYNC_MOTORS again after the tune' in runs) == sync
+    assert runs.index('=== Motor B ===') < runs.index('=== Motor A ===')
+    assert summary.index('[tmc5160 stepper_x]') < summary.index('[tmc5160 stepper_y]') \
+        < summary.index('[tmc5160 stepper_y1]')
+
+
 @pytest.mark.parametrize('source', SOURCES)
 @pytest.mark.parametrize('printer', ['meijjaa', 'voron-2209'])
 def test_a_twin_without_its_own_enable_pin_keeps_each_candidate(source, printer, tmp_path):
@@ -392,8 +424,8 @@ def test_x_and_y_switched_off_mid_run_stop_it_and_the_gantry_is_handed_over(sour
 
 
 @pytest.mark.parametrize('source', SOURCES)
-def test_a_move_that_needs_z_homed_stops_the_run_and_x_y_home_as_usual(source, tmp_path):
-    # a mesh loaded mid-run with Z unhomed: every move would fail the same way
+def test_a_move_that_needs_z_homed_stops_the_run_and_the_gantry_is_handed_over(source, tmp_path):
+    # a mesh loaded mid-run with Z unhomed: every move would fail the same way (decision 7)
     require(source)
     front = klipper_front.Front(source, own_cfg('meijjaa') + MESH)
     configured = {section: chip.chopper() for section, chip in front.chips.items()}
@@ -408,15 +440,75 @@ def test_a_move_that_needs_z_homed_stops_the_run_and_x_y_home_as_usual(source, t
         return send(script)
     kl.gcode = gcode
     try:
-        with pytest.raises(collect.RunStopped, match=r'home Z \(G28\), then retry') as stopped:
+        with pytest.raises(rail.GantryUnhomed,
+                           match=r'home all axes \(G28\), then retry') as stopped:
             collect.collect(kl, build_parser().parse_args(RUNS['collect'][1] + [
                 '--axis', 'x', '--dataset', str(tmp_path / 'g')]))
     finally:
         kl.close()
-    assert not isinstance(stopped.value, rail.GantryUnhomed)
+    assert collect.failure_display('collect FAILED: %s' % stopped.value)[:16] == 'FAIL home all ax'
     assert {section: chip.chopper() for section, chip in front.chips.items()} == configured
-    assert len(front.homings) == 2                  # X and Y kept theirs: the closing G28
+    assert len(front.homings) == 1                  # the first alone
+    steppers = front.status({'stepper_enable': None})['stepper_enable']['steppers']
+    assert not [name for name, on in steppers.items() if on and name != 'stepper_z']
+    assert front.status({'toolhead': ['homed_axes']})['toolhead']['homed_axes'] == ''
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_moves_that_fail_in_a_row_stop_the_run_instead_of_re_homing_before_each(source, tmp_path):
+    # a stream that stalls from the third capture on: each failed attempt re-homes first,
+    # the fourth in a row ends the run on the drivers' own registers
+    require(source)
+    front = klipper_front.Front(source, own_cfg('meijjaa'))
+    configured = {section: chip.chopper() for section, chip in front.chips.items()}
+    kl = running_client(front, failures=1000, after=2)
+    try:
+        with pytest.raises(collect.RunStopped, match='fix what fails, then run again: 4 moves of '
+                                                     'motor A failed in a row') as stopped:
+            collect.collect(kl, build_parser().parse_args(RUNS['collect'][1] + [
+                '--axis', 'x', '--dataset', str(tmp_path / 'g')]))
+    finally:
+        kl.close()
+    assert 'accelerometer stream stalled' in str(stopped.value)
+    assert collect.failure_display('collect FAILED: %s' % stopped.value)[:16] == 'FAIL fix what fa'
+    # the first, a re-home before each of the 3 attempts after a failed one, the last
+    assert len(front.homings) == 5
+    assert all(homing['chips'] == configured for homing in front.homings)
+    assert {section: chip.chopper() for section, chip in front.chips.items()} == configured
     assert front.status({'toolhead': ['homed_axes']})['toolhead']['homed_axes'] == 'xy'
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_a_g_code_offset_set_mid_run_keeps_the_moves_across_the_bed_center(source, tmp_path):
+    # Klipper adds homing_origin to every G1: the run reads it before each move
+    require(source)
+    front = klipper_front.Front(source, own_cfg('meijjaa'))
+    kl = front.connect()
+    send, strokes = kl.gcode, []
+
+    def gcode(script):
+        sent = send(script)
+        if script.startswith('G1 ') and 'F6000' not in script:
+            strokes.append(script)
+            if len(strokes) == 2:                   # the user's, between two moves
+                front.run('SET_GCODE_OFFSET X=40 Y=-30')
+        return sent
+    kl.gcode = gcode
+    root = tmp_path / 'g'
+    try:
+        code, _ = collect.collect(kl, build_parser().parse_args(RUNS['collect'][1] + [
+            '--axis', 'x', '--dataset', str(root)]))
+    finally:
+        kl.close()
+    assert code == 0
+    assert_clean(front)
+    assert len(front.homings) == 2
+    pairs = measured(front, root)
+    assert len(pairs) == len([r for r in Dataset.open(root).records() if r['kind'] == 'move'])
+    for record, move in pairs:
+        assert [(start + end) / 2 for start, end in zip(move['start'][:2], move['end'][:2])] \
+            == pytest.approx([size / 2 for size in AWD['meijjaa']['size']])
+    off_the_edges(front, 'meijjaa')
 
 
 @pytest.mark.parametrize('source', SOURCES)
