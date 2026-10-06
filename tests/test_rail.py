@@ -861,15 +861,21 @@ def test_an_apply_the_twin_fails_puts_every_driver_of_the_rail_back(source, fail
 
 
 @pytest.mark.parametrize('source', SOURCES)
-def test_tune_save_refuses_a_rail_autotune_manages_before_anything_moves(source, monkeypatch):
+@pytest.mark.parametrize('managed, refusal', [
+    (('stepper_x', 'stepper_x1', 'stepper_y', 'stepper_y1'),
+     'not saving [tmc2209 stepper_x] and [tmc2209 stepper_x1]: autotune resets'),
+    # motor A is free: the tune of both would run it, then refuse B's save
+    (('stepper_y', 'stepper_y1'), 'not saving [tmc2209 stepper_y] and [tmc2209 stepper_y1]: '),
+    (('stepper_y1',), 'put klipper_tmc_autotune on all of stepper_y, stepper_y1 or on none'),
+])
+def test_tune_save_refuses_a_rail_autotune_manages_before_anything_moves(source, managed, refusal,
+                                                                       monkeypatch):
     # klipper_tmc_autotune writes its own chopper at every start: say it now, naming every
     # section of the rail, not after the tuning
     require(source)
     mk = klipper_front.FrontMoonraker(source, awd_cfg('voron-2209') + ''.join(
-        '\n[autotune_tmc %s]\nmotor: ldo-42sth48-2004ac\n' % name
-        for name in ('stepper_x', 'stepper_x1', 'stepper_y', 'stepper_y1')))
-    with pytest.raises(SystemExit, match=re.escape(
-            'not saving [tmc2209 stepper_x] and [tmc2209 stepper_x1]: autotune resets')):
+        '\n[autotune_tmc %s]\nmotor: ldo-42sth48-2004ac\n' % name for name in managed))
+    with pytest.raises(SystemExit, match=re.escape(refusal)):
         tune_through(mk, monkeypatch, ['--save'])
     assert mk.front.scripts == [] and mk.uploads == []
 
