@@ -418,23 +418,14 @@ def motors_off_but_z(kl: Klippy, cycle: bool = False) -> str:
     Z (see home_xy). Other steppers (a cutter, an MMU lane) are left alone. Names go in
     quotes: an extruder_stepper's name has a space. cycle: X/Y are enabled first, then
     disabled — after Klipper's own motor_off a register restore can re-energize an X/Y
-    driver Klipper counts as off, and a plain ENABLE=0 is skipped for it. The motors of a
-    rail cycle together, all on, then all off: one on alone while its twin is off pulls
-    its end of the gantry."""
+    driver Klipper counts as off, and a plain ENABLE=0 is skipped for it."""
     settings = kl.settings()
-    states = kl.stepper_states()
-    rails = {name: rail for rail in (rail_steppers(settings, axis) for axis in 'xy')
-             for name in rail}
-    lines, cycled = [], set()
-    for name in states:
-        if cycle and name in rails:
-            if name not in cycled:
-                rail = [stepper for stepper in rails[name] if stepper in states]
-                cycled.update(rail)
-                lines += ['SET_STEPPER_ENABLE STEPPER="%s" ENABLE=%d' % (stepper, state)
-                          for state in (1, 0) for stepper in rail]
-        elif name in rails or name.startswith('extruder') or name == 'dual_carriage':
-            lines.append('SET_STEPPER_ENABLE STEPPER="%s" ENABLE=0' % name)
+    gantry = {'stepper_x', 'stepper_y'} | {twin for axis in 'xy' for twin in rail_twins(settings, axis)}
+    lines = []
+    for name in kl.stepper_states():
+        if name in gantry or name.startswith('extruder') or name == 'dual_carriage':
+            for state in (1, 0) if cycle and name in gantry else (0,):
+                lines.append('SET_STEPPER_ENABLE STEPPER="%s" ENABLE=%d' % (name, state))
     return '\n'.join(lines)
 
 

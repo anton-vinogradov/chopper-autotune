@@ -343,11 +343,12 @@ def test_release_gantry_forgets_only_the_xy_homing():
     assert kl.scripts == [XY_OFF + '\nSET_KINEMATIC_POSITION SET_HOMED= CLEAR_HOMED=XY']
 
 
-def test_a_cycled_release_switches_each_rail_on_and_off_whole():
-    # one motor of a rail on while its twin is off would pull its end of the gantry
+def test_a_cycled_release_cycles_every_xy_motor_twins_included_one_by_one():
+    # as main did, a motor alone on its axis included: Klipper dwells 100 ms around each
+    # SET_STEPPER_ENABLE, so no order switches the motors of a rail at one instant
     kl = RecordingKl(AWD)
     release_gantry(kl, cycle=True)
     assert kl.scripts[0].split('\n')[:9] == [
         'SET_STEPPER_ENABLE STEPPER="%s" ENABLE=%d' % (name, state)
-        for rail in (('stepper_x', 'stepper_x1'), ('stepper_y', 'stepper_y1'))
-        for state in (1, 0) for name in rail] + ['SET_STEPPER_ENABLE STEPPER="extruder" ENABLE=0']
+        for name in ('stepper_x', 'stepper_x1', 'stepper_y', 'stepper_y1')
+        for state in (1, 0)] + ['SET_STEPPER_ENABLE STEPPER="extruder" ENABLE=0']
