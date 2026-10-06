@@ -4,6 +4,7 @@ rail by G1 with every driver of it on the same registers, keep off the bed edges
 only on the drivers' own registers, and refuse what would spoil the run before anything
 moves; a save writes the winner into every section of the rail, through FrontMoonraker."""
 import json
+import math
 import re
 import types
 
@@ -115,6 +116,7 @@ def test_a_rail_run_moves_the_rail_by_g1_with_every_driver_on_the_same_registers
     field, spread, _ = tmc.DRIVERS[AWD[printer]['driver']].spreadcycle_switch
     pairs = measured(front, root)
     assert len(pairs) == len([r for r in Dataset.open(root).records() if r.get('kind') != 'baseline'])
+    manifest = Dataset.open(root).manifest()
     other = 'y' if axis == 'x' else 'x'
     for record, move in pairs:
         held = [move['chips'][section] for section in rail_sections(printer, axis)]
@@ -124,6 +126,8 @@ def test_a_rail_run_moves_the_rail_by_g1_with_every_driver_on_the_same_registers
         assert {name: held[0][name] for name in wanted} == wanted
         assert move['belts'][axis] == pytest.approx(record['speed'], abs=0.5)
         assert move['belts'][other] == pytest.approx(0, abs=1e-6)
+        # the belt gets the dataset's accel: the head M204 S<accel/k> (decision 2)
+        assert move['accel'] * math.hypot(*manifest['vector']) == pytest.approx(manifest['accel'])
         assert move['cruise_ratio'] == 0
         # across the bed center, the G-code offset or not
         assert [(start + end) / 2 for start, end in zip(move['start'][:2], move['end'][:2])] \
@@ -137,7 +141,6 @@ def test_a_rail_run_moves_the_rail_by_g1_with_every_driver_on_the_same_registers
     assert {section: chip.chopper() for section, chip in front.chips.items()} == configured
     assert front.status({'toolhead': ['homed_axes']})['toolhead']['homed_axes'] == 'xy'
     assert limits_in_force(front) == limits
-    manifest = Dataset.open(root).manifest()
     assert (manifest['motion'], manifest['steppers'], manifest['noise_floor']) \
         == ('rail', ['stepper_' + axis, 'stepper_%s1' % axis], 'motors holding')
 
@@ -701,6 +704,40 @@ def test_a_scan_extends_no_faster_than_max_velocity_lets_g1_run(source, tmp_path
     assert_clean(front)
     assert 'extends the scan up to 70 mm/s' in capsys.readouterr().out
     assert max(record['speed'] for record, _ in measured(front, root)) == 70
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_a_scan_reaching_past_max_velocity_is_refused_before_any_gcode(source, tmp_path):
+    # its slow speeds fit, G1 would cut the fast ones to max_velocity and the dataset record
+    # them as asked (decision 9)
+    require(source)
+    front = klipper_front.Front(source, awd_cfg('meijjaa').replace('max_velocity: 500',
+                                                                    'max_velocity: 100'))
+    with pytest.raises(SystemExit, match=r'raise max_velocity .* of the 120 mm/s the run needs'):
+        run_tool(front, find_speed.scan, [
+            'find-speed', '--axis', 'x', '--min-speed', '50', '--max-speed', '120', '--step', '10',
+            '--yes', '--no-raw', '--dataset', str(tmp_path / 'scan')])
+    assert front.scripts == []
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_a_rail_klipper_tmc_autotune_manages_ends_on_the_registers_it_found(source, tmp_path):
+    # autotune writes its own chopper at every start, not the config's driver_* lines: each
+    # driver of the rail is read live, the twin too, and every homing and the end of the run
+    # put back what each ran (decisions 5 and 11)
+    require(source)
+    front = klipper_front.Front(source, own_cfg('meijjaa') + ''.join(
+        '\n[autotune_tmc %s]\nmotor: ldo-42sth48-2004ac\n' % name
+        for name in ('stepper_x', 'stepper_x1')))
+    front.run('SET_TMC_FIELD STEPPER=stepper_x FIELD=toff VALUE=6\n'
+              'SET_TMC_FIELD STEPPER=stepper_x1 FIELD=hend VALUE=1')
+    found = chips(front)
+    assert found != chips(klipper_front.Front(source, own_cfg('meijjaa')))
+    assert run_tool(front, collect.collect, RUNS['collect'][1] + [
+        '--axis', 'x', '--dataset', str(tmp_path / 'grid')])[0] == 0
+    assert_clean(front)
+    assert len(front.homings) == 2 and all(homing['chips'] == found for homing in front.homings)
+    assert chips(front) == found
 
 
 def mismatched_model(cfg: str) -> str:
