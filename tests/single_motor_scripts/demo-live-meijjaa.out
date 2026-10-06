@@ -1,0 +1,17 @@
+Cruise 1.00s does not fit the axis at 60 mm/s: shrinking to 0.80s
+Demo on motor A at 60 mm/s (live showcase, 1 rounds): defaults tbl2_toff3_hstrt5_hend2_tpfd4 vs tuned tbl1_toff4_hstrt2_hend3_tpfd4
+Preparing: home XY, park at center, switch the gantry and head motors off
+Baseline noise: median magnitude 5.0
+
+>> round 1/1  >> DEFAULTS  (tbl2_toff3_hstrt5_hend2_tpfd4) — listen
+
+>> round 1/1  >> TUNED  (tbl1_toff4_hstrt2_hend3_tpfd4) — listen
+   => def 733 -> tuned 637  1.2x less vibration
+
+motor A at 60 mm/s (mean vibration, lower is better):
+
+  defaults tbl2_toff3_hstrt5_hend2_tpfd4    733  ########################################
+  tuned    tbl1_toff4_hstrt2_hend3_tpfd4    637  ###################################
+
+  1.15x less vibration overall
+  1.15x less vibration above the 5 noise floor

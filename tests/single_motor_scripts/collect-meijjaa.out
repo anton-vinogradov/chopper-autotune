@@ -1,0 +1,99 @@
+Driver tmc5160 on stepper_x (motor A), accelerometer adxl345, kinematics cartesian, baseline {'tbl': 1, 'toff': 4, 'hstrt': 2, 'hend': 3, 'tpfd': 4}
+Cruise 1.25s does not fit the axis at 60 mm/s: shrinking to 0.80s (ranking is window-length invariant down to ~0.4s, measured)
+Plan: 2 combinations x 1 speeds -> 16 moves of 120.0mm, capture stream, ETA 0:00
+Preparing: home XY, park at center, switch the gantry and head motors off
+Baseline noise: median magnitude 5.0
+[1/2] tbl1_toff3_hstrt4_hend3 v60: median 701.1
+[2/2] tbl1_toff4_hstrt4_hend3 v60: median 637.4
+Validating 2 candidate(s) with 2 extra iterations each
+
+rank  tbl  toff  hstrt  hend  tpfd  magnitude   spread   n clicks   f_chop 
+1       1     4      4     3     -      637.4      0.0   6      0  34.1kHz 
+2       1     3      4     3     -      701.1      0.0   6      0  41.7kHz 
+
+Recommended for printer.cfg:
+
+[tmc5160 stepper_x]
+driver_TBL: 1
+driver_TOFF: 4
+driver_HSTRT: 4
+driver_HEND: 3
+Restoring baseline registers, homing
+Done in 0m: 12 ok, 0 failed -> <tmp>/dataset
+Next: chopper-autotune analyze <tmp>/dataset
+=== manifest.json ===
+{
+  "version": "0.3.0",
+  "created": "<time>",
+  "klippy_socket": "<front>",
+  "klipper_version": "klipper-v0.13.0",
+  "capture": "stream",
+  "axis": "x",
+  "stepper": "stepper_x",
+  "driver": "5160",
+  "fclk_hz": 12000000.0,
+  "accel_chip": "adxl345",
+  "kinematics": "cartesian",
+  "baseline_registers": {
+    "tbl": 1,
+    "toff": 4,
+    "hstrt": 2,
+    "hend": 3,
+    "tpfd": 4
+  },
+  "autotune": null,
+  "forced_spreadcycle": false,
+  "audible_khz": 30.0,
+  "audible_weight": 0.25,
+  "skip_audible": false,
+  "ranges": {
+    "tbl": [
+      1,
+      1
+    ],
+    "toff": [
+      3,
+      4
+    ],
+    "hstrt": [
+      4,
+      4
+    ],
+    "hend": [
+      3,
+      3
+    ],
+    "tpfd": null
+  },
+  "search": "grid",
+  "accel": 50.0,
+  "measure_time": 0.8,
+  "trim": 0.1,
+  "iterations": 1,
+  "validate": 3,
+  "travel_distance": 120.0,
+  "speeds": [
+    60
+  ],
+  "total_moves": 16,
+  "winner": {
+    "tbl": 1,
+    "toff": 4,
+    "hstrt": 4,
+    "hend": 3
+  }
+}
+=== measurements.jsonl ===
+{"id": "baseline", "kind": "baseline", "source": "stream", "ts": "<time>", "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 4.9891946709401225, "p95_magnitude": 6.788736613313221, "rms": 5.002311778648265}, "status": "ok"}
+{"id": "tbl1_toff3_hstrt4_hend3_v60_i0_fwd", "kind": "move", "source": "stream", "tbl": 1, "toff": 3, "hstrt": 4, "hend": 3, "speed": 60, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [5.361983, 6.001983], "score": {"samples": 256, "sample_rate_hz": 401.6, "median_magnitude": 701.0883069413526, "p95_magnitude": 953.3934946181088, "rms": 704.1757839208218, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "tbl1_toff3_hstrt4_hend3_v60_i0_rev", "kind": "move", "source": "stream", "tbl": 1, "toff": 3, "hstrt": 4, "hend": 3, "speed": 60, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [8.561983, 9.201983], "score": {"samples": 256, "sample_rate_hz": 401.6, "median_magnitude": 701.0883069413526, "p95_magnitude": 953.3934946181088, "rms": 704.1757839208218, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "tbl1_toff4_hstrt4_hend3_v60_i0_fwd", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 4, "hend": 3, "speed": 60, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [11.761983, 12.401983], "score": {"samples": 256, "sample_rate_hz": 401.6, "median_magnitude": 637.3530063103206, "p95_magnitude": 866.7213587437352, "rms": 640.1598035643835, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "tbl1_toff4_hstrt4_hend3_v60_i0_rev", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 4, "hend": 3, "speed": 60, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [14.961983, 15.601983], "score": {"samples": 256, "sample_rate_hz": 401.6, "median_magnitude": 637.3530063103206, "p95_magnitude": 866.7213587437352, "rms": 640.1598035643835, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "tbl1_toff4_hstrt4_hend3_v60_i1_fwd", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 4, "hend": 3, "speed": 60, "direction": 1, "iteration": 1, "ts": "<time>", "steady": [18.161983, 18.801983], "score": {"samples": 256, "sample_rate_hz": 401.6, "median_magnitude": 637.3530063103206, "p95_magnitude": 866.7213587437352, "rms": 640.1598035643835, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "tbl1_toff4_hstrt4_hend3_v60_i1_rev", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 4, "hend": 3, "speed": 60, "direction": -1, "iteration": 1, "ts": "<time>", "steady": [21.361983, 22.001983], "score": {"samples": 256, "sample_rate_hz": 401.6, "median_magnitude": 637.3530063103206, "p95_magnitude": 866.7213587437352, "rms": 640.1598035643835, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "tbl1_toff4_hstrt4_hend3_v60_i2_fwd", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 4, "hend": 3, "speed": 60, "direction": 1, "iteration": 2, "ts": "<time>", "steady": [24.561983, 25.201983], "score": {"samples": 256, "sample_rate_hz": 401.6, "median_magnitude": 637.3530063103206, "p95_magnitude": 866.7213587437352, "rms": 640.1598035643835, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "tbl1_toff4_hstrt4_hend3_v60_i2_rev", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 4, "hend": 3, "speed": 60, "direction": -1, "iteration": 2, "ts": "<time>", "steady": [27.761983, 28.401983], "score": {"samples": 256, "sample_rate_hz": 401.6, "median_magnitude": 637.3530063103206, "p95_magnitude": 866.7213587437352, "rms": 640.1598035643835, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "tbl1_toff3_hstrt4_hend3_v60_i1_fwd", "kind": "move", "source": "stream", "tbl": 1, "toff": 3, "hstrt": 4, "hend": 3, "speed": 60, "direction": 1, "iteration": 1, "ts": "<time>", "steady": [30.961983, 31.601983], "score": {"samples": 256, "sample_rate_hz": 401.6, "median_magnitude": 701.0883069413526, "p95_magnitude": 953.3934946181088, "rms": 704.1757839208218, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "tbl1_toff3_hstrt4_hend3_v60_i1_rev", "kind": "move", "source": "stream", "tbl": 1, "toff": 3, "hstrt": 4, "hend": 3, "speed": 60, "direction": -1, "iteration": 1, "ts": "<time>", "steady": [34.161983, 34.801983], "score": {"samples": 256, "sample_rate_hz": 401.6, "median_magnitude": 701.0883069413526, "p95_magnitude": 953.3934946181088, "rms": 704.1757839208218, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "tbl1_toff3_hstrt4_hend3_v60_i2_fwd", "kind": "move", "source": "stream", "tbl": 1, "toff": 3, "hstrt": 4, "hend": 3, "speed": 60, "direction": 1, "iteration": 2, "ts": "<time>", "steady": [37.361983, 38.001983], "score": {"samples": 256, "sample_rate_hz": 401.6, "median_magnitude": 701.0883069413526, "p95_magnitude": 953.3934946181088, "rms": 704.1757839208218, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "tbl1_toff3_hstrt4_hend3_v60_i2_rev", "kind": "move", "source": "stream", "tbl": 1, "toff": 3, "hstrt": 4, "hend": 3, "speed": 60, "direction": -1, "iteration": 2, "ts": "<time>", "steady": [40.561983, 41.201983], "score": {"samples": 256, "sample_rate_hz": 401.6, "median_magnitude": 701.0883069413526, "p95_magnitude": 953.3934946181088, "rms": 704.1757839208218, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}

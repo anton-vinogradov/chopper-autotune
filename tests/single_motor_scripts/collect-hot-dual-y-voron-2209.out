@@ -1,0 +1,66 @@
+Driver tmc2209 on stepper_x (motor A), accelerometer adxl345, kinematics corexy, baseline {'tbl': 1, 'toff': 4, 'hstrt': 2, 'hend': 3}
+Plan: 2 combinations x 1 speeds -> 16 moves of 87.0mm, capture stream, ETA 0:00
+Preparing: home XY, park at center, switch the gantry and head motors off
+Baseline noise: median magnitude 5.0
+[1/2] tbl1_toff3_hstrt4_hend3 v60: median 702.5
+Restoring baseline registers, homing
+=== manifest.json ===
+{
+  "version": "0.3.0",
+  "created": "<time>",
+  "klippy_socket": "<front>",
+  "klipper_version": "klipper-v0.13.0",
+  "capture": "stream",
+  "axis": "x",
+  "stepper": "stepper_x",
+  "driver": "2209",
+  "fclk_hz": 12000000.0,
+  "accel_chip": "adxl345",
+  "kinematics": "corexy",
+  "baseline_registers": {
+    "tbl": 1,
+    "toff": 4,
+    "hstrt": 2,
+    "hend": 3
+  },
+  "autotune": null,
+  "forced_spreadcycle": false,
+  "audible_khz": 30.0,
+  "audible_weight": 0.25,
+  "skip_audible": false,
+  "ranges": {
+    "tbl": [
+      1,
+      1
+    ],
+    "toff": [
+      3,
+      4
+    ],
+    "hstrt": [
+      4,
+      4
+    ],
+    "hend": [
+      3,
+      3
+    ],
+    "tpfd": null
+  },
+  "search": "grid",
+  "accel": 300.0,
+  "measure_time": 1.25,
+  "trim": 0.1,
+  "iterations": 1,
+  "validate": 3,
+  "travel_distance": 87.0,
+  "speeds": [
+    60
+  ],
+  "total_moves": 16
+}
+=== measurements.jsonl ===
+{"id": "baseline", "kind": "baseline", "source": "stream", "ts": "<time>", "score": {"samples": 500, "sample_rate_hz": 400.8, "median_magnitude": 5.006788633670006, "p95_magnitude": 6.80590501391184, "rms": 4.999952583099609}, "status": "ok"}
+{"id": "tbl1_toff3_hstrt4_hend3_v60_i0_fwd", "kind": "move", "source": "stream", "tbl": 1, "toff": 3, "hstrt": 4, "hend": 3, "speed": 60, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [5.734207, 6.734207], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 702.4644110077643, "p95_magnitude": 958.1671733724745, "rms": 703.8379766866179, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "tbl1_toff3_hstrt4_hend3_v60_i0_rev", "kind": "move", "source": "stream", "tbl": 1, "toff": 3, "hstrt": 4, "hend": 3, "speed": 60, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [7.384207, 8.384207], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 702.4644110077643, "p95_magnitude": 958.1671733724745, "rms": 703.8379766866179, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "tbl1_toff4_hstrt4_hend3_v60_i0_fwd", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 4, "hend": 3, "speed": 60, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [9.034207, 10.034207], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 638.6040100070585, "p95_magnitude": 871.0610667022496, "rms": 639.8527060787436, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}

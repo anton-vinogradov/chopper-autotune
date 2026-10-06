@@ -1,0 +1,54 @@
+Driver tmc2209 on stepper_x (motor A), accelerometer adxl345, kinematics corexy, current registers {'tbl': 1, 'toff': 4, 'hstrt': 2, 'hend': 3}
+Resonance map on motor A at the CURRENT registers (what you print with), accel 750
+Plan: 3 speeds (40..60 step 10) -> 6 moves, capture stream, ETA 0m 08s
+Preparing: home XY, park at center, switch the gantry and head motors off
+Baseline noise: median magnitude 5.0
+[1/3] 40 mm/s: median 50.7
+[2/3] 50 mm/s: median 259.3
+[3/3] 60 mm/s: median 638.1
+Homing
+
+=== Resonance map: motor A @ current registers ===
+  speed   vibration
+    40   ###                                 51
+    50   #############                      259
+    60   ################################   638
+
+VFAs (fine vertical banding) come from cruising on a motor resonance — that is what this map catches, so avoid the peaks above. It is NOT your top print speed: the motor holds torque far past any commanded speed (CHOPPER_ENVELOPE), the real ceiling is hotend flow, and corner ringing is the input shaper (SHAPER_CALIBRATE).
+Report: <tmp>/dataset/report.html (done in 0m)
+=== manifest.json ===
+{
+  "version": "0.3.0",
+  "created": "<time>",
+  "mode": "resonance-map",
+  "klippy_socket": "<front>",
+  "capture": "stream",
+  "axis": "x",
+  "stepper": "stepper_x",
+  "driver": "2209",
+  "accel_chip": "adxl345",
+  "kinematics": "corexy",
+  "registers": {
+    "tbl": 1,
+    "toff": 4,
+    "hstrt": 2,
+    "hend": 3
+  },
+  "accel": 750.0,
+  "measure_time": 1.0,
+  "trim": 0.1,
+  "iterations": 1,
+  "speeds": [
+    40,
+    50,
+    60
+  ]
+}
+=== measurements.jsonl ===
+{"id": "baseline", "kind": "baseline", "source": "stream", "ts": "<time>", "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 4.99850736498558, "p95_magnitude": 6.818404989476197, "rms": 4.998379939906612}, "status": "ok"}
+{"id": "v040_i0_fwd", "kind": "speed", "source": "stream", "speed": 40, "cruise": 1.0, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [5.312532, 6.112532], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 50.75131346789358, "p95_magnitude": 69.17314928114997, "rms": 50.92261803623615, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v040_i0_rev", "kind": "speed", "source": "stream", "speed": 40, "cruise": 1.0, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [6.41919, 7.21919], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 50.68581657310734, "p95_magnitude": 69.09537049936425, "rms": 50.97225193673549, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v050_i0_fwd", "kind": "speed", "source": "stream", "speed": 50, "cruise": 1.0, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [7.539184, 8.339184], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 258.93817114430175, "p95_magnitude": 355.79668215907486, "rms": 260.57069808219194, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v050_i0_rev", "kind": "speed", "source": "stream", "speed": 50, "cruise": 1.0, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [8.67251, 9.47251], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 259.7415252234888, "p95_magnitude": 355.6578451205022, "rms": 260.59541056131326, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v060_i0_fwd", "kind": "speed", "source": "stream", "speed": 60, "cruise": 1.0, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [9.819177, 10.619177], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 638.0683550434776, "p95_magnitude": 874.5973789459308, "rms": 640.211517892371, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v060_i0_rev", "kind": "speed", "source": "stream", "speed": 60, "cruise": 1.0, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [10.979177, 11.779177], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 638.0683550434776, "p95_magnitude": 874.5973789459308, "rms": 640.211517892371, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}

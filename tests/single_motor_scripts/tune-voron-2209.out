@@ -1,0 +1,429 @@
+=== Motor A ===
+Driver tmc2209 on stepper_x (motor A), accelerometer adxl345, kinematics corexy, baseline {'tbl': 1, 'toff': 4, 'hstrt': 2, 'hend': 3}
+Note: tmc2209 has no TPFD, skipping the TPFD sweep
+Plan: multi-start coordinate descent, up to 324 candidates -> up to 660 moves of 87.0mm, capture stream, ETA under 0:21
+Preparing: home XY, park at center, switch the gantry and head motors off
+Baseline noise: median magnitude 5.0
+  tbl1_toff4_hstrt2_hend3 -> 667.8
+  tbl0_toff2_hstrt2_hend3 -> 773.5
+  tbl0_toff3_hstrt2_hend3 -> 711.1
+  tbl0_toff4_hstrt2_hend3 -> 664.4
+  tbl0_toff5_hstrt2_hend3 -> 744.2
+  tbl0_toff6_hstrt2_hend3 -> 966.9 audible
+  tbl0_toff7_hstrt2_hend3 -> 1047.5 audible
+  tbl0_toff8_hstrt2_hend3 -> 1128.0 audible
+  tbl1_toff2_hstrt2_hend3 -> 773.5
+  tbl1_toff3_hstrt2_hend3 -> 716.9
+  tbl1_toff5_hstrt2_hend3 -> 886.3 audible
+  tbl1_toff6_hstrt2_hend3 -> 966.9 audible
+  tbl1_toff7_hstrt2_hend3 -> 1047.5 audible
+  tbl1_toff8_hstrt2_hend3 -> 1128.0 audible
+  tbl2_toff1_hstrt2_hend3 -> 838.0
+  tbl2_toff2_hstrt2_hend3 -> 773.5
+  tbl2_toff3_hstrt2_hend3 -> 722.0
+  tbl2_toff4_hstrt2_hend3 -> 671.0
+  tbl2_toff5_hstrt2_hend3 -> 886.3 audible
+  tbl2_toff6_hstrt2_hend3 -> 966.9 audible
+  tbl2_toff7_hstrt2_hend3 -> 1047.5 audible
+  tbl2_toff8_hstrt2_hend3 -> 1128.0 audible
+  tbl3_toff1_hstrt2_hend3 -> 838.0
+  tbl3_toff2_hstrt2_hend3 -> 773.5
+  tbl3_toff3_hstrt2_hend3 -> 726.6
+  tbl3_toff4_hstrt2_hend3 -> 673.9
+  tbl3_toff5_hstrt2_hend3 -> 886.3 audible
+  tbl3_toff6_hstrt2_hend3 -> 966.9 audible
+  tbl3_toff7_hstrt2_hend3 -> 1047.5 audible
+  tbl3_toff8_hstrt2_hend3 -> 1128.0 audible
+  tbl0_toff4_hstrt0_hend3 -> 660.4
+  tbl0_toff4_hstrt1_hend3 -> 662.4
+  tbl0_toff4_hstrt3_hend3 -> 666.4
+  tbl0_toff4_hstrt4_hend3 -> 668.3
+  tbl0_toff4_hstrt5_hend3 -> 670.3
+  tbl0_toff4_hstrt6_hend3 -> 672.3
+  tbl0_toff4_hstrt7_hend3 -> 674.3
+  tbl0_toff4_hstrt0_hend0 -> 757.1
+  tbl0_toff4_hstrt0_hend1 -> 724.2
+  tbl0_toff4_hstrt0_hend2 -> 691.3
+  tbl0_toff4_hstrt0_hend4 -> 695.5
+  tbl0_toff4_hstrt0_hend5 -> 730.8
+  tbl0_toff4_hstrt0_hend6 -> 766.3
+  tbl0_toff4_hstrt0_hend7 -> 802.0
+  tbl0_toff4_hstrt0_hend8 -> 837.9
+  tbl0_toff4_hstrt0_hend9 -> 874.0
+  tbl0_toff4_hstrt0_hend10 -> 910.4
+  tbl0_toff4_hstrt0_hend11 -> 946.9
+  tbl0_toff4_hstrt0_hend12 -> 983.6
+  tbl0_toff4_hstrt0_hend13 -> 1020.5
+  tbl0_toff4_hstrt0_hend14 -> 1057.6
+  tbl0_toff4_hstrt0_hend15 -> 1094.9
+  tbl0_toff2_hstrt0_hend3 -> 768.7
+  tbl0_toff3_hstrt0_hend3 -> 706.7
+  tbl0_toff5_hstrt0_hend3 -> 739.8
+  tbl0_toff6_hstrt0_hend3 -> 960.9 audible
+  tbl0_toff7_hstrt0_hend3 -> 1041.0 audible
+  tbl0_toff8_hstrt0_hend3 -> 1121.0 audible
+  tbl1_toff2_hstrt0_hend3 -> 768.7
+  tbl1_toff3_hstrt0_hend3 -> 712.5
+  tbl1_toff4_hstrt0_hend3 -> 663.8
+  tbl1_toff5_hstrt0_hend3 -> 880.8 audible
+  tbl1_toff6_hstrt0_hend3 -> 960.9 audible
+  tbl1_toff7_hstrt0_hend3 -> 1041.0 audible
+  tbl1_toff8_hstrt0_hend3 -> 1121.0 audible
+  tbl2_toff1_hstrt0_hend3 -> 832.8
+  tbl2_toff2_hstrt0_hend3 -> 768.7
+  tbl2_toff3_hstrt0_hend3 -> 717.6
+  tbl2_toff4_hstrt0_hend3 -> 667.0
+  tbl2_toff5_hstrt0_hend3 -> 880.8 audible
+  tbl2_toff6_hstrt0_hend3 -> 960.9 audible
+  tbl2_toff7_hstrt0_hend3 -> 1041.0 audible
+  tbl2_toff8_hstrt0_hend3 -> 1121.0 audible
+  tbl3_toff1_hstrt0_hend3 -> 832.8
+  tbl3_toff2_hstrt0_hend3 -> 768.7
+  tbl3_toff3_hstrt0_hend3 -> 722.2
+  tbl3_toff4_hstrt0_hend3 -> 669.9
+  tbl3_toff5_hstrt0_hend3 -> 880.8 audible
+  tbl3_toff6_hstrt0_hend3 -> 960.9 audible
+  tbl3_toff7_hstrt0_hend3 -> 1041.0 audible
+  tbl3_toff8_hstrt0_hend3 -> 1121.0 audible
+  tbl0_toff4_hstrt3_hend0 -> 759.4
+  tbl0_toff2_hstrt3_hend0 -> 864.8
+  tbl0_toff3_hstrt3_hend0 -> 803.1
+  tbl0_toff5_hstrt3_hend0 -> 840.7
+  tbl0_toff6_hstrt3_hend0 -> 1081.0 audible
+  tbl0_toff7_hstrt3_hend0 -> 1161.1 audible
+  tbl0_toff8_hstrt3_hend0 -> 1241.2 audible
+  tbl1_toff2_hstrt3_hend0 -> 864.8
+  tbl1_toff3_hstrt3_hend0 -> 809.6
+  tbl1_toff4_hstrt3_hend0 -> 763.4
+  tbl1_toff5_hstrt3_hend0 -> 1000.9 audible
+  tbl1_toff6_hstrt3_hend0 -> 1081.0 audible
+  tbl1_toff7_hstrt3_hend0 -> 1161.1 audible
+  tbl1_toff8_hstrt3_hend0 -> 1241.2 audible
+  tbl2_toff1_hstrt3_hend0 -> 928.9
+  tbl2_toff2_hstrt3_hend0 -> 864.8
+  tbl2_toff3_hstrt3_hend0 -> 815.5
+  tbl2_toff4_hstrt3_hend0 -> 767.0
+  tbl2_toff5_hstrt3_hend0 -> 1000.9 audible
+  tbl2_toff6_hstrt3_hend0 -> 1081.0 audible
+  tbl2_toff7_hstrt3_hend0 -> 1161.1 audible
+  tbl2_toff8_hstrt3_hend0 -> 1241.2 audible
+  tbl3_toff1_hstrt3_hend0 -> 928.9
+  tbl3_toff2_hstrt3_hend0 -> 864.8
+  tbl3_toff3_hstrt3_hend0 -> 820.7
+  tbl3_toff4_hstrt3_hend0 -> 770.3
+  tbl3_toff5_hstrt3_hend0 -> 1000.9 audible
+  tbl3_toff6_hstrt3_hend0 -> 1081.0 audible
+  tbl3_toff7_hstrt3_hend0 -> 1161.1 audible
+  tbl3_toff8_hstrt3_hend0 -> 1241.2 audible
+  tbl0_toff4_hstrt1_hend0 -> 757.1
+  tbl0_toff4_hstrt2_hend0 -> 757.1
+  tbl0_toff4_hstrt4_hend0 -> 761.7
+  tbl0_toff4_hstrt5_hend0 -> 764.0
+  tbl0_toff4_hstrt6_hend0 -> 766.3
+  tbl0_toff4_hstrt7_hend0 -> 768.6
+  tbl0_toff4_hstrt3_hend7 -> 809.2
+  tbl0_toff2_hstrt3_hend7 -> 916.4
+  tbl0_toff3_hstrt3_hend7 -> 853.4
+  tbl0_toff5_hstrt3_hend7 -> 892.4
+  tbl0_toff6_hstrt3_hend7 -> 1145.5 audible
+  tbl0_toff7_hstrt3_hend7 -> 1227.3 audible
+  tbl0_toff8_hstrt3_hend7 -> 1309.1 audible
+  tbl1_toff2_hstrt3_hend7 -> 916.4
+  tbl1_toff3_hstrt3_hend7 -> 860.2
+  tbl1_toff4_hstrt3_hend7 -> 813.3
+  tbl1_toff5_hstrt3_hend7 -> 1063.7 audible
+  tbl1_toff6_hstrt3_hend7 -> 1145.5 audible
+  tbl1_toff7_hstrt3_hend7 -> 1227.3 audible
+  tbl1_toff8_hstrt3_hend7 -> 1309.1 audible
+  tbl2_toff1_hstrt3_hend7 -> 981.9
+  tbl2_toff2_hstrt3_hend7 -> 916.4
+  tbl2_toff3_hstrt3_hend7 -> 866.2
+  tbl2_toff4_hstrt3_hend7 -> 817.1
+  tbl2_toff5_hstrt3_hend7 -> 1063.7 audible
+  tbl2_toff6_hstrt3_hend7 -> 1145.5 audible
+  tbl2_toff7_hstrt3_hend7 -> 1227.3 audible
+  tbl2_toff8_hstrt3_hend7 -> 1309.1 audible
+  tbl3_toff1_hstrt3_hend7 -> 981.9
+  tbl3_toff2_hstrt3_hend7 -> 916.4
+  tbl3_toff3_hstrt3_hend7 -> 871.7
+  tbl3_toff4_hstrt3_hend7 -> 820.6
+  tbl3_toff5_hstrt3_hend7 -> 1063.7 audible
+  tbl3_toff6_hstrt3_hend7 -> 1145.5 audible
+  tbl3_toff7_hstrt3_hend7 -> 1227.3 audible
+  tbl3_toff8_hstrt3_hend7 -> 1309.1 audible
+  tbl0_toff4_hstrt1_hend7 -> 804.4
+  tbl0_toff4_hstrt2_hend7 -> 806.8
+  tbl0_toff4_hstrt4_hend7 -> 811.6
+  tbl0_toff4_hstrt5_hend7 -> 814.0
+  tbl0_toff4_hstrt6_hend7 -> 816.4
+  tbl0_toff4_hstrt7_hend7 -> 818.8
+  tbl0_toff4_hstrt3_hend15 -> 1104.5
+  tbl0_toff2_hstrt3_hend15 -> 1207.0
+  tbl0_toff3_hstrt3_hend15 -> 1143.1
+  tbl0_toff5_hstrt3_hend15 -> 1194.2
+  tbl0_toff6_hstrt3_hend15 -> 1508.7 audible
+  tbl0_toff7_hstrt3_hend15 -> 1592.5 audible
+  tbl0_toff8_hstrt3_hend15 -> 1676.3 audible
+  tbl1_toff2_hstrt3_hend15 -> 1207.0
+  tbl1_toff3_hstrt3_hend15 -> 1152.0
+  tbl1_toff4_hstrt3_hend15 -> 1110.0
+  tbl1_toff5_hstrt3_hend15 -> 1424.9 audible
+  tbl1_toff6_hstrt3_hend15 -> 1508.7 audible
+  tbl1_toff7_hstrt3_hend15 -> 1592.5 audible
+  tbl1_toff8_hstrt3_hend15 -> 1676.3 audible
+  tbl2_toff1_hstrt3_hend15 -> 1274.0
+  tbl2_toff2_hstrt3_hend15 -> 1207.0
+  tbl2_toff3_hstrt3_hend15 -> 1159.9
+  tbl2_toff4_hstrt3_hend15 -> 1115.1
+  tbl2_toff5_hstrt3_hend15 -> 1424.9 audible
+  tbl2_toff6_hstrt3_hend15 -> 1508.7 audible
+  tbl2_toff7_hstrt3_hend15 -> 1592.5 audible
+  tbl2_toff8_hstrt3_hend15 -> 1676.3 audible
+  tbl3_toff1_hstrt3_hend15 -> 1274.0
+  tbl3_toff2_hstrt3_hend15 -> 1207.0
+  tbl3_toff3_hstrt3_hend15 -> 1167.0
+  tbl3_toff4_hstrt3_hend15 -> 1119.7
+  tbl3_toff5_hstrt3_hend15 -> 1424.9 audible
+  tbl3_toff6_hstrt3_hend15 -> 1508.7 audible
+  tbl3_toff7_hstrt3_hend15 -> 1592.5 audible
+  tbl3_toff8_hstrt3_hend15 -> 1676.3 audible
+  tbl0_toff4_hstrt1_hend15 -> 1098.1
+  tbl0_toff4_hstrt2_hend15 -> 1101.3
+Descent best tbl0_toff4_hstrt0_hend3; validating top 3 with extra runs
+Measuring the Klipper-default reference for the improvement report
+
+rank  tbl  toff  hstrt  hend  tpfd  magnitude   spread   n clicks   f_chop 
+1       0     4      0     3     -      638.6      0.0   6      0  35.7kHz 
+2       0     4      1     3     -      638.6      0.0   6      0  35.7kHz 
+3       1     4      0     3     -      638.6      0.0   6      0  34.1kHz 
+4       0     4      2     3     -      638.6      0.0   2      0  35.7kHz 
+5       0     4      3     3     -      638.6      0.0   2      0  35.7kHz 
+6       2     4      0     3     -      638.6      0.0   2      0  32.6kHz 
+7       1     4      2     3     -      638.6      0.0   2      0  34.1kHz 
+8       0     4      4     3     -      638.6      0.0   2      0  35.7kHz 
+9       3     4      0     3     -      638.6      0.0   2      0  31.2kHz 
+10      0     4      5     3     -      638.6      0.0   2      0  35.7kHz 
+
+vs Klipper defaults tbl2_toff3_hstrt5_hend0: 1.2x less vibration (798 -> 639)
+
+Recommended for printer.cfg:
+
+[tmc2209 stepper_x]
+driver_TBL: 0
+driver_TOFF: 4
+driver_HSTRT: 0
+driver_HEND: 3
+Restoring baseline registers, homing
+Done in 10m: 384 ok, 0 failed -> <tmp>/chopper-autotune/datasets/<stamp>_x
+Next: chopper-autotune analyze <tmp>/chopper-autotune/datasets/<stamp>_x
+=== Motor B ===
+Driver tmc2209 on stepper_y (motor B), accelerometer adxl345, kinematics corexy, baseline {'tbl': 1, 'toff': 4, 'hstrt': 2, 'hend': 3}
+Note: tmc2209 has no TPFD, skipping the TPFD sweep
+Plan: multi-start coordinate descent, up to 324 candidates -> up to 660 moves of 87.0mm, capture stream, ETA under 0:21
+Preparing: home XY, park at center, switch the gantry and head motors off
+Baseline noise: median magnitude 5.0
+Seeded from <tmp>/chopper-autotune/datasets/<stamp>_x: starting at tbl0_toff4_hstrt0_hend3
+  tbl0_toff4_hstrt0_hend3 -> 660.4
+  tbl0_toff2_hstrt0_hend3 -> 768.7
+  tbl0_toff3_hstrt0_hend3 -> 706.7
+  tbl0_toff5_hstrt0_hend3 -> 739.8
+  tbl0_toff6_hstrt0_hend3 -> 960.9 audible
+  tbl0_toff7_hstrt0_hend3 -> 1041.0 audible
+  tbl0_toff8_hstrt0_hend3 -> 1121.0 audible
+  tbl1_toff2_hstrt0_hend3 -> 768.7
+  tbl1_toff3_hstrt0_hend3 -> 712.5
+  tbl1_toff4_hstrt0_hend3 -> 663.8
+  tbl1_toff5_hstrt0_hend3 -> 880.8 audible
+  tbl1_toff6_hstrt0_hend3 -> 960.9 audible
+  tbl1_toff7_hstrt0_hend3 -> 1041.0 audible
+  tbl1_toff8_hstrt0_hend3 -> 1121.0 audible
+  tbl2_toff1_hstrt0_hend3 -> 832.8
+  tbl2_toff2_hstrt0_hend3 -> 768.7
+  tbl2_toff3_hstrt0_hend3 -> 717.6
+  tbl2_toff4_hstrt0_hend3 -> 667.0
+  tbl2_toff5_hstrt0_hend3 -> 880.8 audible
+  tbl2_toff6_hstrt0_hend3 -> 960.9 audible
+  tbl2_toff7_hstrt0_hend3 -> 1041.0 audible
+  tbl2_toff8_hstrt0_hend3 -> 1121.0 audible
+  tbl3_toff1_hstrt0_hend3 -> 832.8
+  tbl3_toff2_hstrt0_hend3 -> 768.7
+  tbl3_toff3_hstrt0_hend3 -> 722.2
+  tbl3_toff4_hstrt0_hend3 -> 669.9
+  tbl3_toff5_hstrt0_hend3 -> 880.8 audible
+  tbl3_toff6_hstrt0_hend3 -> 960.9 audible
+  tbl3_toff7_hstrt0_hend3 -> 1041.0 audible
+  tbl3_toff8_hstrt0_hend3 -> 1121.0 audible
+  tbl0_toff4_hstrt1_hend3 -> 662.4
+  tbl0_toff4_hstrt2_hend3 -> 664.4
+  tbl0_toff4_hstrt3_hend3 -> 666.4
+  tbl0_toff4_hstrt4_hend3 -> 668.3
+  tbl0_toff4_hstrt5_hend3 -> 670.3
+  tbl0_toff4_hstrt6_hend3 -> 672.3
+  tbl0_toff4_hstrt7_hend3 -> 674.3
+  tbl0_toff4_hstrt0_hend0 -> 757.1
+  tbl0_toff4_hstrt0_hend1 -> 724.2
+  tbl0_toff4_hstrt0_hend2 -> 691.3
+  tbl0_toff4_hstrt0_hend4 -> 695.5
+  tbl0_toff4_hstrt0_hend5 -> 730.8
+  tbl0_toff4_hstrt0_hend6 -> 766.3
+  tbl0_toff4_hstrt0_hend7 -> 802.0
+  tbl0_toff4_hstrt0_hend8 -> 837.9
+  tbl0_toff4_hstrt0_hend9 -> 874.0
+  tbl0_toff4_hstrt0_hend10 -> 910.4
+  tbl0_toff4_hstrt0_hend11 -> 946.9
+  tbl0_toff4_hstrt0_hend12 -> 983.6
+  tbl0_toff4_hstrt0_hend13 -> 1020.5
+  tbl0_toff4_hstrt0_hend14 -> 1057.6
+  tbl0_toff4_hstrt0_hend15 -> 1094.9
+  tbl0_toff4_hstrt3_hend0 -> 759.4
+  tbl0_toff2_hstrt3_hend0 -> 864.8
+  tbl0_toff3_hstrt3_hend0 -> 803.1
+  tbl0_toff5_hstrt3_hend0 -> 840.7
+  tbl0_toff6_hstrt3_hend0 -> 1081.0 audible
+  tbl0_toff7_hstrt3_hend0 -> 1161.1 audible
+  tbl0_toff8_hstrt3_hend0 -> 1241.2 audible
+  tbl1_toff2_hstrt3_hend0 -> 864.8
+  tbl1_toff3_hstrt3_hend0 -> 809.6
+  tbl1_toff4_hstrt3_hend0 -> 763.4
+  tbl1_toff5_hstrt3_hend0 -> 1000.9 audible
+  tbl1_toff6_hstrt3_hend0 -> 1081.0 audible
+  tbl1_toff7_hstrt3_hend0 -> 1161.1 audible
+  tbl1_toff8_hstrt3_hend0 -> 1241.2 audible
+  tbl2_toff1_hstrt3_hend0 -> 928.9
+  tbl2_toff2_hstrt3_hend0 -> 864.8
+  tbl2_toff3_hstrt3_hend0 -> 815.5
+  tbl2_toff4_hstrt3_hend0 -> 767.0
+  tbl2_toff5_hstrt3_hend0 -> 1000.9 audible
+  tbl2_toff6_hstrt3_hend0 -> 1081.0 audible
+  tbl2_toff7_hstrt3_hend0 -> 1161.1 audible
+  tbl2_toff8_hstrt3_hend0 -> 1241.2 audible
+  tbl3_toff1_hstrt3_hend0 -> 928.9
+  tbl3_toff2_hstrt3_hend0 -> 864.8
+  tbl3_toff3_hstrt3_hend0 -> 820.7
+  tbl3_toff4_hstrt3_hend0 -> 770.3
+  tbl3_toff5_hstrt3_hend0 -> 1000.9 audible
+  tbl3_toff6_hstrt3_hend0 -> 1081.0 audible
+  tbl3_toff7_hstrt3_hend0 -> 1161.1 audible
+  tbl3_toff8_hstrt3_hend0 -> 1241.2 audible
+  tbl0_toff4_hstrt1_hend0 -> 757.1
+  tbl0_toff4_hstrt2_hend0 -> 757.1
+  tbl0_toff4_hstrt4_hend0 -> 761.7
+  tbl0_toff4_hstrt5_hend0 -> 764.0
+  tbl0_toff4_hstrt6_hend0 -> 766.3
+  tbl0_toff4_hstrt7_hend0 -> 768.6
+  tbl0_toff4_hstrt3_hend7 -> 809.2
+  tbl0_toff2_hstrt3_hend7 -> 916.4
+  tbl0_toff3_hstrt3_hend7 -> 853.4
+  tbl0_toff5_hstrt3_hend7 -> 892.4
+  tbl0_toff6_hstrt3_hend7 -> 1145.5 audible
+  tbl0_toff7_hstrt3_hend7 -> 1227.3 audible
+  tbl0_toff8_hstrt3_hend7 -> 1309.1 audible
+  tbl1_toff2_hstrt3_hend7 -> 916.4
+  tbl1_toff3_hstrt3_hend7 -> 860.2
+  tbl1_toff4_hstrt3_hend7 -> 813.3
+  tbl1_toff5_hstrt3_hend7 -> 1063.7 audible
+  tbl1_toff6_hstrt3_hend7 -> 1145.5 audible
+  tbl1_toff7_hstrt3_hend7 -> 1227.3 audible
+  tbl1_toff8_hstrt3_hend7 -> 1309.1 audible
+  tbl2_toff1_hstrt3_hend7 -> 981.9
+  tbl2_toff2_hstrt3_hend7 -> 916.4
+  tbl2_toff3_hstrt3_hend7 -> 866.2
+  tbl2_toff4_hstrt3_hend7 -> 817.1
+  tbl2_toff5_hstrt3_hend7 -> 1063.7 audible
+  tbl2_toff6_hstrt3_hend7 -> 1145.5 audible
+  tbl2_toff7_hstrt3_hend7 -> 1227.3 audible
+  tbl2_toff8_hstrt3_hend7 -> 1309.1 audible
+  tbl3_toff1_hstrt3_hend7 -> 981.9
+  tbl3_toff2_hstrt3_hend7 -> 916.4
+  tbl3_toff3_hstrt3_hend7 -> 871.7
+  tbl3_toff4_hstrt3_hend7 -> 820.6
+  tbl3_toff5_hstrt3_hend7 -> 1063.7 audible
+  tbl3_toff6_hstrt3_hend7 -> 1145.5 audible
+  tbl3_toff7_hstrt3_hend7 -> 1227.3 audible
+  tbl3_toff8_hstrt3_hend7 -> 1309.1 audible
+  tbl0_toff4_hstrt1_hend7 -> 804.4
+  tbl0_toff4_hstrt2_hend7 -> 806.8
+  tbl0_toff4_hstrt4_hend7 -> 811.6
+  tbl0_toff4_hstrt5_hend7 -> 814.0
+  tbl0_toff4_hstrt6_hend7 -> 816.4
+  tbl0_toff4_hstrt7_hend7 -> 818.8
+  tbl0_toff4_hstrt3_hend15 -> 1104.5
+  tbl0_toff2_hstrt3_hend15 -> 1207.0
+  tbl0_toff3_hstrt3_hend15 -> 1143.1
+  tbl0_toff5_hstrt3_hend15 -> 1194.2
+  tbl0_toff6_hstrt3_hend15 -> 1508.7 audible
+  tbl0_toff7_hstrt3_hend15 -> 1592.5 audible
+  tbl0_toff8_hstrt3_hend15 -> 1676.3 audible
+  tbl1_toff2_hstrt3_hend15 -> 1207.0
+  tbl1_toff3_hstrt3_hend15 -> 1152.0
+  tbl1_toff4_hstrt3_hend15 -> 1110.0
+  tbl1_toff5_hstrt3_hend15 -> 1424.9 audible
+  tbl1_toff6_hstrt3_hend15 -> 1508.7 audible
+  tbl1_toff7_hstrt3_hend15 -> 1592.5 audible
+  tbl1_toff8_hstrt3_hend15 -> 1676.3 audible
+  tbl2_toff1_hstrt3_hend15 -> 1274.0
+  tbl2_toff2_hstrt3_hend15 -> 1207.0
+  tbl2_toff3_hstrt3_hend15 -> 1159.9
+  tbl2_toff4_hstrt3_hend15 -> 1115.1
+  tbl2_toff5_hstrt3_hend15 -> 1424.9 audible
+  tbl2_toff6_hstrt3_hend15 -> 1508.7 audible
+  tbl2_toff7_hstrt3_hend15 -> 1592.5 audible
+  tbl2_toff8_hstrt3_hend15 -> 1676.3 audible
+  tbl3_toff1_hstrt3_hend15 -> 1274.0
+  tbl3_toff2_hstrt3_hend15 -> 1207.0
+  tbl3_toff3_hstrt3_hend15 -> 1167.0
+  tbl3_toff4_hstrt3_hend15 -> 1119.7
+  tbl3_toff5_hstrt3_hend15 -> 1424.9 audible
+  tbl3_toff6_hstrt3_hend15 -> 1508.7 audible
+  tbl3_toff7_hstrt3_hend15 -> 1592.5 audible
+  tbl3_toff8_hstrt3_hend15 -> 1676.3 audible
+  tbl0_toff4_hstrt1_hend15 -> 1098.1
+  tbl0_toff4_hstrt2_hend15 -> 1101.3
+Descent best tbl0_toff4_hstrt0_hend3; validating top 3 with extra runs
+Measuring the Klipper-default reference for the improvement report
+
+rank  tbl  toff  hstrt  hend  tpfd  magnitude   spread   n clicks   f_chop 
+1       0     4      0     3     -      638.6      0.0   6      0  35.7kHz 
+2       0     4      1     3     -      638.6      0.0   6      0  35.7kHz 
+3       1     4      0     3     -      638.6      0.0   6      0  34.1kHz 
+4       0     4      2     3     -      638.6      0.0   2      0  35.7kHz 
+5       0     4      3     3     -      638.6      0.0   2      0  35.7kHz 
+6       2     4      0     3     -      638.6      0.0   2      0  32.6kHz 
+7       0     4      4     3     -      638.6      0.0   2      0  35.7kHz 
+8       3     4      0     3     -      638.6      0.0   2      0  31.2kHz 
+9       0     4      5     3     -      638.6      0.0   2      0  35.7kHz 
+10      0     4      6     3     -      638.6      0.0   2      0  35.7kHz 
+
+vs Klipper defaults tbl2_toff3_hstrt5_hend0: 1.2x less vibration (798 -> 639)
+
+Recommended for printer.cfg:
+
+[tmc2209 stepper_y]
+driver_TBL: 0
+driver_TOFF: 4
+driver_HSTRT: 0
+driver_HEND: 3
+Restoring baseline registers, homing
+Done in 8m: 326 ok, 0 failed -> <tmp>/chopper-autotune/datasets/<stamp>_y
+Next: chopper-autotune analyze <tmp>/chopper-autotune/datasets/<stamp>_y
+
+=== Summary ===
+[tmc2209 stepper_x]
+driver_TBL: 0
+driver_TOFF: 4
+driver_HSTRT: 0
+driver_HEND: 3
+# 1.2x less vibration than Klipper defaults
+
+
+[tmc2209 stepper_y]
+driver_TBL: 0
+driver_TOFF: 4
+driver_HSTRT: 0
+driver_HEND: 3
+# 1.2x less vibration than Klipper defaults
+
+
+To save stepper_x from this run alone: CHOPPER_ANALYZE DATASET=<tmp>/chopper-autotune/datasets/<stamp>_x SAVE=1
+To save stepper_y from this run alone: CHOPPER_ANALYZE DATASET=<tmp>/chopper-autotune/datasets/<stamp>_y SAVE=1
+CHOPPER_SAVE writes the latest result of every motor, and the stored CHOPPER_EXTRUDER winner, in one go (it skips the motors autotune manages). Or paste the lines above manually.
