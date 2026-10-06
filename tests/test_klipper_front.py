@@ -482,7 +482,9 @@ def test_an_awd_printer_homes_and_each_twin_takes_its_own_registers(source, prin
 
 
 TURNS = [('meijjaa', (1, 0), 'x'), ('meijjaa', (0, 1), 'y'), ('meijjaa', (1, 1), 'xy'),
-         ('voron-2209', (1, 1), 'x'), ('voron-2209', (1, -1), 'y'), ('voron-2209', (1, 0), 'xy')]
+         ('voron-2209', (1, 1), 'x'), ('voron-2209', (1, -1), 'y'), ('voron-2209', (1, 0), 'xy'),
+         # X 0.001 mm off the diagonal: Y's belt runs less than a microstep (0.0125 mm)
+         ('voron-2209', (1.00005, 1), 'x')]
 
 
 @pytest.mark.parametrize('source', SOURCES)
@@ -503,8 +505,33 @@ def test_a_head_move_turns_the_rails_whose_belts_run_and_no_other(source, printe
     move = front.head_moves[-1]
     assert move['start'][:2] + move['end'][:2] == pytest.approx(
         (x, y, x + 20 * head[0], y + 20 * head[1]))
-    assert ''.join(axis for axis in 'xy' if move['belts'][axis] > klipper_front.MOVING) == rails
+    assert ''.join(axis for axis in 'xy' if move['belts'][axis]) == rails
     assert front.moves == []                        # FORCE_MOVE's list holds FORCE_MOVEs alone
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('printer', ['meijjaa', 'voron-2209'])
+def test_a_head_move_records_the_trapezoid_the_planner_gives_it(source, printer):
+    # the window of a rail's measurement is cut from 'cruise': with minimum_cruise_ratio 0
+    # a G1 between two M400 runs FORCE_MOVE's trapezoid of the same length, speed and accel
+    require(source)
+    front = klipper_front.Front(source, awd_cfg(printer))
+    vec = current.stress_vector(AWD[printer]['kinematics'], 'x')
+    unit = [part / math.hypot(*vec) for part in vec]
+    center = [size / 2 for size in AWD[printer]['size']]
+    distance, speed, accel = 60., 40., 300.
+    start, end = ([at + sign * part * distance / 2 for at, part in zip(center, unit)]
+                  for sign in (-1, 1))
+    assert front.run('SET_VELOCITY_LIMIT MINIMUM_CRUISE_RATIO=0\nG28 X Y\nG90\nG1 X%s Y%s F6000\n'
+                     'M400\nM204 S%s\nG1 X%s Y%s F%s\nM400'
+                     % (start[0], start[1], accel, end[0], end[1], speed * 60)) is None
+    assert_clean(front)
+    move = front.head_moves[-1]
+    _, accel_t, cruise_t, cruise_v = front.calc_move_time(distance, speed, accel)
+    assert (move['speed'], move['accel'], move['cruise_ratio']) == pytest.approx((cruise_v, accel, 0))
+    assert [move['cruise'][0] - move['window'][0], move['cruise'][1] - move['cruise'][0],
+            move['window'][1] - move['cruise'][1]] == pytest.approx([accel_t, cruise_t, accel_t])
+    assert move['belts']['x'] == pytest.approx(speed * math.hypot(*vec))
 
 
 def rail_stroke(front, kl, axis: str, combos: dict, speed: float = 60.) -> float:

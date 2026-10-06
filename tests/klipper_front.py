@@ -37,7 +37,6 @@ from chopper_autotune.moonraker import MoonrakerError
 SRC = os.environ.get('KLIPPER_SRC_DIR') or os.path.join(os.path.dirname(__file__), '.klipper-src')
 SAMPLE_HZ = 400.0
 STANDSTILL_MG = 5.0
-MOVING = 1e-6               # mm, mm/s: a belt that runs less stands
 TMC_SECTIONS = ('tmc2130', 'tmc2208', 'tmc2209', 'tmc2240', 'tmc2660', 'tmc5160')
 CHOPPER_FIELDS = ('tbl', 'toff', 'hstrt', 'hend', 'tpfd', 'en_spreadcycle', 'en_pwm_mode', 'chm')
 STEPPER_SECTIONS = ('stepper_', 'extruder', 'manual_stepper ', 'dual_carriage')
@@ -673,7 +672,7 @@ class Front:
         mg = 0.
         for axis in 'xy':
             motors = self.rail(axis)
-            if move['belts'][axis] > MOVING and motors:
+            if move['belts'][axis] and motors:
                 mg += sum(self.shake(move['belts'][axis], self.chopper(move, motor))
                           for motor in motors) / len(motors)
         return mg or STANDSTILL_MG
@@ -792,9 +791,19 @@ class Front:
             return {'x': abs(x + y), 'y': abs(x - y), 'z': abs(z)}
         return {'x': abs(x), 'y': abs(y), 'z': abs(z)}
 
+    def microstep(self, axis: str) -> float:
+        """How far the belt of an axis's rail runs on one microstep."""
+        section = 'stepper_' + axis
+        return self.fileconfig.getfloat(section, 'rotation_distance') / (
+            self.fileconfig.getint(section, 'full_steps_per_rotation', fallback=200)
+            * self.fileconfig.getint(section, 'microsteps'))
+
     def turned(self, head) -> 'list[str]':
-        """The rails a head move of x, y, z turns."""
-        return [axis for axis, run in self.belts(head).items() if run > MOVING]
+        """The rails a head move of x, y, z turns: a belt that runs less than a microstep
+        stands (a G-code coordinate rounded to 0.001 mm leaves a CoreXY diagonal that much
+        off on the other belt)."""
+        return [axis for axis, run in self.belts(head).items()
+                if run and run >= self.microstep(axis)]
 
     def step(self, rails):
         """The motors of each rail step; an enable that caused has rewritten the driver by
@@ -812,10 +821,12 @@ class Front:
         end_v = cruise_v - accel * decel_t
         distance = ((start_v + cruise_v) * accel_t / 2 + cruise_v * cruise_t
                     + (cruise_v + end_v) * decel_t / 2)
+        turned = self.turned([r * distance for r in direction])
         self.head_moves.append({
             'start': start, 'end': tuple(s + r * distance for s, r in zip(start, direction)),
             'speed': cruise_v, 'accel': accel,
-            'belts': self.belts([r * cruise_v for r in direction]),
+            'belts': {axis: speed if axis in turned else 0.
+                      for axis, speed in self.belts([r * cruise_v for r in direction]).items()},
             'window': (print_time, print_time + accel_t + cruise_t + decel_t),
             'cruise': (print_time + accel_t, print_time + accel_t + cruise_t),
             'cruise_ratio': self.toolhead.get_status(0.)['minimum_cruise_ratio'],

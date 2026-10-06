@@ -129,6 +129,8 @@ def test_a_rail_run_moves_the_rail_by_g1_with_every_driver_on_the_same_registers
         assert [(start + end) / 2 for start, end in zip(move['start'][:2], move['end'][:2])] \
             == pytest.approx([size / 2 for size in AWD[printer]['size']])
     off_the_edges(front, printer)
+    # decision 5: every G28 on the registers and mode the config gives each driver
+    assert len(front.homings) == 2 and all(homing['chips'] == configured for homing in front.homings)
     woken = front.scripts.index('SET_STEPPER_ENABLE STEPPER=stepper_%s1 ENABLE=1' % axis)
     assert woken < min(index for index, script in enumerate(front.scripts)
                        if 'SET_TMC_FIELD STEPPER=stepper_%s1 ' % axis in script)
@@ -212,6 +214,7 @@ def test_a_whole_tune_finds_the_quietest_chopper_of_each_rail(source, printer, m
             winners[tuple(manifest['steppers'])] = (winner['toff'], winner['hend'])
     assert winners == {('stepper_x', 'stepper_x1'): (4, 3), ('stepper_y', 'stepper_y1'): (4, 3)}
     assert front.moves == []
+    assert front.homings and all(homing['chips'] == stock for homing in front.homings)
     assert {section: chip.chopper() for section, chip in front.chips.items()} == stock
 
 
