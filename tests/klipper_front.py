@@ -3,15 +3,16 @@ for the tools to run against: the G-code dispatcher, respond and display_status 
 console and the display), stepper_enable, force_move, gcode_move, the toolhead with its
 lookahead, and every TMC section as its own driver class (the real FieldHelper, current
 helper and commands). A tool talks to it through our own Klippy client over a socket
-pair, the requests the API server takes.
+pair, the requests the API server takes; a save, through FrontMoonraker.
 
 Stand-ins, where Klipper meets the hardware: the MCU and the step generation (a stepper
-only records that it stepped), the TMC chip (it keeps what is written and answers a read
-with it), the kinematics (the homing state, the range check, where the head is), G28
-(each axis lands on its endstop), a FORCE_MOVE's motion (recorded; the toolhead dwells as
-long as it would run), a heater reaching its target in a second, and an accelerometer
-streaming the vibration of a modeled printer (vibration()). Options no real module here
-reads land in the settings the way Klipper records them, numbers as floats.
+only records that it stepped; a toolhead move is recorded as the release queues it), the
+TMC chip (it keeps what is written and answers a read with it), the kinematics (the homing
+state, the range check, where the head is, the rails a move turns), G28 (each axis lands
+on its endstop), a FORCE_MOVE's motion (recorded; the toolhead dwells as long as it would
+run), a heater reaching its target in a second, and an accelerometer streaming the
+vibration of a modeled printer (shake()). Options no real module here reads land in the
+settings the way Klipper records them, numbers as floats.
 """
 import ast
 import configparser
@@ -28,11 +29,14 @@ import time
 import types
 from unittest import mock
 
+from chopper_autotune import tmc
 from chopper_autotune.klippy import Klippy
+from chopper_autotune.moonraker import MoonrakerError
 
 SRC = os.environ.get('KLIPPER_SRC_DIR') or os.path.join(os.path.dirname(__file__), '.klipper-src')
 SAMPLE_HZ = 400.0
 STANDSTILL_MG = 5.0
+MOVING = 1e-6               # mm, mm/s: a belt that runs less stands
 TMC_SECTIONS = ('tmc2130', 'tmc2208', 'tmc2209', 'tmc2240', 'tmc2660', 'tmc5160')
 CHOPPER_FIELDS = ('tbl', 'toff', 'hstrt', 'hend', 'tpfd', 'en_spreadcycle', 'en_pwm_mode', 'chm')
 STEPPER_SECTIONS = ('stepper_', 'extruder', 'manual_stepper ', 'dual_carriage')
@@ -137,10 +141,9 @@ class Clock:
 
 class Reactor:
     """Klipper's reactor on the printer's clock: the toolhead's print time plus what the
-    tools slept. A callback runs once the script that queued it has returned or a
-    FORCE_MOVE waits for the motor (TMC's enable handling takes the G-code mutex); of
-    the timers a TMC driver's status check runs, when it is due (once a second for an
-    enabled driver)."""
+    tools slept. A callback runs once the script that queued it has returned or a move
+    steps the motor (TMC's enable handling takes the G-code mutex); of the timers a TMC
+    driver's status check runs, when it is due (once a second for an enabled driver)."""
     NOW = 0.
     NEVER = 9e15
 
@@ -389,8 +392,8 @@ def parse_step_distance(config, units_in_radians=None, note_valid=False):
 
 class Kinematics:
     """What a tool meets of the kinematics: the homing state, the range check of
-    cartesian.py and corexy.py (an unhomed axis must not move), and the steppers a move
-    steps (both on CoreXY)."""
+    cartesian.py and corexy.py (an unhomed axis must not move), and the rails a move
+    turns (Front.belts())."""
 
     def __init__(self, front, toolhead, config):
         self.front = front
@@ -412,7 +415,7 @@ class Kinematics:
                 raise move.move_error()
         for index in range(3):
             self.head[index] += move.axes_d[index]
-        self.front.step([axis for index, axis in enumerate('xyz') if move.axes_d[index]])
+        self.front.step(self.front.turned(move.axes_d[:3]))
 
     def set_position(self, newpos, homing_axes=''):
         """A homing puts the head where Klipper counts it; SET_KINEMATIC_POSITION only
@@ -608,25 +611,48 @@ class Configfile:
 class Front:
     """The printer of `source` (a directory in tests/.klipper-src) with `printer_cfg`.
     scripts: every script run; console: every line Klipper printed; moves: each
-    FORCE_MOVE and what the chips held while it ran; chips: the TMC chip of each section;
-    crashes: what failed in this stand-in itself. A section with no module here (an
-    accelerometer, [resonance_tester]) is config only."""
+    FORCE_MOVE and what the chips held while it ran; head_moves: each move the toolhead
+    queued (G0/G1), the same way; chips: the TMC chip of each section; crashes: what
+    failed in this stand-in itself. A section with no module here (an accelerometer,
+    [resonance_tester]) is config only."""
 
     @staticmethod
-    def vibration(move: dict) -> float:
-        """How hard the head shakes, in mg, during a FORCE_MOVE: a resonance at 60 mm/s,
-        and of the chopper toff 4, hend 3 the quietest."""
-        chopper = move['chips'].get(next((section for section in move['chips']
-                                          if section.endswith(' ' + move['stepper'])), ''), {})
-        return ((40. + 600. * math.exp(-((move['speed'] - 60.) / 10.) ** 2))
+    def shake(speed: float, chopper: dict) -> float:
+        """How hard a motor shakes the head, in mg, with its belt at `speed`: a resonance
+        at 60 mm/s, and of the chopper toff 4, hend 3 the quietest."""
+        return ((40. + 600. * math.exp(-((speed - 60.) / 10.) ** 2))
                 * (1. + .1 * abs(chopper.get('toff', 4) - 4) + .05 * abs(chopper.get('hend', 3) - 3)))
 
+    @staticmethod
+    def chopper(move: dict, stepper: str) -> dict:
+        """What the driver of `stepper` held during a move ({} without one)."""
+        return move['chips'].get(next((section for section in move['chips']
+                                       if section.endswith(' ' + stepper)), ''), {})
+
+    def vibration(self, move: dict) -> float:
+        """How hard the head shakes, in mg, during a FORCE_MOVE: its motor alone."""
+        return self.shake(move['speed'], self.chopper(move, move['stepper']))
+
+    def head_vibration(self, move: dict) -> float:
+        """How hard the head shakes, in mg, during a toolhead move: each X/Y rail whose
+        belt runs, as its motors do on the average (a twin left on other registers
+        shows); standstill noise when neither runs."""
+        mg = 0.
+        for axis in 'xy':
+            motors = self.rail(axis)
+            if move['belts'][axis] > MOVING and motors:
+                mg += sum(self.shake(move['belts'][axis], self.chopper(move, motor))
+                          for motor in motors) / len(motors)
+        return mg or STANDSTILL_MG
+
     def samples(self, start: float, end: float) -> list:
-        """The accelerometer's samples over [start, end): standstill noise, a FORCE_MOVE
-        shaking the head as hard as vibration() says."""
+        """The accelerometer's samples over [start, end): standstill noise, a move shaking
+        the head as hard as vibration() or head_vibration() says."""
         out = []
         moves = [(move['window'], self.vibration(move)) for move in self.moves
                  if move['window'][1] > start and move['window'][0] < end]
+        moves += [(move['window'], self.head_vibration(move)) for move in self.head_moves
+                  if move['window'][1] > start and move['window'][0] < end]
         count = int((end - start) * SAMPLE_HZ)
         for i in range(count):
             t = start + i / SAMPLE_HZ
@@ -648,7 +674,8 @@ class Front:
         self.fileconfig.read_string(printer_cfg)
         self.tracking = {}
         self.homing = False
-        self.console, self.moves, self.chips, self.steppers, self.sensors = [], [], {}, {}, []
+        self.console, self.moves, self.head_moves, self.chips = [], [], [], {}
+        self.steppers, self.sensors = {}, []
         self.crashes, self.scripts, self.listeners = [], [], []
         with release_modules(source, self) as import_module:
             self.import_module = import_module
@@ -699,6 +726,7 @@ class Front:
             printer.send_event('klippy:ready')
             printer.reactor.run_callbacks()
         del self.import_module
+        self.toolhead.trapq_append = self.trapq_append
 
     def heat(self, eventtime: float):
         """A second passes: each heater is at its target (off: the room's 25 C)."""
@@ -716,15 +744,45 @@ class Front:
             self.printer.objects[name].register_stepper(config, stepper)
 
     def rail(self, axis: str) -> 'list[str]':
-        """The steppers that move with an axis: stepper_x, its twins; both on CoreXY."""
-        kinematics = self.fileconfig.get('printer', 'kinematics')
-        axes = 'xy' if axis in 'xy' and kinematics.endswith(('corexy', 'hbot')) else axis
+        """The steppers of an axis's rail: stepper_x and its twins (stepper_x1...)."""
         return [name for name in self.steppers
-                if name.startswith('stepper_') and name[8:9] in axes]
+                if name.startswith('stepper_') and name[8:9] == axis]
 
-    def step(self, axes):
-        for name in sorted({name for axis in axes for name in self.rail(axis)}):
+    def belts(self, head) -> dict:
+        """How far (or how fast) each rail's belt runs for the head's x, y, z: CoreXY's X
+        rail runs x+y, its Y rail x-y (corexy.py)."""
+        x, y, z = head
+        if self.fileconfig.get('printer', 'kinematics').endswith(('corexy', 'hbot')):
+            return {'x': abs(x + y), 'y': abs(x - y), 'z': abs(z)}
+        return {'x': abs(x), 'y': abs(y), 'z': abs(z)}
+
+    def turned(self, head) -> 'list[str]':
+        """The rails a head move of x, y, z turns."""
+        return [axis for axis, run in self.belts(head).items() if run > MOVING]
+
+    def step(self, rails):
+        """The motors of each rail step; an enable that caused has rewritten the driver by
+        the time the move runs."""
+        for name in sorted(name for axis in rails for name in self.rail(axis)):
             self.steppers[name].step(self.toolhead.print_time)
+        self.printer.reactor.run_callbacks()
+
+    def trapq_append(self, trapq, print_time, accel_t, cruise_t, decel_t, start_x, start_y,
+                     start_z, axes_r_x, axes_r_y, axes_r_z, start_v, cruise_v, accel):
+        """The toolhead queues a move as the release planned it: its window and cruise,
+        where it starts and ends, the head's speed and accel, each rail's belt speed, and
+        what the chips held while it ran."""
+        start, direction = (start_x, start_y, start_z), (axes_r_x, axes_r_y, axes_r_z)
+        end_v = cruise_v - accel * decel_t
+        distance = ((start_v + cruise_v) * accel_t / 2 + cruise_v * cruise_t
+                    + (cruise_v + end_v) * decel_t / 2)
+        self.head_moves.append({
+            'start': start, 'end': tuple(s + r * distance for s, r in zip(start, direction)),
+            'speed': cruise_v, 'accel': accel,
+            'belts': self.belts([r * cruise_v for r in direction]),
+            'window': (print_time, print_time + accel_t + cruise_t + decel_t),
+            'cruise': (print_time + accel_t, print_time + accel_t + cruise_t),
+            'chips': {section: chip.chopper() for section, chip in self.chips.items()}})
 
     def manual_move(self, stepper, dist, speed, accel=0.):
         """force_move's own manual_move stepped the motor through the step generation;
@@ -749,7 +807,8 @@ class Front:
             position['XYZ'.index(axis)] = self.fileconfig.getfloat(
                 'stepper_' + axis.lower(), 'position_endstop',
                 fallback=self.fileconfig.getfloat('stepper_' + axis.lower(), 'position_min', fallback=0.))
-        self.step([axis.lower() for axis in axes])
+        self.step({rail for axis in axes
+                   for rail in self.turned([float(axis == name) for name in 'XYZ'])})
         self.homing = True
         try:
             self.toolhead.set_position(position, homing_axes=''.join(axis.lower() for axis in axes))
@@ -894,3 +953,45 @@ class Front:
         else:
             error = 'No registered endpoint %s' % method
         return result, error
+
+
+class FrontMoonraker:
+    """Moonraker in front of a Front: the files API on its printer.cfg (no includes),
+    G-code to the printer, and a RESTART that builds the printer again from the
+    printer.cfg uploaded, the release's TMC modules reading the saved driver_* lines."""
+
+    def __init__(self, source: str, printer_cfg: str):
+        self.source, self.files = source, {'printer.cfg': printer_cfg}
+        self.front = Front(source, printer_cfg)
+        self.uploads, self.restarts = [], 0
+
+    def settings(self) -> dict:
+        return self.front.status({'configfile': ['settings']})['configfile']['settings']
+
+    def accepted_commands(self) -> 'set[str]':
+        return set(self.front.status({'gcode': ['commands']})['gcode']['commands'])
+
+    def is_printing(self) -> bool:
+        return False
+
+    def list_config_files(self) -> 'list[str]':
+        return list(self.files)
+
+    def download_config(self, name: str) -> str:
+        return self.files[name]
+
+    def upload_config(self, name: str, content: str):
+        self.uploads.append(name)
+        self.files[name] = content
+
+    def gcode(self, script: str):
+        if script.strip() == 'RESTART':
+            self.restarts += 1
+            self.front = Front(self.source, self.files['printer.cfg'])
+            return
+        error = self.front.run(script)
+        if error is not None:
+            raise MoonrakerError(error)
+
+    def set_tmc_fields(self, stepper: str, fields: dict):
+        self.gcode(tmc.set_fields_script(stepper, fields))

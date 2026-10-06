@@ -31,7 +31,7 @@ import fake_klipper
 from klipper_config import CFG, named, read_like_klipper, selfcheck, settings_of
 from chopper_autotune import collect, tmc
 from chopper_autotune.belts import CAPTURE, sweep_chip, sweep_command
-from chopper_autotune.current import BELT_SPEEDS, shaper_freqs, stress_vector
+from chopper_autotune.current import BELT_SPEEDS, belt_cap, shaper_freqs, stress_vector, velocity_caps
 from chopper_autotune.envelope import STRESS_REPS
 from chopper_autotune.collect import ACCEL_SECTIONS, accel_command_chip, live_stealth, resolve_accel_chip
 from chopper_autotune.klippy import Klippy, KlippyError, fence_markers
@@ -1086,6 +1086,65 @@ def test_every_belt_speed_of_the_current_pattern_is_reached(source, kinematics, 
         assert stroke_speeds(rung) == pytest.approx([rung['speed']] * len(strokes), abs=0.5)
         assert [stroke['length'] for stroke in strokes] == pytest.approx([length] * len(strokes))
         assert [stroke['accel'] for stroke in strokes] == pytest.approx([accel] * len(strokes))
+
+
+G1 = {'tool': 'g1', 'motor': 'x', 'max_velocity': 1500, 'max_accel': 500, 'accel': 500,
+      'measure_time': 1.0, 'trim': 0.1}
+G1_SPEEDS = [20, 40, 60, 80, 100, 120]
+
+
+@pytest.mark.parametrize('source', fetched('toolhead.py'))
+@pytest.mark.parametrize('kinematics, motor', [('cartesian', 'x'), ('corexy', 'x'), ('corexy', 'y')])
+def test_a_g1_stroke_runs_the_force_move_trapezoid_and_the_window_lies_in_its_cruise(
+        source, kinematics, motor):
+    # the motors of a rail move together only on G1 (#129): the window the tools cut back
+    # from the stroke's end must land in its cruise as on a FORCE_MOVE; on CoreXY's
+    # diagonal the other belt stands
+    require(source)
+    result = rig(source, **dict(G1, kinematics=kinematics, motor=motor, speeds=G1_SPEEDS))
+    for speed, stroke in zip(G1_SPEEDS, result['rungs']):
+        accel_t, cruise_t, top = stroke['force_move']
+        assert top == speed
+        assert (stroke['speed'], stroke['accel'], stroke['other'], stroke['start_v']) \
+            == pytest.approx((speed, 500, 0, 0), abs=1e-3)
+        assert (stroke['accel_t'], stroke['cruise_t'], stroke['decel_t']) \
+            == pytest.approx((accel_t, cruise_t, accel_t), abs=1e-6)
+        assert stroke['end'] == pytest.approx(0, abs=1e-9)        # M400's print time: its end
+        assert min(stroke['window']) > 0
+
+
+G1_DEVIATIONS = {
+    # what is left in force, and the belt speed the planner gives the stroke instead
+    'minimum_cruise_ratio 0.5': (dict(accel=50, speeds=[60, 120]),
+                                 lambda speed: math.sqrt(collect.travel_for(speed, 50, 1.0) * 50 * .5)),
+    'M220 S80': (dict(before=['M220 S80'], speeds=[60]), lambda speed: .8 * speed),
+    'max_velocity': (dict(kinematics='corexy', max_velocity=80, speeds=[120]),
+                     lambda speed: belt_cap(velocity_caps('corexy', stress_vector('corexy', 'x'), 80))),
+}
+
+
+@pytest.mark.parametrize('source', fetched('toolhead.py'))
+@pytest.mark.parametrize('limit', G1_DEVIATIONS)
+def test_klipper_runs_a_g1_stroke_slower_with_the_window_still_in_its_cruise(source, limit):
+    # nothing in the stroke tells: what holds it back must be lifted or refused before
+    # the first move, or the dataset files the planned speed under a slower one
+    require(source)
+    scenario, runs = G1_DEVIATIONS[limit]
+    result = rig(source, **{**G1, 'kinematics': 'cartesian', 'free': False, **scenario})
+    for speed, stroke in zip(scenario['speeds'], result['rungs']):
+        assert stroke['speed'] == pytest.approx(runs(speed), abs=0.5)
+        assert stroke['speed'] < speed - 1
+        assert min(stroke['window']) > 0
+
+
+@pytest.mark.parametrize('source', fetched('toolhead.py'))
+@pytest.mark.parametrize('limit', ['minimum_cruise_ratio 0.5', 'M220 S80'])
+def test_freeing_the_strokes_lets_a_g1_stroke_reach_its_speed(source, limit):
+    require(source)
+    scenario, _ = G1_DEVIATIONS[limit]
+    result = rig(source, **{**G1, 'kinematics': 'cartesian', **scenario})
+    assert [stroke['speed'] for stroke in result['rungs']] == pytest.approx(scenario['speeds'], abs=0.5)
+    assert all(min(stroke['window']) > 0 for stroke in result['rungs'])
 
 
 @pytest.mark.parametrize('source', fetched('input_shaper.py'))

@@ -2,7 +2,9 @@
 every command they send must reach the real handler and do what the tool means, with no
 error line in the console. A fake that repeats our own assumptions passed a command
 Klipper then refused, or took in a way the tool never meant."""
+import itertools
 import json
+import math
 import os
 import types
 
@@ -10,8 +12,9 @@ import pytest
 
 import fake_klipper
 import klipper_front
-from chopper_autotune import collect, tmc
+from chopper_autotune import collect, current, tmc
 from chopper_autotune.cli import build_parser
+from chopper_autotune.metrics import vibration_score
 
 SOURCES = klipper_front.Front.sources()
 
@@ -40,6 +43,57 @@ def printer_cfg(kinematics: str = 'corexy', driver: str = '2209', extra: str = '
             '[adxl345]\ncs_pin: P40\n\n[resonance_tester]\naccel_chip: adxl345\n'
             'probe_points: 125, 125, 20\n\n[force_move]\nenable_force_move: True\n\n[respond]\n\n'
             '[display_status]\n\n%s' % (kinematics, rails, drivers, extra))
+
+
+AWD = {
+    # meijjaa's cross gantry (#129): sensorless TMC5160s, StallGuard on the main motor alone
+    'meijjaa': {'kinematics': 'cartesian', 'driver': '5160', 'sensorless': True, 'size': (300, 210),
+                'endstop': 'min', 'limits': 'max_accel: 500\nminimum_cruise_ratio: 0.5'},
+    # a Voron 2.4 350 with four X/Y motors, homing to the max: on switches, or sensorless
+    'voron-2209': {'kinematics': 'corexy', 'driver': '2209', 'sensorless': False, 'size': (350, 350),
+                   'endstop': 'max', 'limits': 'max_accel: 3000'},
+    'voron-5160': {'kinematics': 'corexy', 'driver': '5160', 'sensorless': True, 'size': (350, 350),
+                   'endstop': 'max', 'limits': 'max_accel: 3000'},
+}
+
+
+def awd_cfg(printer: str, twins: bool = True) -> str:
+    """printer.cfg of an AWD printer with the tool installed: X on stepper_x and
+    stepper_x1, Y on stepper_y and stepper_y1, each motor with a driver and an enable pin
+    of its own; a Z, an ADXL345. twins=False: the same printer with a motor per axis."""
+    spec = AWD[printer]
+    driver = spec['driver']
+    pins = itertools.count(100)
+
+    def pin(prefix: str = '') -> str:
+        return '%sP%d' % (prefix, next(pins))
+    rails = drivers = ''
+    for axis, size in zip('xy', spec['size']):
+        for name in ['stepper_' + axis] + ['stepper_%s1' % axis] * twins:
+            rails += ('[%s]\nstep_pin: %s\ndir_pin: %s\nenable_pin: %s\nmicrosteps: 16\n'
+                      'rotation_distance: 40\n' % (name, pin(), pin(), pin('!')))
+            drivers += '[tmc%s %s]\n%s: %s\nrun_current: 0.8\nsense_resistor: %s\n' % (
+                driver, name, 'cs_pin' if driver == '5160' else 'uart_pin', pin(),
+                '0.075' if driver == '5160' else '0.110')
+            if name == 'stepper_' + axis:           # a twin homes on its main motor's endstop
+                if spec['sensorless']:
+                    rails += 'endstop_pin: tmc%s_%s:virtual_endstop\nhoming_retract_dist: 0\n' % (
+                        driver, name)
+                    drivers += 'diag1_pin: %s\ndriver_SGT: 1\n' % pin('^!')
+                else:
+                    rails += 'endstop_pin: %s\n' % pin('^')
+                rails += 'position_endstop: %d\nposition_max: %d\n' % (
+                    0 if spec['endstop'] == 'min' else size, size)
+            rails += '\n'
+            drivers += '\n'
+    rails += ('[stepper_z]\nstep_pin: %s\ndir_pin: %s\nenable_pin: %s\nmicrosteps: 16\n'
+              'rotation_distance: 8\nendstop_pin: %s\nposition_endstop: 0\nposition_max: 200\n\n'
+              % (pin(), pin(), pin('!'), pin('^')))
+    return ('[printer]\nkinematics: %s\nmax_velocity: 500\n%s\n\n%s%s[adxl345]\ncs_pin: %s\n\n'
+            '[resonance_tester]\naccel_chip: adxl345\nprobe_points: %d, %d, 20\n\n'
+            '[force_move]\nenable_force_move: True\n\n[respond]\n\n[display_status]\n'
+            % (spec['kinematics'], spec['limits'], rails, drivers, pin(),
+               spec['size'][0] / 2, spec['size'][1] / 2))
 
 
 def assert_clean(front):
@@ -409,3 +463,103 @@ def test_the_show_on_both_motors_puts_back_the_printer_it_found(source):
     assert_clean(front)
     assert {section: chip.chopper() for section, chip in front.chips.items()} == chips
     assert limits_in_force(front) == limits
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('printer', AWD)
+def test_an_awd_printer_homes_and_each_twin_takes_its_own_registers(source, printer):
+    require(source)
+    front = klipper_front.Front(source, awd_cfg(printer))
+    driver = AWD[printer]['driver']
+    assert sorted(front.chips) == sorted('tmc%s stepper_%s' % (driver, name)
+                                         for name in ('x', 'x1', 'y', 'y1'))
+    stock = {section: chip.chopper() for section, chip in front.chips.items()}
+    assert front.run('G28 X Y\nSET_TMC_FIELD STEPPER=stepper_x1 FIELD=toff VALUE=6') is None
+    assert_clean(front)
+    assert [section for section, chip in front.chips.items()
+            if chip.chopper() != stock[section]] == ['tmc%s stepper_x1' % driver]
+    assert front.status({'toolhead': ['homed_axes']})['toolhead']['homed_axes'] == 'xy'
+
+
+TURNS = [('meijjaa', (1, 0), 'x'), ('meijjaa', (0, 1), 'y'), ('meijjaa', (1, 1), 'xy'),
+         ('voron-2209', (1, 1), 'x'), ('voron-2209', (1, -1), 'y'), ('voron-2209', (1, 0), 'xy')]
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('printer, head, rails', TURNS)
+def test_a_head_move_turns_the_rails_whose_belts_run_and_no_other(source, printer, head, rails):
+    # every X/Y motor stepped on any CoreXY move: motor A's diagonal switched B's motors on
+    require(source)
+    front = klipper_front.Front(source, awd_cfg(printer))
+    x, y = (size / 2 for size in AWD[printer]['size'])
+    off = '\n'.join('SET_STEPPER_ENABLE STEPPER=%s ENABLE=0' % name
+                    for axis in 'xy' for name in front.rail(axis))
+    assert front.run('G28 X Y\nG90\nG1 X%s Y%s F6000\nM400\n%s\nG1 X%s Y%s F3000\nM400'
+                     % (x, y, off, x + 20 * head[0], y + 20 * head[1])) is None
+    assert_clean(front)
+    steppers = front.status({'stepper_enable': None})['stepper_enable']['steppers']
+    assert sorted(name for name, on in steppers.items() if on) \
+        == sorted(name for axis in rails for name in front.rail(axis))
+    move = front.head_moves[-1]
+    assert move['start'][:2] + move['end'][:2] == pytest.approx(
+        (x, y, x + 20 * head[0], y + 20 * head[1]))
+    assert ''.join(axis for axis in 'xy' if move['belts'][axis] > klipper_front.MOVING) == rails
+    assert front.moves == []                        # FORCE_MOVE's list holds FORCE_MOVEs alone
+
+
+def rail_stroke(front, kl, axis: str, combos: dict, speed: float = 60.) -> float:
+    """A measurement on G1 as a rail would run one, by hand: each driver of the rail on its
+    combo, the head across the bed's center along the rail's belt at `speed` (belt mm/s),
+    the window cut from the stream (steady_window); its median vibration."""
+    accel, measure_time = 500., 1.
+    vec = current.stress_vector(front.fileconfig.get('printer', 'kinematics'), axis)
+    factor = math.hypot(*vec)                       # belt mm per head mm along vec
+    half = collect.travel_for(speed, accel, measure_time) / factor ** 2 / 2
+    center = [front.fileconfig.getfloat('stepper_' + name, 'position_max') / 2 for name in 'xy']
+    start, end = ([at + sign * part * half for at, part in zip(center, vec)] for sign in (-1, 1))
+    kl.gcode('\n'.join(tmc.set_fields_script(stepper, combo.fields())
+                       for stepper, combo in combos.items()))
+    kl.gcode('G1 X%.3f Y%.3f F6000\nM400\nM204 S%.3f' % (start[0], start[1], accel / factor))
+    t_end, data = collect.capture_stream(types.SimpleNamespace(kl=kl), 'G1 X%.3f Y%.3f F%.3f' % (
+        end[0], end[1], speed / factor * 60), measure_time + speed / accel)
+    steady = collect.window(data, *collect.steady_window(t_end, speed, accel, measure_time, .1))
+    return vibration_score(steady, 0.)['median_magnitude']
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('printer', ['meijjaa', 'voron-2209'])
+def test_a_g1_stroke_streams_the_vibration_of_every_driver_on_its_rail(source, printer):
+    # a twin left on other registers than its main motor's must be heard, as on a printer
+    require(source)
+    front = klipper_front.Front(source, awd_cfg(printer))
+    quiet, loud = tmc.Chopper(2, 4, 4, 3), tmc.Chopper(2, 7, 4, 9)
+    kl = front.connect()
+    try:
+        kl.subscribe_accel('adxl345')
+        kl.gcode('G28 X Y\nG90')
+        heard = [rail_stroke(front, kl, 'x', {'stepper_x': main, 'stepper_x1': twin})
+                 for main, twin in ((quiet, quiet), (quiet, loud), (loud, loud))]
+    finally:
+        kl.close()
+    assert_clean(front)
+    assert heard[0] < heard[1] < heard[2], heard
+    stroke = front.head_moves[-1]
+    assert (stroke['belts']['x'], stroke['belts']['y']) == pytest.approx((60, 0), abs=1e-3)
+    assert stroke['chips']['tmc%s stepper_x1' % AWD[printer]['driver']]['toff'] == loud.toff
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_a_saved_winner_is_what_the_driver_holds_after_the_restart(source):
+    # the driver_* lines a save writes, read by the release's own TMC module
+    from chopper_autotune import analyze
+    require(source)
+    mk = klipper_front.FrontMoonraker(source, printer_cfg())
+    stock = mk.front.chips['tmc2209 stepper_y'].chopper()
+    winner = tmc.Chopper(1, 5, 4, 2)
+    analyze.run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x'}, winner)])
+    assert mk.restarts == 1 and mk.uploads == ['printer.chopper-backup.cfg', 'printer.cfg']
+    chips = mk.front.chips
+    assert {name: chips['tmc2209 stepper_x'].field(name) for name in winner.fields()} \
+        == winner.fields()
+    assert chips['tmc2209 stepper_y'].chopper() == stock
+    assert_clean(mk.front)
