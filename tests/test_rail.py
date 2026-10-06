@@ -213,6 +213,21 @@ def test_meijjaas_low_limits_get_an_accel_the_bed_takes(source, axis, accel, tmp
 
 
 @pytest.mark.parametrize('source', SOURCES)
+def test_a_cruise_shrunk_to_the_bed_rounds_down_inside_the_kept_edges(source, tmp_path, capsys):
+    # 207 mm/s on meijjaa's X takes its belt's ceiling, 500 mm/s2: 0.745 s of cruise fit the
+    # 240 mm between the edges, 0.75 s would cross each by half a millimetre
+    require(source)
+    front = klipper_front.Front(source, awd_cfg('meijjaa'))
+    root = tmp_path / 'grid'
+    assert run_tool(front, collect.collect, RUNS['collect'][1] + [
+        '--axis', 'x', '--speed', '207', '--toff', '4:4', '--dataset', str(root)])[0] == 0
+    assert_clean(front)
+    assert 'shrinking to 0.74s' in capsys.readouterr().out
+    assert Dataset.open(root).manifest()['measure_time'] == 0.74
+    off_the_edges(front, 'meijjaa')
+
+
+@pytest.mark.parametrize('source', SOURCES)
 @pytest.mark.parametrize('printer', ['meijjaa', 'voron-2209'])
 def test_a_whole_tune_finds_the_quietest_chopper_of_each_rail(source, printer, monkeypatch):
     from chopper_autotune import tune

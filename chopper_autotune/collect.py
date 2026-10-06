@@ -781,18 +781,19 @@ def travel_for(speed: float, accel: float, measure_time: float) -> float:
 
 
 def fit_measure_time(speeds: 'list[int]', accel: float, limit: float,
-                     requested: float) -> float:
+                     requested: float, keep_limit: bool = False) -> float:
     """The cruise time that fits the axis at the fastest requested speed. A high
     resonance speed can push the default cruise past the travel limit (measured: motor B
     at 96 mm/s needed 129 mm against a 104 mm cap, which used to abort the tune) — shrink
-    instead: ranking is invariant down to ~0.4 s of cruise (window study)."""
+    instead: ranking is invariant down to ~0.4 s of cruise (window study). keep_limit: the
+    limit keeps the bed edges (a rail), the cruise rounds down to stay inside it."""
     fit = min((limit - s * s / accel) / s for s in speeds)
     if fit >= requested:
         return requested
     if fit < MIN_MEASURE_TIME:
         raise SystemExit('even a %.2fs cruise does not fit %.0fmm at %d mm/s — raise --accel'
                          % (MIN_MEASURE_TIME, limit, max(speeds)))
-    return round(fit, 2)
+    return int(fit * 100) / 100 if keep_limit else round(fit, 2)
 
 
 def steady_window(t_end: float, speed: float, accel: float, measure_time: float,
@@ -1641,7 +1642,7 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
         raise SystemExit('SPEED must be positive, got %s' % min(speeds))
     accel = motion.accel(args.accel, max(speeds), args.measure_time)
     limit = motion.limit
-    fitted = fit_measure_time(speeds, accel, limit, args.measure_time)
+    fitted = fit_measure_time(speeds, accel, limit, args.measure_time, keep_limit=bool(hw.twins))
     if fitted < args.measure_time:
         print('Cruise %.2fs does not fit the axis at %d mm/s: shrinking to %.2fs '
               '(ranking is window-length invariant down to ~0.4s, measured)'
