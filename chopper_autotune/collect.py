@@ -407,9 +407,10 @@ def refuse_multi_motor(settings: dict, axes: str = 'xy', rails: bool = False):
             if rail_twins(settings, axis):
                 refuse_unsupported(settings, axis)
         return
-    raise SystemExit('not on two-motor axes yet (#129): %s share%s an axis with stepper_x/stepper_y. '
-                     'CHOPPER_TUNE, CHOPPER_COLLECT and CHOPPER_FIND_SPEED tune such an axis. '
-                     'Nothing was moved' % (', '.join(twins), '' if len(twins) > 1 else 's'))
+    raise SystemExit('not on two-motor axes yet (#129): %s share%s an axis with '
+                     'stepper_x/stepper_y; of such an axis only the chopper registers are tuned '
+                     'for now (CHOPPER_TUNE, CHOPPER_COLLECT, CHOPPER_FIND_SPEED). Nothing was '
+                     'moved' % (', '.join(twins), '' if len(twins) > 1 else 's'))
 
 
 def motors_off_but_z(kl: Klippy, cycle: bool = False) -> str:

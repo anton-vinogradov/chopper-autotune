@@ -95,7 +95,8 @@ def rail_settings(kinematics: str = 'cartesian', **sections) -> dict:
 def test_the_one_motor_tools_refuse_a_two_motor_axis_and_the_rail_runs_take_it():
     refuse_multi_motor({'stepper_x': {}, 'stepper_y': {}, 'stepper_z': {}, 'stepper_z1': {}})
     with pytest.raises(SystemExit, match=r'not on two-motor axes yet \(#129\): stepper_x1, stepper_y1 '
-                                         r'share an axis'):
+                                         r'share an axis with stepper_x/stepper_y; of such an axis '
+                                         r'only the chopper registers are tuned for now'):
         refuse_multi_motor(AWD)
     refuse_multi_motor(rail_settings(), rails=True)
     refuse_multi_motor(rail_settings('limited_corexy'), rails=True)
