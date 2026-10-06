@@ -43,7 +43,7 @@ class GantryUnhomed(RunStopped):
 
 
 class RegistersStuck(RunStopped):
-    """A register or mode write around a re-home failed: no G28 on registers unknown."""
+    """A register or mode write around a homing failed: no G28 on registers unknown."""
 
 
 def step_option(settings: dict, stepper: str, option: str):
@@ -466,7 +466,8 @@ class RailMove:
     def restore(self, *after):
         """Every step of the way back gets its chance (run_restore): each driver its own
         registers, then its own mode, then the limits, then the closing homing, the bed
-        mesh after it; `after` last."""
+        mesh after it; `after` last. A driver not put back ends the run as a failure once
+        every step had its chance: what runs next (TUNE's next motor) would home on it."""
         kl, rail, failed = self.kl, self.hw.rail, []
 
         def tracked(step):
@@ -480,6 +481,11 @@ class RailMove:
         run_restore(*[tracked(lambda drive=drive: restore_chopper(kl, drive)) for drive in rail],
                     *[tracked(lambda drive=drive: exit_spreadcycle(kl, drive)) for drive in rail],
                     *self.restores, lambda: self.close(failed), *self.reloads, *after)
+        if failed and sys.exc_info()[1] is None:
+            # the display shows 'FAIL ' and the first characters of this (failure_display)
+            raise RegistersStuck('check the X/Y drivers (DUMP_TMC), then home by hand: a driver of '
+                                 'motor %s could not be put back after the run (above)'
+                                 % self.hw.motor)
 
     def close(self, failed: list):
         """The closing homing, on the drivers' own registers. If one of them could not be

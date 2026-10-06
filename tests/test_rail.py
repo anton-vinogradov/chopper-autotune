@@ -511,35 +511,95 @@ def test_a_g_code_offset_set_mid_run_keeps_the_moves_across_the_bed_center(sourc
     off_the_edges(front, 'meijjaa')
 
 
+OWN_X1 = {'tbl': 2, 'toff': 5, 'hstrt': 5, 'hend': 6, 'tpfd': 4}      # own_cfg's stepper_x1
+FIELD, SPREAD, STEALTH = tmc.DRIVERS['5160'].spreadcycle_switch
+UNWRITABLE = "gcode/script failed: Unable to write tmc spi 'stepper_x1' register CHOPCONF"
+
+
+def refusing(kl, script: str, times: 'set[int]'):
+    """kl, with the `times`-th sending of `script` (1 the first) failing as an unwritable
+    driver does; the sendings counted in the list returned."""
+    send, sent = kl.gcode, []
+
+    def gcode(text):
+        if text == script:
+            sent.append(text)
+            if len(sent) in times:
+                raise KlippyError(UNWRITABLE)
+        return send(text)
+    kl.gcode = gcode
+    return sent
+
+
 @pytest.mark.parametrize('source', SOURCES)
-def test_a_driver_not_put_back_hands_the_gantry_over_instead_of_homing(source, tmp_path, capsys):
-    # a sensorless G28 on what may still be a candidate can home wrong
+@pytest.mark.parametrize('write', [OWN_X1, {FIELD: STEALTH}], ids=['registers', 'mode'])
+def test_a_driver_not_put_back_hands_the_gantry_over_and_fails_the_run(source, write, tmp_path,
+                                                                        capsys):
+    # a sensorless G28 on what may still be a candidate can home wrong (decision 8); a run
+    # that ended well would let TUNE's next motor home on it
     require(source)
     front = klipper_front.Front(source, own_cfg('meijjaa'))
     kl = front.connect()
-    send = kl.gcode
-    twin = rail_sections('meijjaa', 'x')[1]
-    closing = tmc.set_fields_script('stepper_x1', {'tbl': 2, 'toff': 5, 'hstrt': 5, 'hend': 6,
-                                                   'tpfd': 4})
-
-    def gcode(script):
-        if script == closing:
-            raise KlippyError("gcode/script failed: Unable to write tmc spi 'stepper_x1' register "
-                              'CHOPCONF')
-        return send(script)
-    kl.gcode = gcode
+    refusing(kl, tmc.set_fields_script('stepper_x1', write), {1})
     try:
-        code, _ = collect.collect(kl, build_parser().parse_args(RUNS['collect'][1] + [
-            '--axis', 'x', '--dataset', str(tmp_path / 'g')]))
+        with pytest.raises(rail.RegistersStuck, match='home by hand') as stopped:
+            collect.collect(kl, build_parser().parse_args(RUNS['collect'][1] + [
+                '--axis', 'x', '--dataset', str(tmp_path / 'g')]))
     finally:
         kl.close()
-    assert code == 0
-    assert 'home by hand' in capsys.readouterr().out
+    assert collect.failure_display('collect FAILED: %s' % stopped.value)[:16] == 'FAIL check the X'
+    assert "Not homing: a driver could not be put back" in capsys.readouterr().out
     assert len(front.homings) == 1                  # the first alone
-    assert front.chips[twin].chopper()['toff'] != 5
+    twin = front.chips[rail_sections('meijjaa', 'x')[1]].chopper()
+    assert {name: twin[name] for name in write} != write
     steppers = front.status({'stepper_enable': None})['stepper_enable']['steppers']
     assert not [name for name, on in steppers.items() if on and name != 'stepper_z']
     assert 'x' not in front.status({'toolhead': ['homed_axes']})['toolhead']['homed_axes']
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_a_tune_stops_at_a_driver_not_put_back_before_the_next_motor_homes(source, monkeypatch):
+    from chopper_autotune import tune
+    require(source)
+    monkeypatch.setattr(collect, 'PARK_INTERVAL_MOVES', 10 ** 6)     # the closing write alone
+    front = klipper_front.Front(source, own_cfg('meijjaa'))
+    configured = chips(front)
+    kl = front.connect()
+    refusing(kl, tmc.set_fields_script('stepper_x1', OWN_X1), {1})
+    monkeypatch.setattr(tune, 'Klippy', lambda path: types.SimpleNamespace(connect=lambda: kl))
+    monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<front>')
+    with pytest.raises(rail.RegistersStuck):
+        tune.run_tune(build_parser().parse_args(['tune', '--speed', '60', '--no-raw']))
+    assert len(front.homings) == 1 and front.homings[0]['chips'] == configured
+    assert not [move for move in front.head_moves
+                if move['belts']['y'] and not from_homing(front, move)]
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('write, times', [
+    # the drivers' own registers before the G28; the run's mode after it
+    (OWN_X1, {1}), ({FIELD: SPREAD}, {2})], ids=['before the homing', 'after it'])
+def test_a_write_around_a_re_home_that_fails_stops_the_run(source, write, times, tmp_path,
+                                                          monkeypatch):
+    # no G28 on registers unknown (decision 5), no move measured on them
+    require(source)
+    monkeypatch.setattr(collect, 'PARK_INTERVAL_MOVES', 3)
+    front = klipper_front.Front(source, own_cfg('meijjaa'))
+    configured = chips(front)
+    kl = front.connect()
+    refusing(kl, tmc.set_fields_script('stepper_x1', write), times)
+    root = tmp_path / 'grid'
+    try:
+        with pytest.raises(rail.RegistersStuck, match='a register write around a re-home failed'):
+            collect.collect(kl, build_parser().parse_args(
+                RUNS['collect'][1] + ['--axis', 'x', '--validate', '0', '--dataset', str(root)]))
+    finally:
+        kl.close()
+    assert len(measured(front, root)) == 3          # the moves before the re-home
+    # the first, the re-home's own when the registers came back, the closing one
+    assert len(front.homings) == 2 + (write != OWN_X1)
+    assert all(homing['chips'] == configured for homing in front.homings)
+    assert chips(front) == configured
 
 
 @pytest.mark.parametrize('source', SOURCES)
