@@ -95,10 +95,17 @@ def refuse_unsupported(settings: dict, axis: str):
                                  for stepper, value in values.items())))
 
 
+def tilted(settings: dict) -> bool:
+    """[bed_tilt] tilts the bed by config: every G1 of X or Y moves Z along (its move
+    transform), and with Z unhomed fails ('Must home axis first')."""
+    tilt = settings.get('bed_tilt') or {}
+    return any(float(tilt.get(option) or 0) for option in ('x_adjust', 'y_adjust'))
+
+
 def refuse_rail_run(kl: Klippy, csv: bool):
     """What a rail run needs of this run and of the printer now, before anything moves:
     the stream, and room under the nozzle (a rail moves the head across most of the
-    bed at the height it finds)."""
+    bed at the height it finds), a homed Z under a tilted bed."""
     if csv:
         raise SystemExit('drop CSV=1: runs on a two-motor axis need the stream, the default. '
                          'Nothing was moved')
@@ -108,6 +115,9 @@ def refuse_rail_run(kl: Klippy, csv: bool):
         raise SystemExit('raise Z to %g mm or more (G1 Z10), then retry: a two-motor axis moves the '
                          'head across most of the bed, now at Z %.1f. Nothing was moved'
                          % (MIN_Z_MM, toolhead['position'][2]))
+    if 'z' not in toolhead['homed_axes'] and tilted(kl.settings()):
+        raise SystemExit('home all axes (G28), then retry: [bed_tilt] moves Z on every move of a '
+                         'two-motor axis, and Z is not homed. Nothing was moved')
 
 
 def config_limits(settings: dict, kinematics: str) -> 'dict | None':
@@ -323,6 +333,8 @@ class RailMove:
                   'along')
         if 'z_thermal_adjust' in settings:
             print('note: [z_thermal_adjust] stays on: it moves Z during the moves')
+        if tilted(settings):
+            print('note: [bed_tilt] stays on: it moves Z along every move')
         if 'motors_sync' in settings:
             print('note: [motors_sync]: run G28 and SYNC_MOTORS before the run; the run keeps the '
                   'motors on, a stop on heat switches them off: sync them again after it')

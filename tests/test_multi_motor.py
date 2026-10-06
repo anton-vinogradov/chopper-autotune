@@ -314,6 +314,19 @@ def test_a_rail_run_wants_the_stream_and_room_under_the_nozzle():
         rail.refuse_rail_run(PlanKl(rail_settings(), z=2.0), False)
     rail.refuse_rail_run(PlanKl(rail_settings(), z=10.0), False)
     rail.refuse_rail_run(PlanKl(rail_settings()), False)      # Z unhomed: a note in the plan
+    # a tilted bed moves Z on every G1 of X or Y: unhomed, the first would fail
+    tilted = rail_settings(bed_tilt={'x_adjust': 0.002, 'y_adjust': 0.0})
+    with pytest.raises(SystemExit, match=r'home all axes \(G28\), then retry: \[bed_tilt\]'):
+        rail.refuse_rail_run(PlanKl(tilted), False)
+    rail.refuse_rail_run(PlanKl(tilted, z=10.0), False)
+    rail.refuse_rail_run(PlanKl(rail_settings(bed_tilt={'x_adjust': 0.0, 'y_adjust': 0.0})), False)
+
+
+def test_the_plan_notes_a_tilted_bed_moving_z_along(capsys):
+    motion, printer = planned(rail_settings(bed_tilt={'x_adjust': 0.0, 'y_adjust': -0.001}), z=10.0)
+    motion.plan([(60, 147.0)])
+    assert 'note: [bed_tilt] stays on: it moves Z along every move' in capsys.readouterr().out
+    assert printer.scripts == []
 
 
 def test_envelope_note_names_the_twins_of_the_measured_motors():

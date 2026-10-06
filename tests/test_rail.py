@@ -735,6 +735,8 @@ REFUSALS = {
     'travel': (lambda: awd_cfg('meijjaa'), ['--axis', 'y', '--speed', '400'], 'even a 0.40s crui'),
     'csv': (lambda: awd_cfg('meijjaa'), ['--csv'], 'drop CSV=1: runs'),
     'z': (lambda: awd_cfg('meijjaa'), [], 'raise Z to 5 mm '),
+    'bed_tilt': (lambda: awd_cfg('meijjaa') + '\n[bed_tilt]\nx_adjust: 0.002\n', [],
+                 'home all axes (G'),
 }
 
 
