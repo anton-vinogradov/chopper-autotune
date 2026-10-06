@@ -11,7 +11,7 @@ from . import __version__
 from .collect import (OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, ForceMove, Screen,
                       default_dataset_root, detect_hardware, enter_spreadcycle, measure_baseline,
                       measure_move, now, rail_of, refuse_if_printing, refuse_multi_motor,
-                      set_rail_fields, travel_for)
+                      refuse_other_motion, set_rail_fields, travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, find_socket
 from .rail import motion_for
@@ -242,7 +242,7 @@ def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None]':
 
     root = Path(args.dataset) if args.dataset else default_dataset_root(
         '%s_speed_%s' % (datetime.now().strftime('%Y%m%d_%H%M%S'), args.axis))
-    ds = Dataset.create(root, {
+    manifest = {
         'version': __version__,
         'created': now(),
         'mode': 'find-speed',
@@ -261,7 +261,9 @@ def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None]':
         'iterations': args.iterations,
         'speeds': [speed for speed, _ in plan],
         **motion.manifest_fields(),
-    })
+    }
+    ds = Dataset.create(root, manifest)
+    refuse_other_motion(ds.manifest(), manifest)
     done = ds.done_ids()
     if done:
         print('Resuming %s: %d measurements already present' % (root, len(done)))

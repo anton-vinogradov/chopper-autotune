@@ -1,3 +1,5 @@
+import re
+
 import pytest
 
 from chopper_autotune import tmc
@@ -174,21 +176,26 @@ def test_run_save_latest_saves_newest_tuning_dataset_per_motor(monkeypatch, tmp_
     assert saved['extruder'] is None
 
 
-def test_run_save_latest_skips_a_motor_with_a_twin_and_saves_the_rest(monkeypatch, tmp_path, capsys):
-    # AWD on X only: motor A would reach one driver of its pair; B and the extruder still save
+def test_run_save_latest_saves_a_rail_whole_and_skips_a_dataset_of_one_of_its_motors(
+        monkeypatch, tmp_path, capsys):
+    # AWD on both axes (#129): motor A was tuned as a rail and goes to both its drivers; motor
+    # B's dataset measured stepper_y alone, before stepper_y1 came, and would reach one
+    # driver of the pair: B is skipped, A and the extruder still save
     import argparse
 
     from chopper_autotune import analyze
     from chopper_autotune.dataset import Dataset
-    for name, axis in (('01_x', 'x'), ('02_y', 'y')):
-        Dataset.create(tmp_path / name, {'axis': axis, 'search': 'descent'})
+    for name, manifest in (('01_x', {'axis': 'x', 'search': 'descent', 'motion': 'rail',
+                                     'steppers': ['stepper_x', 'stepper_x1']}),
+                           ('02_y', {'axis': 'y', 'search': 'descent'})):
+        Dataset.create(tmp_path / name, manifest)
     monkeypatch.setattr(analyze, 'dataset_dirs', lambda: sorted(tmp_path.iterdir()))
     monkeypatch.setattr('chopper_autotune.tune.winner_of',
                         lambda root, weight: (Dataset(root).manifest(), tmc.Chopper(0, 8, 7, 5)))
     state = {'driver': '2209', 'fields': {'tbl': 3, 'toff': 7, 'hstrt': 6, 'hend': 0}}
     monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: state)
-    monkeypatch.setattr(analyze, 'Moonraker',
-                        lambda url: FakeMoonraker({}, settings={'stepper_x': {}, 'stepper_x1': {}}))
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: FakeMoonraker({}, settings={
+        'stepper_x': {}, 'stepper_x1': {}, 'stepper_y': {}, 'stepper_y1': {}}))
     saved = {}
     monkeypatch.setattr(analyze, 'run_save',
                         lambda mk, items, extruder_state=None: saved.update(
@@ -196,9 +203,10 @@ def test_run_save_latest_skips_a_motor_with_a_twin_and_saves_the_rest(monkeypatc
 
     analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
 
-    assert [m['axis'] for m, _ in saved['items']] == ['y']
+    assert [m['steppers'] for m, _ in saved['items']] == [['stepper_x', 'stepper_x1']]
     assert saved['extruder'] == state
-    assert 'motor A: NOT saving' in capsys.readouterr().out
+    assert ('motor B: NOT saving 02_y: tune motor B again: its dataset measured stepper_y alone, '
+            'the config drives the axis with stepper_y, stepper_y1 now') in capsys.readouterr().out
 
 
 def test_run_save_latest_includes_the_extruder_winner(monkeypatch):
@@ -422,21 +430,64 @@ def test_extruder_save_last_refuses_a_winner_klipper_would_not_load(monkeypatch,
     assert mk.uploads == [] and mk.scripts == []
 
 
-def test_run_save_refuses_to_write_one_driver_of_a_pair():
-    # AWD: stepper_x1 drives the same belt; saving to [tmc stepper_x] alone would
-    # leave the twin on its old registers (#129)
-    mk = FakeMoonraker({'printer.cfg': CFG}, settings={'stepper_x': {}, 'stepper_x1': {}})
-    with pytest.raises(SystemExit, match='stepper_x1 share its axis'):
-        run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))])
+RAIL_CFG = CFG + """
+[tmc2209 stepper_x1]
+uart_pin: PC12
+driver_TOFF: 4
+"""
+RAIL = {'driver': '2209', 'stepper': 'stepper_x', 'motion': 'rail', 'steppers': ['stepper_x', 'stepper_x1']}
+
+
+def test_run_save_writes_a_rails_winner_into_each_of_its_sections_in_one_restart():
+    # AWD: stepper_x1 drives the same belt (#129), the rail run measured both drivers
+    mk = FakeMoonraker({'printer.cfg': RAIL_CFG}, settings={'stepper_x': {}, 'stepper_x1': {}})
+    run_save(mk, [(RAIL, tmc.Chopper(0, 8, 7, 5))])
+    assert mk.uploads == ['printer.chopper-backup.cfg', 'printer.cfg']
+    assert mk.scripts == ['RESTART']
+    text = mk.files['printer.cfg']
+    for section in ('[tmc2209 stepper_x]\n', '[tmc2209 stepper_x1]\n'):
+        assert section + 'driver_TBL: 0\ndriver_TOFF: 8\ndriver_HSTRT: 7\ndriver_HEND: 5\n' in text
+    assert text.count('driver_TOFF: 8') == 2 and 'driver_TOFF: 4' not in text
+    assert 'driver_TOFF: 5' in text.split('[tmc2209 stepper_y]')[1]     # motor B untouched
+
+
+@pytest.mark.parametrize('settings, manifest, refusal', [
+    # a dataset of stepper_x alone would leave the twin on its old registers
+    ({'stepper_x': {}, 'stepper_x1': {}}, {'driver': '2209', 'stepper': 'stepper_x'},
+     'tune motor A again: its dataset measured stepper_x alone, the config drives the axis with '
+     'stepper_x, stepper_x1 now'),
+    # the rail changed since the run
+    ({'stepper_x': {}}, RAIL,
+     'tune motor A again: its dataset measured stepper_x, stepper_x1, the config drives the axis '
+     'with stepper_x alone now'),
+    ({'stepper_x': {}, 'stepper_x1': {}, 'stepper_x2': {}}, RAIL, 'tune motor A again'),
+])
+def test_run_save_refuses_a_dataset_of_another_rail_than_the_configs(settings, manifest, refusal):
+    mk = FakeMoonraker({'printer.cfg': RAIL_CFG}, settings=settings)
+    with pytest.raises(SystemExit, match=re.escape(refusal)):
+        run_save(mk, [(manifest, tmc.Chopper(0, 8, 7, 5))])
     assert mk.uploads == [] and mk.scripts == []
 
 
-def test_apply_refuses_to_set_one_driver_of_a_pair():
+def test_apply_sets_every_driver_of_a_rail_and_refuses_one_of_them(capsys):
+    # the rail's motors go on first, then each driver gets the set; a twin without an
+    # enable pin of its own gets the warning, its main motor does not
     from chopper_autotune.analyze import run_apply
-    mk = FakeMoonraker({}, settings={'stepper_x': {}, 'stepper_x1': {}})
-    with pytest.raises(SystemExit, match='stepper_x1 share its axis'):
-        run_apply(mk, 'stepper_x', tmc.Chopper(0, 8, 7, 5))
+    mk = FakeMoonraker({}, settings={'stepper_x': {'enable_pin': '!PA1'}, 'stepper_x1': {}})
+    combo = tmc.Chopper(0, 8, 7, 5)
+    with pytest.raises(SystemExit, match='tune motor A again: its dataset measured stepper_x alone'):
+        run_apply(mk, ['stepper_x'], combo)
     assert mk.scripts == []
+    run_apply(mk, ['stepper_x', 'stepper_x1'], combo)
+    assert mk.scripts[:3] == ['SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=1\n'
+                              'SET_STEPPER_ENABLE STEPPER=stepper_x1 ENABLE=1',
+                              tmc.set_fields_script('stepper_x', combo.fields()),
+                              tmc.set_fields_script('stepper_x1', combo.fields())]
+    assert [script for script in mk.scripts if script.startswith('M118')] \
+        == ['M118 WARNING: stepper_x1 has no enable pin of its own: at the next motors off and on '
+            'Klipper puts toff back to the config value and keeps the other applied registers; '
+            'SAVE=1 keeps the whole set']
+    assert 'stepper_x has no enable pin' not in capsys.readouterr().out
 
 
 @pytest.mark.parametrize('enable_pins, shared', [
@@ -450,7 +501,7 @@ def test_apply_enables_the_motor_before_its_registers(enable_pins, shared, capsy
     from chopper_autotune.analyze import run_apply
     settings = {name: {'enable_pin': pin} for name, pin in enable_pins.items()}
     mk = FakeMoonraker({}, settings=dict({'stepper_x': {}}, **settings))
-    run_apply(mk, 'stepper_x', tmc.Chopper(2, 3, 5, 0))
+    run_apply(mk, ['stepper_x'], tmc.Chopper(2, 3, 5, 0))
     assert mk.scripts[0] == 'SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=1'
     assert mk.scripts[1].startswith('SET_TMC_FIELD')
     assert ('no enable pin of its own' in capsys.readouterr().out) is shared
@@ -462,7 +513,7 @@ def test_apply_sends_its_warning_only_where_klipper_takes_m118(capsys):
     # without [respond] the M118 drew an 'Unknown command' line and a KlipperScreen error
     from chopper_autotune.analyze import run_apply
     mk = FakeMoonraker({}, settings={'stepper_x': {}}, commands={'M117', 'SET_TMC_FIELD'})
-    run_apply(mk, 'stepper_x', tmc.Chopper(2, 3, 5, 0))
+    run_apply(mk, ['stepper_x'], tmc.Chopper(2, 3, 5, 0))
     assert 'no enable pin of its own' in capsys.readouterr().out
     assert not any(script.startswith('M118') for script in mk.scripts)
 
@@ -484,7 +535,7 @@ def test_apply_refuses_while_printing():
     from chopper_autotune.analyze import run_apply
     mk = FakeMoonraker({}, printing=True, settings={'stepper_x': {}})
     with pytest.raises(SystemExit, match='busy printing'):
-        run_apply(mk, 'stepper_x', tmc.Chopper(2, 3, 5, 0))
+        run_apply(mk, ['stepper_x'], tmc.Chopper(2, 3, 5, 0))
     assert mk.scripts == []
 
 
@@ -632,3 +683,41 @@ def test_an_aborted_autotune_dataset_does_not_hide_an_older_result(monkeypatch):
                              {'/d/old': (old, combo), '/d/new': SystemExit('no successful measurements')},
                              {})
     assert saved['items'] == [(old, combo)]
+
+
+def test_save_skips_a_rail_autotune_manages_any_driver_of_and_saves_the_other(monkeypatch, capsys):
+    # autotune came onto the twin after the run: the save names that section, motor A is
+    # skipped whole and motor B still saves, as for one motor
+    x = dict(RAIL, axis='x', search='descent')
+    y = {'axis': 'y', 'search': 'descent', 'driver': '2209', 'stepper': 'stepper_y'}
+    combo = tmc.Chopper(0, 8, 7, 5)
+    settings = {'stepper_x1': {}, 'autotune_tmc stepper_x1': {'tuning_goal': 'performance'}}
+    saved = save_latest_with(monkeypatch, {'/d/x': x, '/d/y': y}, {'/d/x': (x, combo), '/d/y': (y, combo)},
+                             settings)
+    assert saved['items'] == [(y, combo)]
+    assert 'motor A: NOT saving x: not saving [tmc2209 stepper_x1]: autotune resets' in capsys.readouterr().out
+    mk = FakeMoonraker({'printer.cfg': RAIL_CFG}, settings=settings)
+    with pytest.raises(SystemExit, match=re.escape('not saving [tmc2209 stepper_x1]: autotune resets')):
+        run_save(mk, [(RAIL, combo)])
+    assert mk.uploads == [] and mk.scripts == []
+
+
+def test_a_rail_measured_under_autotune_names_each_of_its_sections():
+    mk = FakeMoonraker({'printer.cfg': RAIL_CFG}, settings={'stepper_x': {}, 'stepper_x1': {}})
+    with pytest.raises(SystemExit, match=re.escape(
+            'not saving [tmc2209 stepper_x] and [tmc2209 stepper_x1]: measured under autotune')):
+        run_save(mk, [(dict(RAIL, autotune='performance'), tmc.Chopper(0, 8, 7, 5))])
+    assert mk.uploads == [] and mk.scripts == []
+
+
+def test_the_advice_for_a_rail_names_each_driver_with_the_thresholds_of_its_own():
+    from chopper_autotune.collect import autotune_advice, autotune_refusal
+    settings = {'autotune_tmc stepper_x': {'sg4_thrs': 80}, 'autotune_tmc stepper_x1': {'sg4_thrs': 60}}
+    advice = autotune_advice(settings, '2209', 'stepper_x', 'stepper_x1')
+    assert ('1) in [tmc2209 stepper_x] set driver_SGTHRS: 80 and in [tmc2209 stepper_x1] set '
+            'driver_SGTHRS: 60 (autotune sets these') in advice
+    assert '2) remove [autotune_tmc stepper_x] and [autotune_tmc stepper_x1] and restart' in advice
+    assert autotune_refusal('2209', 'stepper_x', 'stepper_x1', settings=settings).startswith(
+        'not saving [tmc2209 stepper_x] and [tmc2209 stepper_x1]: autotune resets')
+    assert 'remove [autotune_tmc stepper_x] and [autotune_tmc stepper_x1], restart' \
+        in autotune_advice({}, '2208', 'stepper_x', 'stepper_x1')

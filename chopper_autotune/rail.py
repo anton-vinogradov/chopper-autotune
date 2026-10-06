@@ -12,7 +12,7 @@ import sys
 from . import collect, tmc
 from .collect import (ForceMove, Hardware, RunStopped, ThermalGuard, autotune_goal,
                       driver_of, exit_spreadcycle, gear_factor, home_xy, motor_label,
-                      rail_twins, refuse_after_shutdown, refuse_blind_z_hop, rehome_unless_hot,
+                      rail_steppers, refuse_after_shutdown, refuse_blind_z_hop, rehome_unless_hot,
                       release_gantry, restore_chopper, run_restore, set_rail_fields, travel_for,
                       xy_driver_sections)
 from .current import (accel_along, axis_limits, belt_cap, free_strokes, live_limits, stress_vector,
@@ -41,10 +41,6 @@ class GantryUnhomed(RunStopped):
 
 class RegistersStuck(RunStopped):
     """A register or mode write around a re-home failed: no G28 on registers unknown."""
-
-
-def rail_steppers(settings: dict, axis: str) -> 'list[str]':
-    return ['stepper_' + axis] + rail_twins(settings, axis)
 
 
 def step_option(settings: dict, stepper: str, option: str):

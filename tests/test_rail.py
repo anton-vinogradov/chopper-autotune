@@ -2,7 +2,7 @@
 release's own modules (tests/klipper_front.py): COLLECT, FIND_SPEED and TUNE move the
 rail by G1 with every driver of it on the same registers, keep off the bed edges, re-home
 only on the drivers' own registers, and refuse what would spoil the run before anything
-moves."""
+moves; a save writes the winner into every section of the rail, through FrontMoonraker."""
 import json
 import re
 import types
@@ -559,3 +559,180 @@ def test_the_one_motor_tools_refuse_a_two_motor_axis_before_any_gcode(source, to
         getattr(target, name)(build_parser().parse_args(argv))
     assert front.scripts == []
     assert collect.failure_display('map FAILED: %s' % refused.value.code)[:16] == 'FAIL not on two-'
+
+
+GRID_WINNER = tmc.Chopper(1, 4, 4, 3).fields()      # RUNS['collect']'s quieter combo (shake())
+
+
+def chips(front) -> dict:
+    return {section: chip.chopper() for section, chip in front.chips.items()}
+
+
+def held(chip, fields: dict) -> dict:
+    return {name: chip.field(name) for name in fields}
+
+
+def tune_through(mk, monkeypatch, argv: 'list[str]'):
+    """CHOPPER_TUNE on the printer behind `mk` (FrontMoonraker), saving through it; the
+    printer it ran on."""
+    from chopper_autotune import tune
+    front = mk.front
+    kl = front.connect()
+    monkeypatch.setattr(tune, 'Klippy', lambda path: types.SimpleNamespace(connect=lambda: kl))
+    monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<front>')
+    monkeypatch.setattr(tune, 'Moonraker', lambda url: mk)
+    assert tune.run_tune(build_parser().parse_args(['tune'] + argv)) == 0
+    return front
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('printer', ['meijjaa', 'voron-2209'])
+def test_tune_save_writes_each_rails_winner_into_every_section_with_one_restart(
+        source, printer, monkeypatch, capsys):
+    # the driver_* lines the save writes, read by the release's own TMC modules after the
+    # restart: each driver of a rail holds its rail's winner
+    require(source)
+    mk = klipper_front.FrontMoonraker(source, awd_cfg(printer))
+    assert_clean(tune_through(mk, monkeypatch, ['--speed', '60', '--no-raw', '--save']))
+    assert mk.restarts == 1 and mk.uploads == ['printer.chopper-backup.cfg', 'printer.cfg']
+    winners = {}
+    for root in (collect.RESULTS_HOME / 'datasets').iterdir():
+        manifest = Dataset.open(root).manifest()
+        winners[manifest['axis']] = manifest['winner']
+    assert sorted(winners) == ['x', 'y']
+    runs, summary = capsys.readouterr().out.split('=== Summary ===')
+    recommended = runs.split('Recommended for printer.cfg:', 1)[1]
+    for axis, winner in winners.items():
+        for section in rail_sections(printer, axis):
+            assert held(mk.front.chips[section], winner) == winner
+            assert '[%s]' % section in recommended and '[%s]' % section in summary
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('printer', ['meijjaa', 'voron-2209'])
+def test_chopper_save_writes_each_rail_whole_and_restore_puts_every_driver_back_to_stock(
+        source, printer, tmp_path, monkeypatch):
+    from chopper_autotune import analyze
+    require(source)
+    mk = klipper_front.FrontMoonraker(source, awd_cfg(printer))
+    stock = chips(mk.front)
+    roots = [tmp_path / axis for axis in 'xy']
+    for axis, root in zip('xy', roots):
+        assert run_tool(mk.front, collect.collect, RUNS['collect'][1] + [
+            '--axis', axis, '--dataset', str(root)])[0] == 0
+    assert_clean(mk.front)
+    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: roots)
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    assert analyze.run_save_latest(build_parser().parse_args(['save'])) == 0
+    assert mk.restarts == 1 and mk.uploads == ['printer.chopper-backup.cfg', 'printer.cfg']
+    for axis in 'xy':
+        for section in rail_sections(printer, axis):
+            assert held(mk.front.chips[section], GRID_WINNER) == GRID_WINNER
+    assert analyze.run_restore_config(build_parser().parse_args(['restore', '--defaults'])) == 0
+    assert mk.restarts == 2 and chips(mk.front) == stock
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('printer', AWD)
+def test_analyze_applies_and_saves_a_rails_winner_to_each_of_its_drivers(source, printer, tmp_path,
+                                                                        monkeypatch, capsys):
+    from chopper_autotune import analyze
+    require(source)
+    mk = klipper_front.FrontMoonraker(source, awd_cfg(printer))
+    stock = chips(mk.front)
+    root = tmp_path / 'x'
+    assert run_tool(mk.front, collect.collect, RUNS['collect'][1] + [
+        '--axis', 'x', '--dataset', str(root)])[0] == 0
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    capsys.readouterr()
+    assert analyze.run_analyze(build_parser().parse_args(['analyze', str(root), '--no-html',
+                                                          '--apply'])) == 0
+    recommended = capsys.readouterr().out.split('Recommended for printer.cfg:')[1]
+    for section in rail_sections(printer, 'x'):
+        assert '[%s]' % section in recommended
+    assert_clean(mk.front)
+
+    def motor_a_on_the_winner():
+        for section in rail_sections(printer, 'x'):
+            assert held(mk.front.chips[section], GRID_WINNER) == GRID_WINNER
+        for section in rail_sections(printer, 'y'):
+            assert mk.front.chips[section].chopper() == stock[section]
+    assert mk.restarts == 0
+    motor_a_on_the_winner()
+    assert analyze.run_analyze(build_parser().parse_args(['analyze', str(root), '--no-html',
+                                                          '--save'])) == 0
+    assert mk.restarts == 1
+    motor_a_on_the_winner()
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_a_dataset_of_one_motor_is_not_saved_on_an_axis_that_has_a_twin_now(source, tmp_path,
+                                                                            monkeypatch, capsys):
+    # tuned before stepper_x1 came: its winner would reach one driver of the pair. ANALYZE
+    # refuses it; CHOPPER_SAVE skips motor A whole and still saves motor B's rail
+    from chopper_autotune import analyze
+    require(source)
+    single, pair = tmp_path / 'single', tmp_path / 'pair'
+    assert run_tool(klipper_front.Front(source, awd_cfg('meijjaa', twins=False)), collect.collect,
+                    RUNS['collect'][1] + ['--axis', 'x', '--dataset', str(single)])[0] == 0
+    mk = klipper_front.FrontMoonraker(source, awd_cfg('meijjaa'))
+    stock = chips(mk.front)
+    assert run_tool(mk.front, collect.collect, RUNS['collect'][1] + [
+        '--axis', 'y', '--dataset', str(pair)])[0] == 0
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    for flag in ('--apply', '--save'):
+        with pytest.raises(SystemExit, match='tune motor A again: its dataset measured stepper_x alone'):
+            analyze.run_analyze(build_parser().parse_args(['analyze', str(single), '--no-html', flag]))
+    assert mk.uploads == [] and mk.restarts == 0 and chips(mk.front) == stock
+    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: [single, pair])
+    assert analyze.run_save_latest(build_parser().parse_args(['save'])) == 0
+    assert 'motor A: NOT saving single: tune motor A again' in capsys.readouterr().out
+    assert mk.restarts == 1
+    for section in rail_sections('meijjaa', 'x'):
+        assert mk.front.chips[section].chopper() == stock[section]
+    for section in rail_sections('meijjaa', 'y'):
+        assert held(mk.front.chips[section], GRID_WINNER) == GRID_WINNER
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_tune_save_refuses_a_rail_autotune_manages_before_anything_moves(source, monkeypatch):
+    # klipper_tmc_autotune writes its own chopper at every start: say it now, naming every
+    # section of the rail, not after the tuning
+    require(source)
+    mk = klipper_front.FrontMoonraker(source, awd_cfg('voron-2209') + ''.join(
+        '\n[autotune_tmc %s]\nmotor: ldo-42sth48-2004ac\n' % name
+        for name in ('stepper_x', 'stepper_x1', 'stepper_y', 'stepper_y1')))
+    with pytest.raises(SystemExit, match=re.escape(
+            'not saving [tmc2209 stepper_x] and [tmc2209 stepper_x1]: autotune resets')):
+        tune_through(mk, monkeypatch, ['--save'])
+    assert mk.front.scripts == [] and mk.uploads == []
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('run', RUNS)
+def test_a_dataset_of_one_motor_does_not_resume_as_a_rail(source, run, tmp_path):
+    # its FORCE_MOVEs of stepper_x and the rail's G1s would mix under one combo or speed
+    require(source)
+    tool, argv = RUNS[run]
+    root = tmp_path / 'dataset'
+    argv = argv + ['--axis', 'x', '--dataset', str(root)]
+    assert run_tool(klipper_front.Front(source, awd_cfg('meijjaa', twins=False)), tool, argv)[0] == 0
+    records = Dataset.open(root).records()
+    front = klipper_front.Front(source, awd_cfg('meijjaa'))
+    with pytest.raises(SystemExit, match=re.escape(
+            'refusing to resume: the dataset moved stepper_x alone by FORCE_MOVE, this run moves '
+            'stepper_x, stepper_x1 together by G1')):
+        run_tool(front, tool, argv)
+    assert front.head_moves == [] and front.homings == []
+    assert Dataset.open(root).records() == records
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_spreadcycle_forced_on_the_twin_alone_is_recorded(source, tmp_path):
+    require(source)
+    front = klipper_front.Front(source, awd_cfg('voron-2209').replace(
+        '[tmc2209 stepper_x1]\n', '[tmc2209 stepper_x1]\nstealthchop_threshold: 999999\n'))
+    root = tmp_path / 'grid'
+    assert run_tool(front, collect.collect, RUNS['collect'][1] + [
+        '--axis', 'x', '--dataset', str(root)])[0] == 0
+    assert Dataset.open(root).manifest()['forced_spreadcycle'] is True

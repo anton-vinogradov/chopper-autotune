@@ -11,7 +11,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from . import tmc
-from .dataset import Dataset, RESULTS_HOME
+from .dataset import Dataset, RESULTS_HOME, measured_steppers
 from .moonraker import Moonraker
 
 
@@ -307,14 +307,23 @@ def refuse_unloadable(driver_name: str, stepper: str, fields: dict):
                          % (tmc.Chopper(**fields).label(), driver_name, stepper, why))
 
 
-def refuse_twin_write(mk, stepper: str):
-    """A register write to stepper_x/stepper_y alone leaves a twin on the same axis
-    (stepper_x1...) with its old registers (#129)."""
-    from .collect import rail_twins
-    twins = rail_twins(mk.settings(), stepper.rsplit('_', 1)[-1])
-    if twins:
-        raise SystemExit('refusing to write registers to %s only: %s share its axis and would '
-                         'keep their old registers (see issue #129)' % (stepper, ', '.join(twins)))
+def rail_mismatch(settings: dict, steppers: 'list[str]') -> 'str | None':
+    """Why a dataset's registers may not go to the config's drivers, None when they may:
+    they go to the whole rail of the axis (stepper_x and its twins, #129), and only when
+    the dataset measured that rail. A dataset of one motor on an axis that has a twin now,
+    or of a rail changed since, would leave a driver on registers no run measured with."""
+    from .collect import motor_label, rail_steppers
+    axis = steppers[0].rsplit('_', 1)[-1]
+    rail = rail_steppers(settings, axis)
+    if steppers == rail:
+        return None
+
+    def drivers(names):
+        return '%s alone' % names[0] if len(names) == 1 else ', '.join(names)
+    # the action first: the display shows its first characters (failure_display)
+    return ('tune motor %s again: its dataset measured %s, the config drives the axis with %s '
+            'now, and the registers go to every driver of an axis or to none (see issue #129)'
+            % (motor_label(axis), drivers(steppers), drivers(rail)))
 
 
 def shares_enable(settings: dict, stepper: str) -> bool:
@@ -327,16 +336,23 @@ def shares_enable(settings: dict, stepper: str) -> bool:
     return not own or any(pin(name) == own for name in settings if name != stepper)
 
 
-def run_apply(mk, stepper: str, chopper: tmc.Chopper):
-    """Set a combo live (SET_TMC_FIELD), not persisted. The motor goes on first, in a
-    request of its own (see collect.wake_stepper): toff written to a motor Klipper counts
-    as off energizes it, and Klipper's own enable would then put its config toff back."""
+def run_apply(mk, steppers: 'list[str]', chopper: tmc.Chopper):
+    """Set a combo live (SET_TMC_FIELD), not persisted, into every driver of the motor's rail.
+    The motors go on first, in a request of their own (see collect.wake_stepper): toff
+    written to a motor Klipper counts as off energizes it, and Klipper's own enable would
+    then put its config toff back."""
     if mk.is_printing():
         raise SystemExit('printer is busy printing, not touching the drivers')
-    refuse_twin_write(mk, stepper)
-    mk.gcode('SET_STEPPER_ENABLE STEPPER=%s ENABLE=1' % stepper)
-    mk.set_tmc_fields(stepper, chopper.fields())
-    if shares_enable(mk.settings(), stepper):
+    settings = mk.settings()
+    why = rail_mismatch(settings, steppers)
+    if why:
+        raise SystemExit(why)
+    mk.gcode('\n'.join('SET_STEPPER_ENABLE STEPPER=%s ENABLE=1' % stepper for stepper in steppers))
+    for stepper in steppers:
+        mk.set_tmc_fields(stepper, chopper.fields())
+    for stepper in steppers:
+        if not shares_enable(settings, stepper):
+            continue
         warning = ('WARNING: %s has no enable pin of its own: at the next motors off and on '
                    'Klipper puts toff back to the config value and keeps the other applied '
                    'registers; SAVE=1 keeps the whole set' % stepper)
@@ -351,25 +367,30 @@ def run_apply(mk, stepper: str, chopper: tmc.Chopper):
 
 
 def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]', extruder_state: 'dict | None' = None):
-    """Persist chopper winners into the Klipper config, one restart for the batch;
-    the extruder's stored winner (see extruder.save_winner_state) rides along."""
+    """Persist chopper winners into the Klipper config, each into every section of the
+    rail its dataset measured, one restart for the batch; the extruder's stored winner
+    (see extruder.save_winner_state) rides along."""
     from .collect import measured_under_autotune, refuse_autotune_save
     settings = mk.settings()
     for manifest, combo in items:
-        refuse_unloadable(manifest['driver'], manifest['stepper'], combo.fields())
-        refuse_twin_write(mk, manifest['stepper'])
-        refuse_autotune_save(settings, manifest['driver'], manifest['stepper'])
+        steppers = measured_steppers(manifest)
+        for stepper in steppers:
+            refuse_unloadable(manifest['driver'], stepper, combo.fields())
+        why = rail_mismatch(settings, steppers)
+        if why:
+            raise SystemExit(why)
+        refuse_autotune_save(settings, manifest['driver'], *steppers)
         if manifest.get('autotune'):
-            raise SystemExit(measured_under_autotune(manifest['driver'], manifest['stepper']))
+            raise SystemExit(measured_under_autotune(manifest['driver'], *steppers))
     if extruder_state:
         refuse_unloadable(extruder_state['driver'], 'extruder', extruder_state['fields'])
         refuse_autotune_save(settings, extruder_state['driver'], 'extruder')
         if extruder_state.get('autotune'):
             raise SystemExit(measured_under_autotune(extruder_state['driver'], 'extruder'))
-    edits = [('tmc%s %s' % (manifest['driver'], manifest['stepper']),
+    edits = [('tmc%s %s' % (manifest['driver'], stepper),
               lambda text, section, combo=combo: updated_config(text, section,
                                                                 combo.fields()))
-             for manifest, combo in items]
+             for manifest, combo in items for stepper in measured_steppers(manifest)]
     if extruder_state:
         edits.append(('tmc%s extruder' % extruder_state['driver'],
                       lambda text, section: updated_config(text, section,
@@ -466,7 +487,7 @@ def run_save_latest(args) -> int:
     """Persist the most recent tuning result for each motor into the config, batched into
     one restart. Backs the panel's Save button: save what the last tuning achieved, whether
     the motors were tuned separately (Tune A, Tune B) or together (Tune both)."""
-    from .collect import autotune_goal, autotune_refusal, measured_under_autotune, motor_label, rail_twins
+    from .collect import autotune_goal, autotune_refusal, measured_under_autotune, motor_label
     from .extruder import load_winner_state
     from .tune import NothingInaudible, winner_of
     mk = Moonraker(args.url)
@@ -477,17 +498,17 @@ def run_save_latest(args) -> int:
         if axis in ('x', 'y') and axis not in seen and 'search' in info:
             if settings is None:
                 settings = mk.settings()
-            twins = rail_twins(settings, axis)
-            if twins:
-                # like a stale extruder winner: skip it, keep saving the rest
+            # run_save's checks of the axis, made here: a failing one skips the axis whole, like
+            # a stale extruder winner, and the rest still saves
+            steppers = info.get('steppers') or ['stepper_' + axis]
+            why = rail_mismatch(settings, steppers)
+            managed = [stepper for stepper in steppers if autotune_goal(settings, stepper) is not None]
+            if why is None and managed:
+                why = autotune_refusal(info.get('driver', 'XXXX'), *managed, settings=settings)
+            if why:
                 seen.add(axis)
-                print('motor %s: NOT saving %s (%s share its axis, see issue #129)'
-                      % (motor_label(axis), Path(path).name, ', '.join(twins)))
-                continue
-            if autotune_goal(settings, 'stepper_' + axis) is not None:
-                seen.add(axis)
-                skipped.append(autotune_refusal(info.get('driver', 'XXXX'), 'stepper_' + axis, settings))
-                print('motor %s: NOT saving %s: %s' % (motor_label(axis), Path(path).name, skipped[-1]))
+                skipped.append(why)
+                print('motor %s: NOT saving %s: %s' % (motor_label(axis), Path(path).name, why))
                 continue
             try:
                 manifest, combo = winner_of(str(path), args)
@@ -504,7 +525,7 @@ def run_save_latest(args) -> int:
             seen.add(axis)
             if info.get('autotune'):
                 # the newest result stands for the motor: an older one would be stale
-                skipped.append(measured_under_autotune(info.get('driver', 'XXXX'), 'stepper_' + axis))
+                skipped.append(measured_under_autotune(info.get('driver', 'XXXX'), *steppers))
                 print('motor %s: NOT saving %s: %s' % (motor_label(axis), Path(path).name, skipped[-1]))
                 continue
             items.append((manifest, combo))
@@ -520,7 +541,7 @@ def run_save_latest(args) -> int:
         settings = mk.settings()
     extruder_skip = None
     if extruder_state and autotune_goal(settings, 'extruder') is not None:
-        extruder_skip = autotune_refusal(extruder_state['driver'], 'extruder', settings)
+        extruder_skip = autotune_refusal(extruder_state['driver'], 'extruder', settings=settings)
     elif extruder_state and extruder_state.get('autotune'):
         extruder_skip = measured_under_autotune(extruder_state['driver'], 'extruder')
     elif extruder_state:
@@ -699,13 +720,14 @@ def run_analyze(args) -> int:
         raise SystemExit('no measured combination in %s fits the tmc%s limits%s'
                          % (dataset, driver.name, ' and SKIP_AUDIBLE' if hearing.skip else ''))
 
+    steppers = measured_steppers(manifest)
     print('%s: %d configurations, driver tmc%s on %s\n'
-          % (dataset, len(ranked), driver.name, manifest['stepper']))
+          % (dataset, len(ranked), driver.name, ', '.join(steppers)))
     print_table(ranked, args.top)
 
     if not args.no_html:
         path = args.html or str(Path(dataset) / 'report.html')
-        write_report(ranked, driver, hearing, 'tmc%s %s' % (driver.name, manifest['stepper']), path)
+        write_report(ranked, driver, hearing, 'tmc%s %s' % (driver.name, ', '.join(steppers)), path)
         print('\nReport: %s' % path)
 
     best = ranked[0]
@@ -727,14 +749,14 @@ def run_analyze(args) -> int:
                   % (validated.label(), best['chopper'].label()))
             best = next((a for a in ranked if a['chopper'] == validated),
                         {'chopper': validated})
+    from .collect import AUTOTUNE_MEASURED, rail_snippet
     if manifest.get('autotune'):
-        from .collect import AUTOTUNE_MEASURED
         print('\nBest measured (not for saving: %s):\n' % AUTOTUNE_MEASURED)
     else:
         print('\nRecommended for printer.cfg:\n')
-    print(tmc.cfg_snippet(driver, manifest['stepper'], best['chopper']))
+    print(rail_snippet(driver, steppers, best['chopper']))
     if args.apply and not args.save:
-        run_apply(Moonraker(args.url), manifest['stepper'], best['chopper'])
+        run_apply(Moonraker(args.url), steppers, best['chopper'])
         print('\nApplied via SET_TMC_FIELD (runtime only%s)'
               % ('' if manifest.get('autotune') else ', use SAVE=1 to persist'))
     if args.save:

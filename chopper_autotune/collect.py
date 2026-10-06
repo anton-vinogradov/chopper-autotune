@@ -20,7 +20,7 @@ from typing import Optional
 import numpy as np
 
 from . import __version__, tmc
-from .dataset import Dataset, RESULTS_HOME
+from .dataset import Dataset, RESULTS_HOME, measured_steppers
 from .klippy import ConsoleFenceLost, Klippy, KlippyError, find_socket
 from .metrics import parse_accel_csv, transients, vibration_score, window
 from .tmc import Range
@@ -299,36 +299,47 @@ def autotune_tag(driver_name: str, autotune: 'str | None') -> 'str | None':
     return None if driver_name == '2208' else autotune
 
 
-def autotune_advice(settings: dict, driver_name: str, stepper: str) -> str:
+def tmc_sections(driver_name: str, *steppers: str) -> str:
+    """'[tmc2209 stepper_x]'; a rail's sections, one for each of its drivers."""
+    return ' and '.join('[tmc%s %s]' % (driver_name, stepper) for stepper in steppers)
+
+
+def autotune_advice(settings: dict, driver_name: str, *steppers: str) -> str:
+    """steppers: the motor's drivers, a rail's all of them, each section with the
+    thresholds of its own."""
+    sections = ' and '.join('[autotune_tmc %s]' % stepper for stepper in steppers)
     if autotune_tag(driver_name, 'auto') is None:
         # no CoolStep, no StallGuard: the result already measured stays good
-        return ('klipper_tmc_autotune ([autotune_tmc %s]) writes its own tbl, toff, hstrt and hend '
+        return ('klipper_tmc_autotune (%s) writes its own tbl, toff, hstrt and hend '
                 'over driver_* at every Klipper start. Keep it, or switch it off for this motor: '
-                'remove [autotune_tmc %s], restart Klipper, then tune it again with SAVE=1, or save '
+                'remove %s, restart Klipper, then tune it again with SAVE=1, or save '
                 'a result already measured (CHOPPER_SAVE; CHOPPER_EXTRUDER SAVE_LAST=1 for the '
                 'extruder): a TMC%s has no CoolStep, so autotune did not change its current. '
-                'README: With klipper_tmc_autotune' % (stepper, stepper, driver_name))
-    carry = autotune_carry_over(settings, driver_name, stepper)
-    return ('klipper_tmc_autotune ([autotune_tmc %s]) writes its own tbl, toff, tpfd, hstrt and '
+                'README: With klipper_tmc_autotune' % (sections, sections, driver_name))
+    carry = [(stepper, autotune_carry_over(settings, driver_name, stepper)) for stepper in steppers]
+    sets = ' and '.join('in [tmc%s %s] set %s' % (driver_name, stepper, ', '.join(lines))
+                        for stepper, lines in carry if lines)
+    return ('klipper_tmc_autotune (%s) writes its own tbl, toff, tpfd, hstrt and '
             'hend over driver_* at every Klipper start. Keep it, or switch it off for this '
-            'motor: 1) %s; 2) remove [autotune_tmc %s] and restart Klipper; 3) if this motor homes '
+            'motor: 1) %s; 2) remove %s and restart Klipper; 3) if this motor homes '
             'sensorless, re-tune the StallGuard threshold it homes on before anything else: the '
             'value comes from the autotune section (or its default) and ran under autotune\'s '
             'CoolStep and PWM, which go with the section, so it is only a starting point; 4) '
             'tune again%s. README: With klipper_tmc_autotune'
-            % (stepper,
-               'in [tmc%s %s] set %s (autotune sets these; replace any such line already there)'
-               % (driver_name, stepper, ', '.join(carry)) if carry else 'nothing to carry over',
-               stepper,
+            % (sections,
+               sets + ' (autotune sets these; replace any such line already there)' if sets
+               else 'nothing to carry over',
+               sections,
                '' if driver_name == '2208' else ': a run under autotune measured with its '
                                                  'CoolStep current'))
 
 
-def autotune_refusal(driver_name: str, stepper: str, settings: 'dict | None' = None) -> str:
+def autotune_refusal(driver_name: str, *steppers: str, settings: 'dict | None' = None) -> str:
     """The display shows the first 120 characters (failure_display): they point at the
     log, since removing the section alone would drop the StallGuard threshold with it."""
-    return ('not saving [tmc%s %s]: autotune resets its chopper at start; the log says what to '
-            'do. %s' % (driver_name, stepper, autotune_advice(settings or {}, driver_name, stepper)))
+    return ('not saving %s: autotune resets its chopper at start; the log says what to do. %s'
+            % (tmc_sections(driver_name, *steppers),
+               autotune_advice(settings or {}, driver_name, *steppers)))
 
 
 AUTOTUNE_MEASURED = ('klipper_tmc_autotune managed the motor during the run, and its CoolStep '
@@ -337,17 +348,19 @@ AUTOTUNE_MEASURED = ('klipper_tmc_autotune managed the motor during the run, and
                      'klipper_tmc_autotune; a sensorless motor needs its homing re-tuned first)')
 
 
-def measured_under_autotune(driver_name: str, stepper: str) -> str:
+def measured_under_autotune(driver_name: str, *steppers: str) -> str:
     """The display's 120 characters (failure_display) point at the log, like autotune_refusal."""
-    return ('not saving [tmc%s %s]: measured under autotune; the log says what to do. %s'
-            % (driver_name, stepper, AUTOTUNE_MEASURED))
+    return ('not saving %s: measured under autotune; the log says what to do. %s'
+            % (tmc_sections(driver_name, *steppers), AUTOTUNE_MEASURED))
 
 
-def refuse_autotune_save(settings: dict, driver_name: str, stepper: str):
+def refuse_autotune_save(settings: dict, driver_name: str, *steppers: str):
     """Saved driver_* values on a motor klipper_tmc_autotune manages never reach the
-    driver: say so instead of saving them (and restarting Klipper for nothing)."""
-    if autotune_goal(settings, stepper) is not None:
-        raise SystemExit(autotune_refusal(driver_name, stepper, settings))
+    driver: say so instead of saving them (and restarting Klipper for nothing). A rail
+    saves whole, so autotune on any of its drivers refuses it, naming those."""
+    managed = [stepper for stepper in steppers if autotune_goal(settings, stepper) is not None]
+    if managed:
+        raise SystemExit(autotune_refusal(driver_name, *managed, settings=settings))
 
 
 def rail_twins(settings: dict, axis: str) -> 'list[str]':
@@ -360,6 +373,11 @@ def rail_twins(settings: dict, axis: str) -> 'list[str]':
             break
         twins.append(name)
     return twins
+
+
+def rail_steppers(settings: dict, axis: str) -> 'list[str]':
+    """Every stepper of an axis's rail: stepper_x, then its twins."""
+    return ['stepper_' + axis] + rail_twins(settings, axis)
 
 
 def refuse_corexz(settings: dict):
@@ -1333,6 +1351,11 @@ def measure_combo(hw: Hardware, ds: Dataset, args, combo: tmc.Chopper, speeds: '
     return ok, failed, magnitudes, clicks
 
 
+def rail_snippet(driver: tmc.Driver, steppers: 'list[str]', combo: tmc.Chopper) -> str:
+    """The config lines of a winner: a section for each driver of the motor's rail."""
+    return '\n\n'.join(tmc.cfg_snippet(driver, stepper, combo) for stepper in steppers)
+
+
 def shown_registers(hw: Hardware, combo: tmc.Chopper) -> tmc.Chopper:
     """The registers the panel reads back after a save: a winner spelled without tpfd
     leaves the config's TPFD line (or the stock value) in force on a TPFD driver."""
@@ -1383,10 +1406,11 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
         print('\nBest measured (not for saving: %s):\n' % AUTOTUNE_MEASURED)
     elif hw.autotune is not None:
         # a TMC2208: no CoolStep tag, yet autotune writes its own chopper at every start
-        print('\nBest measured (%s):\n' % autotune_advice({}, hw.driver.name, hw.stepper))
+        print('\nBest measured (%s):\n' % autotune_advice({}, hw.driver.name,
+                                                           *(drive.stepper for drive in hw.rail)))
     else:
         print('\nRecommended for printer.cfg:\n')
-    print(tmc.cfg_snippet(hw.driver, hw.stepper, winner['chopper']))
+    print(rail_snippet(hw.driver, [drive.stepper for drive in hw.rail], winner['chopper']))
     screen.final(finale, short)
     return winner
 
@@ -1534,12 +1558,34 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
     return stats['ok'], stats['failed']
 
 
+def motion_text(manifest: dict) -> str:
+    steppers = measured_steppers(manifest)
+    return ('%s together by G1' % ', '.join(steppers) if manifest.get('motion') == 'rail'
+            else '%s alone by FORCE_MOVE' % steppers[0])
+
+
+def refuse_other_motion(stored: dict, run: dict):
+    """A dataset resumes on the drivers it measured, moved the way it moved them: a rail's
+    G1 runs every motor of it, one motor's FORCE_MOVE that one. A dataset that records no
+    motion is one motor's, as every dataset from before rails (run: the manifest this
+    run records)."""
+    if 'stepper' not in stored:
+        return
+    if (stored.get('motion'), measured_steppers(stored)) != (run.get('motion'), measured_steppers(run)):
+        # the action first: the display shows its first characters (failure_display)
+        raise SystemExit('refusing to resume: the dataset moved %s, this run moves %s; start a '
+                         'new dataset (no DATASET=)' % (motion_text(stored), motion_text(run)))
+
+
 def check_resume(manifest: dict, speeds: 'list[int]', accel: float, measure_time: float,
-                 autotune: 'str | None' = None):
+                 autotune: 'str | None' = None, run: 'dict | None' = None):
     """A resumed run must measure under the same physical conditions as the recorded one,
-    or the aggregate would silently mix incomparable magnitudes under one combo key.
-    klipper_tmc_autotune's CoolStep changes the current: its goal must match too (a
-    manifest from before the tool recorded it has no key and is not compared)."""
+    or the aggregate would silently mix incomparable magnitudes under one combo key: the
+    same drivers moved the same way (refuse_other_motion), and klipper_tmc_autotune's
+    CoolStep changes the current, so its goal must match too (a manifest from before the
+    tool recorded it has no key and is not compared)."""
+    if run is not None:
+        refuse_other_motion(manifest, run)
     mismatched = [
         '%s: dataset %s vs current %s' % (key, stored, current)
         for key, stored, current in (('speeds', manifest.get('speeds'), speeds),
@@ -1635,7 +1681,7 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
     root = Path(args.dataset) if args.dataset else default_dataset_root(
         '%s_%s' % (datetime.now().strftime('%Y%m%d_%H%M%S'), args.axis))
     resuming = (Path(root) / 'manifest.json').exists()
-    ds = Dataset.create(root, {
+    manifest = {
         'version': __version__,
         'created': now(),
         'klippy_socket': kl.path,
@@ -1664,9 +1710,11 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
         'speeds': speeds,
         'total_moves': n_moves,
         **motion.manifest_fields(),
-    })
+    }
+    ds = Dataset.create(root, manifest)
     if resuming:
-        check_resume(ds.manifest(), speeds, accel, args.measure_time, autotune_tag(hw.driver.name, hw.autotune))
+        check_resume(ds.manifest(), speeds, accel, args.measure_time,
+                     autotune_tag(hw.driver.name, hw.autotune), manifest)
         if 'autotune' not in ds.manifest():
             # a dataset from before the tool recorded it: the rest is measured now
             ds.update_manifest(autotune=autotune_tag(hw.driver.name, hw.autotune))
