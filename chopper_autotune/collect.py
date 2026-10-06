@@ -1565,16 +1565,18 @@ def motion_text(manifest: dict) -> str:
 
 
 def refuse_other_motion(stored: dict, run: dict):
-    """A dataset resumes on the drivers it measured, moved the way it moved them: a rail's
-    G1 runs every motor of it, one motor's FORCE_MOVE that one. A dataset that records no
-    motion is one motor's, as every dataset from before rails (run: the manifest this
-    run records)."""
-    if 'stepper' not in stored:
+    """A rail's dataset resumes on the drivers it measured, moved the way it moved them: a
+    rail's G1 runs every motor of it, one motor's FORCE_MOVE that one. A dataset that
+    records no motion is one motor's, as every dataset from before rails (run: the manifest
+    this run records). One motor's dataset resumed by one motor's run is not compared, as
+    before rails (decision 19)."""
+    if 'stepper' not in stored or 'rail' not in (stored.get('motion'), run.get('motion')):
         return
     if (stored.get('motion'), measured_steppers(stored)) != (run.get('motion'), measured_steppers(run)):
         # the action first: the display shows its first characters (failure_display)
-        raise SystemExit('refusing to resume: the dataset moved %s, this run moves %s; start a '
-                         'new dataset (no DATASET=)' % (motion_text(stored), motion_text(run)))
+        raise SystemExit('start a new dataset (no DATASET=): this one moved %s, this run moves %s, '
+                         'and the two would mix under one combination'
+                         % (motion_text(stored), motion_text(run)))
 
 
 def check_resume(manifest: dict, speeds: 'list[int]', accel: float, measure_time: float,

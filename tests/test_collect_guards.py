@@ -3,7 +3,8 @@ import time
 
 import pytest
 
-from chopper_autotune.collect import check_resume, refuse_if_printing, run_restore
+from chopper_autotune.collect import (check_resume, failure_display, refuse_if_printing,
+                                      run_restore)
 from chopper_autotune.klippy import KlippyError
 
 
@@ -65,12 +66,14 @@ RAIL = {'stepper': 'stepper_x', 'motion': 'rail', 'steppers': ['stepper_x', 'ste
     (ONE, ONE, None),
     (RAIL, RAIL, None),
     ({}, RAIL, None),                       # pre-key dataset: nothing to compare
+    # one motor's dataset on one motor's run: as before rails, whichever motor (decision 19)
+    (ONE, {'stepper': 'stepper_y'}, None),
     # a dataset from before rails is one motor's FORCE_MOVE
-    (ONE, RAIL, 'the dataset moved stepper_x alone by FORCE_MOVE, this run moves stepper_x, '
+    (ONE, RAIL, 'this one moved stepper_x alone by FORCE_MOVE, this run moves stepper_x, '
                 'stepper_x1 together by G1'),
-    (RAIL, ONE, 'the dataset moved stepper_x, stepper_x1 together by G1, this run moves '
+    (RAIL, ONE, 'this one moved stepper_x, stepper_x1 together by G1, this run moves '
                 'stepper_x alone by FORCE_MOVE'),
-    (dict(RAIL, steppers=['stepper_x', 'stepper_x1', 'stepper_x2']), RAIL, 'refusing to resume'),
+    (dict(RAIL, steppers=['stepper_x', 'stepper_x1', 'stepper_x2']), RAIL, 'start a new dataset'),
 ])
 def test_check_resume_rejects_other_drivers_or_another_motion(stored, run, refusal):
     # a rail's G1 runs every motor of it, one motor's FORCE_MOVE that one alone
@@ -78,8 +81,9 @@ def test_check_resume_rejects_other_drivers_or_another_motion(stored, run, refus
     if refusal is None:
         check_resume(manifest, [58], 300.0, 1.25, None, run)
         return
-    with pytest.raises(SystemExit, match=refusal):
+    with pytest.raises(SystemExit, match=refusal) as refused:
         check_resume(manifest, [58], 300.0, 1.25, None, run)
+    assert failure_display('collect FAILED: %s' % refused.value.code)[:16] == 'FAIL start a new'
 
 
 def test_screen_final_adds_a_popup():

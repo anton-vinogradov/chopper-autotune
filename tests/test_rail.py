@@ -723,8 +723,8 @@ def test_a_dataset_of_one_motor_does_not_resume_as_a_rail(source, run, tmp_path)
     records = Dataset.open(root).records()
     front = klipper_front.Front(source, awd_cfg('meijjaa'))
     with pytest.raises(SystemExit, match=re.escape(
-            'refusing to resume: the dataset moved stepper_x alone by FORCE_MOVE, this run moves '
-            'stepper_x, stepper_x1 together by G1')):
+            'start a new dataset (no DATASET=): this one moved stepper_x alone by FORCE_MOVE, this '
+            'run moves stepper_x, stepper_x1 together by G1')):
         run_tool(front, tool, argv)
     assert front.head_moves == [] and front.homings == []
     assert Dataset.open(root).records() == records
