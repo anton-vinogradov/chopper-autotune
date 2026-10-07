@@ -6,7 +6,8 @@ without the twins, frozen beside the scripts (printer-*.cfg): meijjaa's cartesia
 low limits, a Voron's CoreXY, and that Voron with a second motor on Y alone, where motor
 A still runs alone on its axis; each built from every release's modules. The scores the
 text and the dataset carry come from the test printer's accelerometer, whose samples fall
-a little apart on each release: they are held on PRINTED_ON."""
+a little apart on each release: they are held on PRINTED_ON, to nine significant digits, the
+last ones being numpy's and the platform's."""
 import os
 import re
 import types
@@ -53,6 +54,10 @@ CASES = [(run, printer) for run in RUNS for printer in PRINTERS
          and not (printer.startswith('dual-y') and run.endswith('-b'))]
 DATASET = ('manifest.json', 'measurements.jsonl')
 PRINTED_ON = 'klipper-v0.13.0'
+
+
+def nine_digits(text: str) -> str:
+    return re.sub(r'\d+\.\d{7,}', lambda m: '%.9g' % float(m.group()), text)
 
 
 class PrinterClock(klipper_front.Clock):
@@ -132,4 +137,4 @@ def test_a_single_motor_sends_and_prints_what_main_did(source, printer, case, tm
         assert scripts == reference.read()
     if source == PRINTED_ON:
         with open(os.path.join(REFERENCE, '%s-%s.out' % (case, printer))) as reference:
-            assert printed == reference.read()
+            assert nine_digits(printed) == nine_digits(reference.read())
