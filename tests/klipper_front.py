@@ -853,6 +853,7 @@ class Front:
         axes = [axis for axis in 'XYZ' if gcmd.get(axis, None) is not None] or list('XYZ')
         self.homings.append({'axes': ''.join(axes).lower(),
                              'accel': self.toolhead.get_status(0.)['max_accel'],
+                             'cruise_ratio': self.toolhead.get_status(0.)['minimum_cruise_ratio'],
                              'chips': {section: chip.chopper() for section, chip in self.chips.items()}})
         position = self.toolhead.get_position()
         for axis in axes:

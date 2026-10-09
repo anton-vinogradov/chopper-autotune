@@ -133,8 +133,11 @@ def test_a_rail_run_moves_the_rail_by_g1_with_every_driver_on_the_same_registers
         assert [(start + end) / 2 for start, end in zip(move['start'][:2], move['end'][:2])] \
             == pytest.approx([size / 2 for size in AWD[printer]['size']])
     off_the_edges(front, printer)
-    # decision 5: every G28 on the registers and mode the config gives each driver
+    # decision 5: every G28 on the registers and mode the config gives each driver, and on
+    # the printer's own limits: a sensorless homing with them freed stopped early (#164)
     assert len(front.homings) == 2 and all(homing['chips'] == configured for homing in front.homings)
+    own = limits_in_force(front)['minimum_cruise_ratio']
+    assert own and all(homing['cruise_ratio'] == own for homing in front.homings)
     woken = front.scripts.index('SET_STEPPER_ENABLE STEPPER=stepper_%s1 ENABLE=1' % axis)
     assert woken < min(index for index, script in enumerate(front.scripts)
                        if 'SET_TMC_FIELD STEPPER=stepper_%s1 ' % axis in script)
@@ -426,8 +429,10 @@ def test_every_homing_of_a_rail_run_is_on_the_drivers_own_registers(source, prin
     # before the 4th move, its retry, the 7th: a re-home every 3 moves since the last
     assert capsys.readouterr().out.count("Re-homing on the drivers' own registers") == 3
     assert len(front.homings) == 5
+    own = limits_in_force(front)['minimum_cruise_ratio']
     for homing in front.homings:
-        assert (homing['axes'], homing['accel'], homing['chips']) == ('xy', accel, configured)
+        assert (homing['axes'], homing['accel'], homing['chips'], homing['cruise_ratio']) \
+            == ('xy', accel, configured, own)
     field, spread, _ = tmc.DRIVERS[AWD[printer]['driver']].spreadcycle_switch
     pairs = measured(front, root)
     assert len(pairs) == 8

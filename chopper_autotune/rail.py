@@ -184,7 +184,7 @@ class RailMove:
         self.moves = 0
         self.stumbled = False
         self.failures = 0
-        self.restores, self.reloads = [], []
+        self.restores, self.reloads, self.freed = [], [], []
 
     @property
     def standstill(self) -> tuple:
@@ -279,8 +279,8 @@ class RailMove:
         if any(freqs.values()):
             freed.append('input shaper (by config %s) -> off' % ', '.join(
                 '%s %g Hz' % (axis.upper(), freq) for axis, freq in freqs.items()))
-        print('  limits: max_velocity %g caps the belt at %.0f mm/s; for the run %s'
-              % (self.limits['max_velocity'], self.cap, ', '.join(freed)))
+        print('  limits: max_velocity %g caps the belt at %.0f mm/s; for the moves %s (every '
+              'homing runs on your own)' % (self.limits['max_velocity'], self.cap, ', '.join(freed)))
         for drive in hw.rail:
             print('  %s' % self.describe(drive))
         differ = self.differences()
@@ -360,10 +360,11 @@ class RailMove:
                 'edges': self.edges, 'noise_floor': 'motors holding'}
 
     def prepare(self):
-        """Free the moves of what would cut them (free_strokes, the bed mesh, a print's
-        M204), each way back registered before its change, then home XY and go to the
-        center. A driver still hot from an earlier stop ends the run first. The motors
-        stay on from here to the end of the run."""
+        """Home XY and go to the center, then free the moves of what would cut them
+        (free_strokes, a print's M204; the bed mesh before the homing: the move to the
+        center needs Z with it), each way back registered before its change. A driver
+        still hot from an earlier stop ends the run first. The motors stay on from here to
+        the end of the run."""
         kl, settings = self.kl, self.settings
         print('Preparing: home XY and go to the center; every X/Y motor stays on until the run ends')
         self.guard = ThermalGuard(kl, settings)
@@ -372,9 +373,11 @@ class RailMove:
         try:
             self.limits = limits = live_limits(kl)
             self.restores.append(lambda: kl.gcode('M204 S%s' % limits['max_accel']))
-            free_strokes(kl, settings, limits, self.restores)
             self.clear_mesh()
             self.home()
+            freed = len(self.restores)
+            free_strokes(kl, settings, limits, self.restores)
+            self.freed = self.restores[freed:]
         except BaseException:
             run_restore(*self.restores, *self.reloads)
             raise
@@ -399,7 +402,9 @@ class RailMove:
     def home(self):
         """G28 on the accel the run found, as the closing one: a homing takes the
         toolhead's, and a sensorless one was tuned on that, not on the run's M204; then
-        the run's to the center."""
+        the run's to the center. The run's freed limits are not in force here (prepare,
+        rehome): a sensorless homing with the input shaper off stopped early on the
+        second touch (#164)."""
         center = [at - origin for at, origin in zip(self.hw.center, self.origin)]
         home_xy(self.kl, 'M204 S%s\nG28 X Y\nG90\nM204 S%.3f\nG1 X%.3f Y%.3f F%d\nM400'
                 % (self.limits['max_accel'], self.asked / self.k, center[0], center[1],
@@ -458,10 +463,13 @@ class RailMove:
                 restore_chopper(kl, drive)
             for drive in hw.rail:
                 exit_spreadcycle(kl, drive)
+            for step in self.freed:
+                step()
         except KlippyError as failure:
             self.stuck(failure)
         self.home()
         try:
+            free_strokes(kl, self.settings, self.limits, [])
             for drive in hw.rail:
                 if drive.stealth:
                     field, force, _ = drive.stealth
