@@ -12,12 +12,12 @@ from dataclasses import replace
 from datetime import datetime
 
 from . import __version__, tmc
-from .collect import (MOVE_MARGIN, RunStopped, Screen, ThermalGuard, capture_stream,
+from .collect import (MOVE_MARGIN, ForceMove, RunStopped, Screen, ThermalGuard, capture_stream,
                       coupled_xy, default_dataset_root, detect_hardware, enter_spreadcycle,
-                      exit_spreadcycle, fit_measure_time, home_xy, make_parker, measure_baseline,
-                      motor_label, now, park, refuse_after_shutdown, refuse_blind_z_hop,
-                      refuse_if_printing, refuse_multi_motor, rehome_unless_hot, restore_chopper,
-                      run_measurement, run_restore, travel_for)
+                      exit_spreadcycle, fit_measure_time, home_xy, measure_baseline, motor_label,
+                      now, refuse_after_shutdown, refuse_blind_z_hop, refuse_if_printing,
+                      refuse_multi_motor, rehome_unless_hot, restore_chopper, run_measurement,
+                      run_restore, travel_for)
 from .current import live_limits
 from .dataset import Dataset
 from .klippy import Klippy, KlippyError, find_socket
@@ -209,6 +209,7 @@ def demo(kl: Klippy, args) -> int:
         args.trim = 0.1
 
     hw = detect_hardware(kl, args.axis)
+    motion = ForceMove(kl, hw)
     tpfd = hw.baseline.get('tpfd')
     tuned = tmc.baseline_chopper(hw.baseline, tpfd, hw.driver.default)
     default = before_registers(args, hw.driver)
@@ -234,12 +235,11 @@ def demo(kl: Klippy, args) -> int:
             if speed is None:
                 raise SystemExit('no clear resonance speed found; pass SPEED=')
 
-    accel = args.accel or hw.max_accel / 10
+    accel = args.accel or motion.default_accel
     # a high resonance speed can push the default cruise past the axis (measured: the
     # re-tensioned rig moved motor B's resonance to ~100 mm/s and the demo refused) —
     # shrink the cruise like collect does instead of skipping the motor
-    cruise = fit_measure_time([int(speed)], accel, hw.axis_span * MOVE_MARGIN,
-                              args.measure_time)
+    cruise = fit_measure_time([int(speed)], accel, motion.limit, args.measure_time)
     if cruise < args.measure_time:
         print('Cruise %.2fs does not fit the axis at %d mm/s: shrinking to %.2fs'
               % (args.measure_time, speed, cruise))
@@ -259,12 +259,7 @@ def demo(kl: Klippy, args) -> int:
     ds = Dataset.create(root, {'version': __version__, 'created': now(), 'mode': 'demo',
                                'axis': args.axis, 'stepper': hw.stepper, 'driver': hw.driver.name,
                                'speed': speed, 'default': default.label(), 'tuned': tuned.label()})
-    print('Preparing: home XY, park at center, switch the gantry and head motors off')
-    guard = ThermalGuard(kl, kl.settings())
-    refuse_blind_z_hop(kl, kl.settings())
-    guard.preflight()
-    park(kl, hw)
-    before_move = make_parker(kl, hw, guard)
+    motion.prepare()
     screen = Screen(kl, hw.display)
     configs = [('default', default), ('tuned', tuned)]
     results = {name: [] for name, _ in configs}
@@ -279,25 +274,21 @@ def demo(kl: Klippy, args) -> int:
         configs = [('default', default), ('tuned', tuned)]
         if live:
             results = _showcase(kl, hw, args, ds, configs, speed, travel, accel,
-                                before_move, screen)
+                                motion, screen)
         else:
             for iteration in range(args.iterations):
                 for name, combo in configs:
                     kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
                     for direction in (1, -1):
                         record = run_measurement(hw, ds, args, combo, speed, iteration, direction,
-                                                 travel, accel, before_move)
+                                                 travel, accel, motion)
                         if record['status'] == 'ok':
                             results[name].append(record['score']['median_magnitude'])
                     screen.update('Chopper demo %s %d/%d' % (name, iteration + 1, args.iterations),
                                   short='%s %s %d/%d' % (hw.motor, name, iteration + 1,
                                                          args.iterations))
     finally:
-        run_restore(
-            lambda: restore_chopper(kl, hw),
-            lambda: exit_spreadcycle(kl, hw),
-            lambda: rehome_unless_hot(kl),
-            ds.flush_raw)
+        motion.restore(ds.flush_raw)
 
     if not results['default'] or not results['tuned']:
         raise SystemExit('demo failed to collect measurements')
@@ -327,7 +318,7 @@ def write_state(axis: str, tuned: tmc.Chopper, quieter: float):
                       'quieter': round(quieter, 2)}}, merge=True)
 
 
-def _showcase(kl, hw, args, ds, configs, speed, travel, accel, before_move, screen):
+def _showcase(kl, hw, args, ds, configs, speed, travel, accel, motion, screen):
     """Play defaults and tuned alternately, announcing on the display/console which is
     playing and the running difference, so a listener hears and sees it change."""
     playing = {'default': '>> DEFAULTS', 'tuned': '>> TUNED'}
@@ -345,7 +336,7 @@ def _showcase(kl, hw, args, ds, configs, speed, travel, accel, before_move, scre
             for _ in range(args.repeats):
                 for direction in (1, -1):
                     record = run_measurement(hw, ds, args, combo, speed, it, direction,
-                                             travel, accel, before_move)
+                                             travel, accel, motion)
                     it += 1
                     if record['status'] == 'ok':
                         mags.append(record['score']['median_magnitude'])

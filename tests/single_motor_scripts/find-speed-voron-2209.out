@@ -1,0 +1,71 @@
+Driver tmc2209 on stepper_x (motor A), accelerometer adxl345, kinematics corexy, registers {'tbl': 1, 'toff': 4, 'hstrt': 2, 'hend': 3}
+Plan: 7 speeds (30..90 step 10) -> 14 moves, capture stream, ETA 0m 23s
+Preparing: home XY, park at center, switch the gantry and head motors off
+Baseline noise: median magnitude 5.0
+Scanning with Klipper default registers tbl2_toff3_hstrt5_hend0 — the current tuning would mask the peaks
+[1/7] 30 mm/s: median 49.9
+[2/7] 40 mm/s: median 63.7
+[3/7] 50 mm/s: median 325.6
+[4/7] 60 mm/s: median 798.5
+[5/7] 70 mm/s: median 324.9
+[6/7] 80 mm/s: median 63.6
+[7/7] 90 mm/s: median 50.0
+Restoring registers, homing
+Done in 0m: report <tmp>/dataset/report.html
+Resonance peaks: 60 mm/s (magnitude 799)
+
+Recommended: CHOPPER_COLLECT MOTOR=A SPEED=60
+=== manifest.json ===
+{
+  "version": "0.3.0",
+  "created": "<time>",
+  "mode": "find-speed",
+  "klippy_socket": "<front>",
+  "capture": "stream",
+  "axis": "x",
+  "stepper": "stepper_x",
+  "driver": "2209",
+  "accel_chip": "adxl345",
+  "kinematics": "corexy",
+  "registers": {
+    "tbl": 1,
+    "toff": 4,
+    "hstrt": 2,
+    "hend": 3
+  },
+  "scan_registers": {
+    "tbl": 2,
+    "toff": 3,
+    "hstrt": 5,
+    "hend": 0
+  },
+  "accel": 300.0,
+  "measure_time": 1.0,
+  "trim": 0.1,
+  "iterations": 1,
+  "speeds": [
+    30,
+    40,
+    50,
+    60,
+    70,
+    80,
+    90
+  ]
+}
+=== measurements.jsonl ===
+{"id": "baseline", "kind": "baseline", "source": "stream", "ts": "<time>", "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 4.991195819850376, "p95_magnitude": 6.828355099043587, "rms": 4.994920101670219}, "status": "ok"}
+{"id": "v030_i0_fwd", "kind": "speed", "source": "stream", "speed": 30, "cruise": 1.0, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [4.959207, 5.759207], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 49.931469335615986, "p95_magnitude": 67.84262942517195, "rms": 50.10709273674933, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v030_i0_rev", "kind": "speed", "source": "stream", "speed": 30, "cruise": 1.0, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [6.159207, 6.959207], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 49.931469335615986, "p95_magnitude": 67.84262942517195, "rms": 50.10709273674933, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v040_i0_fwd", "kind": "speed", "source": "stream", "speed": 40, "cruise": 1.0, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [7.392532, 8.192532], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 63.69772130082621, "p95_magnitude": 86.59084098268403, "rms": 63.75636522814451, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v040_i0_rev", "kind": "speed", "source": "stream", "speed": 40, "cruise": 1.0, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [8.65919, 9.45919], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 63.66000451233249, "p95_magnitude": 86.60171068239069, "rms": 63.64952908451854, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v050_i0_fwd", "kind": "speed", "source": "stream", "speed": 50, "cruise": 1.0, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [9.959184, 10.759184], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 325.3878904096456, "p95_magnitude": 444.01086213161705, "rms": 325.5459443038241, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v050_i0_rev", "kind": "speed", "source": "stream", "speed": 50, "cruise": 1.0, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [11.29251, 12.09251], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 325.88192117377946, "p95_magnitude": 444.14601468238845, "rms": 325.94700640856604, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v060_i0_fwd", "kind": "speed", "source": "stream", "speed": 60, "cruise": 1.0, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [12.659177, 13.459177], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 798.5161229416934, "p95_magnitude": 1083.4259110741873, "rms": 798.681138015084, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v060_i0_rev", "kind": "speed", "source": "stream", "speed": 60, "cruise": 1.0, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [14.059177, 14.859177], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 798.5161229416934, "p95_magnitude": 1083.4259110741873, "rms": 798.681138015084, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v070_i0_fwd", "kind": "speed", "source": "stream", "speed": 70, "cruise": 1.0, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [15.492506, 16.292506], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 324.79417915648276, "p95_magnitude": 441.5121082633028, "rms": 325.71825579348865, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v070_i0_rev", "kind": "speed", "source": "stream", "speed": 70, "cruise": 1.0, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [16.959168, 17.759168], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 325.0770947391419, "p95_magnitude": 441.54298820739774, "rms": 325.7838423171393, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v080_i0_fwd", "kind": "speed", "source": "stream", "speed": 80, "cruise": 1.0, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [18.459163, 19.259163], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 63.59811497006744, "p95_magnitude": 86.39259316691425, "rms": 63.67995646882255, "clicks": 0, "peak_ratio": 3.0}, "status": "ok"}
+{"id": "v080_i0_rev", "kind": "speed", "source": "stream", "speed": 80, "cruise": 1.0, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [19.992493, 20.792493], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 63.59811497006744, "p95_magnitude": 86.39259316691425, "rms": 63.67995646882255, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v090_i0_fwd", "kind": "speed", "source": "stream", "speed": 90, "cruise": 1.0, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [21.559159, 22.359159], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 50.03384027912103, "p95_magnitude": 68.08766425843882, "rms": 50.07669164925202, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v090_i0_rev", "kind": "speed", "source": "stream", "speed": 90, "cruise": 1.0, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [23.159159, 23.959159], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 50.03384027912103, "p95_magnitude": 68.08766425843882, "rms": 50.07669164925202, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}

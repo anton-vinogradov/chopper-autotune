@@ -3,7 +3,8 @@ import time
 
 import pytest
 
-from chopper_autotune.collect import check_resume, refuse_if_printing, run_restore
+from chopper_autotune.collect import (check_resume, failure_display, refuse_if_printing,
+                                      run_restore)
 from chopper_autotune.klippy import KlippyError
 
 
@@ -55,6 +56,34 @@ def test_check_resume_rejects_different_conditions():
         check_resume(manifest, [58], 300.0, 0.4)
     with pytest.raises(SystemExit, match='speeds'):
         check_resume(manifest, [40, 58], 300.0, 1.25)
+
+
+ONE = {'stepper': 'stepper_x'}
+RAIL = {'stepper': 'stepper_x', 'motion': 'rail', 'steppers': ['stepper_x', 'stepper_x1']}
+
+
+@pytest.mark.parametrize('stored, run, refusal', [
+    (ONE, ONE, None),
+    (RAIL, RAIL, None),
+    ({}, RAIL, None),                       # pre-key dataset: nothing to compare
+    # one motor's dataset on one motor's run: as before rails, whichever motor (decision 19)
+    (ONE, {'stepper': 'stepper_y'}, None),
+    # a dataset from before rails is one motor's FORCE_MOVE
+    (ONE, RAIL, 'this one moved stepper_x alone by FORCE_MOVE, this run moves stepper_x, '
+                'stepper_x1 together by G1'),
+    (RAIL, ONE, 'this one moved stepper_x, stepper_x1 together by G1, this run moves '
+                'stepper_x alone by FORCE_MOVE'),
+    (dict(RAIL, steppers=['stepper_x', 'stepper_x1', 'stepper_x2']), RAIL, 'start a new dataset'),
+])
+def test_check_resume_rejects_other_drivers_or_another_motion(stored, run, refusal):
+    # a rail's G1 runs every motor of it, one motor's FORCE_MOVE that one alone
+    manifest = dict(stored, speeds=[58], accel=300.0, measure_time=1.25)
+    if refusal is None:
+        check_resume(manifest, [58], 300.0, 1.25, None, run)
+        return
+    with pytest.raises(SystemExit, match=refusal) as refused:
+        check_resume(manifest, [58], 300.0, 1.25, None, run)
+    assert failure_display('collect FAILED: %s' % refused.value.code)[:16] == 'FAIL start a new'
 
 
 def test_screen_final_adds_a_popup():
@@ -211,7 +240,8 @@ def test_report_winner_reports_improvement_vs_defaults(tmp_path, monkeypatch, ca
                        'score': {'median_magnitude': magnitude, 'clicks': 0}})
 
     finals = []
-    hw = SimpleNamespace(driver=tmc.DRIVERS['2209'], stepper='stepper_x', autotune=None, motor='A')
+    hw = SimpleNamespace(driver=tmc.DRIVERS['2209'], stepper='stepper_x', autotune=None, motor='A',
+                         rail=[SimpleNamespace(stepper='stepper_x')])
     args = SimpleNamespace(trim=0.1, audible_weight=0.25)
     screen = SimpleNamespace(final=lambda text, short=None: finals.append(text))
     winner = report_winner(hw, ds, args, screen, top=5)
@@ -364,7 +394,7 @@ def test_report_winner_finds_the_stock_reference_when_tpfd_is_not_swept(tmp_path
                        'status': 'ok', **combo.fields(), 'tpfd': None,
                        'score': {'median_magnitude': magnitude, 'clicks': 0}})
     hw = SimpleNamespace(driver=tmc.DRIVERS['2240'], stepper='stepper_x', baseline={}, autotune=None,
-                         motor='A')
+                         motor='A', rail=[SimpleNamespace(stepper='stepper_x')])
     args = SimpleNamespace(trim=0.1, audible_weight=0.25, tpfd=None)
     report_winner(hw, ds, args, SimpleNamespace(final=lambda text, short=None: None), top=5)
     assert ds.manifest()['improvement'] == 2.0

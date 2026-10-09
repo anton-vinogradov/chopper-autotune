@@ -156,7 +156,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument('--validate', type=int, default=3,
                    help='re-measure top N candidates with extra runs before recommending (0 = off)')
     c.add_argument('--measure-time', type=float, default=1.25, help='cruise time per move in seconds')
-    c.add_argument('--accel', type=float, default=None, help='acceleration, default printer max_accel / 10')
+    c.add_argument('--accel', type=float, default=None, help='acceleration, default printer max_accel / 10 (higher on a two-motor axis, see README)')
     c.add_argument('--trim', type=float, default=None,
                    help='guard fraction of the cruise window (stream, default 0.1); '
                         'with --csv: fraction of the whole capture (default 0.25)')
@@ -179,7 +179,7 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument('--iterations', type=int, default=1)
     f.add_argument('--measure-time', type=float, default=1.0,
                    help='target cruise time per move; shrinks at high speeds to fit the axis')
-    f.add_argument('--accel', type=float, default=None, help='acceleration, default printer max_accel / 10')
+    f.add_argument('--accel', type=float, default=None, help='acceleration, default printer max_accel / 10 (higher on a two-motor axis, see README)')
     f.add_argument('--trim', type=float, default=None)
     f.add_argument('--dataset', default=None, help='dataset directory; pass an existing one to resume')
     f.add_argument('--no-raw', action='store_true')

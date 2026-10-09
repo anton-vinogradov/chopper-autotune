@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from . import tmc
 from .collect import (Range, Screen, autotune_advice, autotune_goal, collect, driver_of,
-                      motor_label, refuse_autotune_save, refuse_multi_motor, refuse_unhearable)
-from .dataset import Dataset
+                      motor_label, rail_snippet, rail_steppers, rail_twins, refuse_autotune_save,
+                      refuse_multi_motor, refuse_unhearable)
+from .dataset import Dataset, measured_steppers
 from .find_speed import scan
 from .klippy import Klippy, find_socket
 from .moonraker import Moonraker
@@ -96,11 +97,27 @@ def run_tune(args) -> int:
     settings = kl.settings()
 
     def managed(manifest: dict) -> bool:
-        """klipper_tmc_autotune manages the motor now (a TMC2208 included, whose result
-        carries no 'measured under autotune' tag): pasting or saving would be undone."""
-        return autotune_goal(settings, manifest['stepper']) is not None
+        """klipper_tmc_autotune manages the motor now, any driver of its rail (a TMC2208
+        included, whose result carries no 'measured under autotune' tag): pasting or
+        saving would be undone."""
+        return any(autotune_goal(settings, stepper) is not None
+                   for stepper in measured_steppers(manifest))
 
-    refuse_multi_motor(settings, args.axis)
+    refuse_multi_motor(settings, args.axis, rails=True)
+    rails = [axis for axis in axes if rail_twins(settings, axis)]
+    if rails:
+        # say it now, not after the other motor's tune
+        from .rail import refuse_rail_run
+        refuse_rail_run(kl, args.csv)
+    if rails and len(rails) < len(axes):
+        # a motor alone on its axis runs with every X/Y motor off (FORCE_MOVE): before the
+        # rail's run its motors would come back on apart, unsynced
+        axes.sort(key=lambda axis: axis not in rails)
+        alone = next(axis for axis in axes if axis not in rails)
+        print('note: motor %s, with two motors, is tuned first: motor %s runs alone on its axis, '
+              'with every X/Y motor off%s'
+              % (motor_label(rails[0]), motor_label(alone), '; run G28 and SYNC_MOTORS again after '
+                 'the tune' if 'motors_sync' in settings else ''))
     for axis in axes:
         # say it now, not after the speed scan
         name = driver_of(settings, 'stepper_' + axis)
@@ -110,8 +127,8 @@ def run_tune(args) -> int:
     if args.save:
         # say it now, not after twenty minutes of tuning
         for axis in axes:
-            stepper = 'stepper_' + axis
-            refuse_autotune_save(settings, driver_of(settings, stepper) or 'XXXX', stepper)
+            rail = rail_steppers(settings, axis)
+            refuse_autotune_save(settings, driver_of(settings, rail[0]) or 'XXXX', *rail)
     screen = Screen(kl, True)
     winners, roots = [], {}
     worst = 0
@@ -137,6 +154,7 @@ def run_tune(args) -> int:
                 winners.append(winner_of(root, args))
                 roots[winners[-1][0]['stepper']] = root
                 seed_root = root
+        winners.sort(key=lambda winner: winner[0]['stepper'])      # A, B: the order shown
 
         # the run's outcome must reach the screen: the console summary below only lands
         # in the detached log, and SAVE=1 restarts Klipper, wiping the status line — so
@@ -169,12 +187,13 @@ def run_tune(args) -> int:
 
     print('\n=== Summary ===')
     for manifest, combo in winners:
+        steppers = measured_steppers(manifest)
         if managed(manifest):
             # no snippet: pasting it would change nothing, autotune writes its own at start
-            print('%s: %s\n' % (manifest['stepper'],
-                                autotune_advice(settings, manifest['driver'], manifest['stepper'])))
+            print('%s: %s\n' % (', '.join(steppers),
+                                autotune_advice(settings, manifest['driver'], *steppers)))
             continue
-        print(tmc.cfg_snippet(tmc.DRIVERS[manifest['driver']], manifest['stepper'], combo))
+        print(rail_snippet(tmc.DRIVERS[manifest['driver']], steppers, combo))
         if manifest.get('improvement'):
             print('# %.1fx less vibration than Klipper defaults\n'
                   % manifest['improvement'])
@@ -187,7 +206,7 @@ def run_tune(args) -> int:
         # no second twenty-minute run: these datasets can be saved as they are
         for manifest in free:
             print('To save %s from this run alone: CHOPPER_ANALYZE DATASET=%s SAVE=1'
-                  % (manifest['stepper'], roots[manifest['stepper']]))
+                  % (', '.join(measured_steppers(manifest)), roots[manifest['stepper']]))
         print('CHOPPER_SAVE writes the latest result of every motor, and the stored '
               'CHOPPER_EXTRUDER winner, in one go (it skips the motors autotune manages). '
               'Or paste the lines above manually.')
