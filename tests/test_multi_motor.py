@@ -285,7 +285,10 @@ def test_the_plan_names_what_runs_the_drivers_of_a_rail_unlike(capsys):
         assert 'note: ' + note in out
     assert ('Every X/Y motor holds under current the whole run: stepper_x 0.5 A, stepper_x1 0.5 A, '
             'stepper_y its run_current 0.8 A, stepper_y1 its run_current 0.8 A') in out
-    assert 'WARNING: stepper_y, stepper_y1 hold the full run_current at standstill' in out
+    assert ('WARNING: stepper_y, stepper_y1 stay at their full run_current the whole run, the '
+            'waiting ones too, so a waiting driver heats like a moving one: cool the drivers (#133)') in out
+    assert 'not below' not in out                   # read as "set a lower hold_current" (#164)
+    assert 'motors_sync does not see it (its applied flag stays true): run SYNC_MOTORS by hand' in out
     assert printer.scripts == []
 
 

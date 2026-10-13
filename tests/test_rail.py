@@ -308,15 +308,19 @@ def test_a_twin_without_its_own_enable_pin_keeps_each_candidate(source, printer,
 
 @pytest.mark.parametrize('source', SOURCES)
 @pytest.mark.parametrize('printer', AWD)
-def test_a_hot_twin_stops_the_run_before_any_move_and_the_gantry_goes_off(source, printer, tmp_path):
+@pytest.mark.parametrize('sync', [False, True])
+def test_a_hot_twin_stops_the_run_before_any_move_and_the_gantry_goes_off(source, printer, sync,
+                                                                          tmp_path):
+    # SET_STEPPER_ENABLE leaves [motors_sync]'s applied flag true: the stop says to sync
     require(source)
-    front = klipper_front.Front(source, awd_cfg(printer))
+    front = klipper_front.Front(source, awd_cfg(printer) + '\n[motors_sync]\naxes: x,y\n' * sync)
     stock = {section: chip.chopper() for section, chip in front.chips.items()}
     chip = front.chips[rail_sections(printer, 'x')[1]]
     chip.reads['DRV_STATUS'] = chip.fields.all_fields['DRV_STATUS']['otpw']
-    with pytest.raises(collect.DriverTooHot, match='stepper_x1 overheating'):
+    with pytest.raises(collect.DriverTooHot, match='stepper_x1 overheating') as stopped:
         run_tool(front, collect.collect, RUNS['collect'][1] + ['--axis', 'x', '--dataset',
                                                                str(tmp_path / 'g')])
+    assert ('then SYNC_MOTORS by hand' in str(stopped.value)) == sync
     assert_clean(front)
     assert front.head_moves == [] and front.homings == []
     assert {section: chip.chopper() for section, chip in front.chips.items()} == stock

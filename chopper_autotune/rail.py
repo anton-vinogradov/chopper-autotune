@@ -337,7 +337,9 @@ class RailMove:
             print('note: [bed_tilt] stays on: it moves Z along every move')
         if 'motors_sync' in settings:
             print('note: [motors_sync]: run G28 and SYNC_MOTORS before the run; the run keeps the '
-                  'motors on, a stop on heat switches them off: sync them again after it')
+                  'motors on. A stop on heat switches them off with SET_STEPPER_ENABLE, and '
+                  'motors_sync does not see it (its applied flag stays true): run SYNC_MOTORS '
+                  'by hand after such a stop')
         holding, held = [], []
         for name in xy_driver_sections(settings):
             # Klipper records hold_current's default, the driver's maximum: the full run current
@@ -350,9 +352,10 @@ class RailMove:
                 held.append(stepper)
         print('Every X/Y motor holds under current the whole run: %s' % ', '.join(holding))
         if held:
-            print('WARNING: %s hold the full run_current at standstill (hold_current not below it): '
-                  'with every X/Y motor on the whole run a standstill heats like a move (#133)'
-                  % ', '.join(held))
+            print('WARNING: %s stay at their full run_current the whole run, the waiting ones '
+                  'too, so a waiting driver heats like a moving one: cool the drivers (#133). '
+                  'Klipper advises against a hold_current below run_current: a change of '
+                  'current can move a motor' % ', '.join(held))
 
     def manifest_fields(self) -> dict:
         return {'motion': 'rail', 'steppers': [drive.stepper for drive in self.hw.rail],

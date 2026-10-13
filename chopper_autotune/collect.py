@@ -596,6 +596,9 @@ class ThermalGuard:
             print('note: %s hold the full run_current at standstill (hold_current not below it): '
                   'a standstill heats the driver like a move (#133)' % ', '.join(held))
         self.unreadable = set()
+        # SET_STEPPER_ENABLE leaves motors_sync's applied flag true: its macros would skip
+        self.sync = '; then SYNC_MOTORS by hand' if 'motors_sync' in settings \
+            and any(rail_twins(settings, axis) for axis in 'xy') else ''
 
     def check(self):
         if not self.sections:
@@ -618,7 +621,7 @@ class ThermalGuard:
                 temperature = None
             if flags or (temperature is not None and temperature >= THERMAL_LIMIT_C):
                 why = flags[0] if flags else '%.0f C' % temperature
-                hint = '; set driver_SLOPE_CONTROL: 3' if section in self.slow else ''
+                hint = ('; set driver_SLOPE_CONTROL: 3' if section in self.slow else '') + self.sync
                 # the display shows 'FAIL ' and the first characters of this (failure_display)
                 raise DriverTooHot('%s overheating (%s): motors off, let it cool%s (#133)'
                                    % (section, why, hint))
