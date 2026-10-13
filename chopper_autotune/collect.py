@@ -13,7 +13,6 @@ import statistics
 import sys
 import tempfile
 import time
-from collections import defaultdict
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
