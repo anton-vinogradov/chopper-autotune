@@ -1,0 +1,11 @@
+Demo on motor A at 60 mm/s (measure 1 each): defaults tbl2_toff3_hstrt5_hend0 vs tuned tbl1_toff4_hstrt2_hend3
+Preparing: home XY, park at center, switch the gantry and head motors off
+Baseline noise: median magnitude 5.0
+
+motor A at 60 mm/s (mean vibration, lower is better):
+
+  defaults tbl2_toff3_hstrt5_hend0    799  ########################################
+  tuned    tbl1_toff4_hstrt2_hend3    639  ################################
+
+  1.25x less vibration overall
+  1.25x less vibration above the 5 noise floor

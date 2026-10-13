@@ -159,7 +159,8 @@ def test_the_recommendation_header_follows_autotune(tmp_path, monkeypatch, capsy
         ds.append({'id': 'a_%d' % direction, 'kind': 'move', 'status': 'ok',
                    **tmc.Chopper(0, 2, 4, 7).fields(), 'tpfd': None,
                    'score': {'median_magnitude': 1000.0, 'clicks': 0}})
-    hw = SimpleNamespace(driver=tmc.DRIVERS[driver], stepper='stepper_x', autotune=autotune, motor='A')
+    hw = SimpleNamespace(driver=tmc.DRIVERS[driver], stepper='stepper_x', autotune=autotune, motor='A',
+                         rail=[SimpleNamespace(stepper='stepper_x')])
     report_winner(hw, ds, SimpleNamespace(trim=0.1, audible_weight=0.25),
                   SimpleNamespace(final=lambda text, short=None: None), top=5)
     assert header in capsys.readouterr().out

@@ -1,0 +1,66 @@
+Driver tmc5160 on stepper_x (motor A), accelerometer adxl345, kinematics cartesian, registers {'tbl': 1, 'toff': 4, 'hstrt': 2, 'hend': 3, 'tpfd': 4}
+Warning: speeds above 70 mm/s skipped, cruise would drop below 0.25s within 120mm
+Plan: 5 speeds (30..70 step 10) -> 10 moves, capture stream, ETA 0m 31s
+Preparing: home XY, park at center, switch the gantry and head motors off
+Baseline noise: median magnitude 5.0
+Scanning with Klipper default registers tbl2_toff3_hstrt5_hend2_tpfd4 — the current tuning would mask the peaks
+[1/5] 30 mm/s: median 46.1
+[2/5] 40 mm/s: median 58.6
+[3/5] 50 mm/s: median 299.3
+[4/5] 60 mm/s: median 733.0
+[5/5] 70 mm/s: median 297.9
+Restoring registers, homing
+Done in 0m: report <tmp>/dataset/report.html
+Resonance peaks: 60 mm/s (magnitude 733)
+
+Recommended: CHOPPER_COLLECT MOTOR=A SPEED=60
+=== manifest.json ===
+{
+  "version": "0.3.0",
+  "created": "<time>",
+  "mode": "find-speed",
+  "klippy_socket": "<front>",
+  "capture": "stream",
+  "axis": "x",
+  "stepper": "stepper_x",
+  "driver": "5160",
+  "accel_chip": "adxl345",
+  "kinematics": "cartesian",
+  "registers": {
+    "tbl": 1,
+    "toff": 4,
+    "hstrt": 2,
+    "hend": 3,
+    "tpfd": 4
+  },
+  "scan_registers": {
+    "tbl": 2,
+    "toff": 3,
+    "hstrt": 5,
+    "hend": 2,
+    "tpfd": 4
+  },
+  "accel": 50.0,
+  "measure_time": 1.0,
+  "trim": 0.1,
+  "iterations": 1,
+  "speeds": [
+    30,
+    40,
+    50,
+    60,
+    70
+  ]
+}
+=== measurements.jsonl ===
+{"id": "baseline", "kind": "baseline", "source": "stream", "ts": "<time>", "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 4.9818374944722486, "p95_magnitude": 6.814623543516613, "rms": 5.000575660160494}, "status": "ok"}
+{"id": "v030_i0_fwd", "kind": "speed", "source": "stream", "speed": 30, "cruise": 1.0, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [4.981983, 5.781983], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 46.06678185796511, "p95_magnitude": 62.71424682132825, "rms": 46.0827546002415, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v030_i0_rev", "kind": "speed", "source": "stream", "speed": 30, "cruise": 1.0, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [7.181983, 7.981983], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 46.06678185796511, "p95_magnitude": 62.71424682132825, "rms": 46.0827546002415, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v040_i0_fwd", "kind": "speed", "source": "stream", "speed": 40, "cruise": 1.0, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [9.581983, 10.381983], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 58.640534006496466, "p95_magnitude": 79.4514814460753, "rms": 58.71332750988723, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v040_i0_rev", "kind": "speed", "source": "stream", "speed": 40, "cruise": 1.0, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [12.181983, 12.981983], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 58.640534006496466, "p95_magnitude": 79.4514814460753, "rms": 58.71332750988723, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v050_i0_fwd", "kind": "speed", "source": "stream", "speed": 50, "cruise": 1.0, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [14.981983, 15.781983], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 299.34941744224784, "p95_magnitude": 409.53650603212145, "rms": 300.27640440572384, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v050_i0_rev", "kind": "speed", "source": "stream", "speed": 50, "cruise": 1.0, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [17.981983, 18.781983], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 299.34941744224784, "p95_magnitude": 409.53650603212145, "rms": 300.27640440572384, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v060_i0_fwd", "kind": "speed", "source": "stream", "speed": 60, "cruise": 0.8, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [21.161983, 21.801983], "score": {"samples": 256, "sample_rate_hz": 401.6, "median_magnitude": 732.9559572568687, "p95_magnitude": 996.7295625552956, "rms": 736.1837740990411, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v060_i0_rev", "kind": "speed", "source": "stream", "speed": 60, "cruise": 0.8, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [24.361983, 25.001983], "score": {"samples": 256, "sample_rate_hz": 401.6, "median_magnitude": 732.9559572568687, "p95_magnitude": 996.7295625552956, "rms": 736.1837740990411, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v070_i0_fwd", "kind": "speed", "source": "stream", "speed": 70, "cruise": 0.314, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [27.713412, 27.96484], "score": {"samples": 100, "sample_rate_hz": 404.0, "median_magnitude": 297.94688610987, "p95_magnitude": 405.55809368033925, "rms": 299.63247517927067, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v070_i0_rev", "kind": "speed", "source": "stream", "speed": 70, "cruise": 0.314, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [30.827698, 31.079126], "score": {"samples": 100, "sample_rate_hz": 404.0, "median_magnitude": 297.94688610987, "p95_magnitude": 405.55809368033925, "rms": 299.63247517927067, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}

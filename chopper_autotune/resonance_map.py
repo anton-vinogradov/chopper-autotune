@@ -20,10 +20,10 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
-from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen, ThermalGuard,
+from .collect import (OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, ForceMove, Screen,
                       default_dataset_root, detect_hardware, enter_spreadcycle, exit_spreadcycle,
-                      fit_row, make_parker, measure_baseline, now, park, refuse_blind_z_hop,
-                      refuse_if_printing, refuse_multi_motor, rehome_unless_hot, run_restore)
+                      fit_row, measure_baseline, now, refuse_if_printing, refuse_multi_motor,
+                      rehome_unless_hot, run_restore)
 from .dataset import Dataset, save_json
 from .find_speed import (build_curve, build_speed_plan, find_peaks, find_valleys, planned_ids,
                          refuse_a_failed_scan, run_sweep, smooth, write_report)
@@ -86,11 +86,12 @@ def resonance_map(kl: Klippy, args) -> int:
 
     refuse_multi_motor(kl.settings(), args.axis)
     hw = detect_hardware(kl, args.axis)
+    motion = ForceMove(kl, hw)
     print('Driver tmc%s on %s (motor %s), accelerometer %s, kinematics %s, current registers %s'
           % (hw.driver.name, hw.stepper, hw.motor, hw.accel_chip, hw.kinematics, hw.baseline))
 
     accel = args.accel or hw.max_accel / 4          # higher than find-speed: reach print speeds
-    limit = hw.axis_span * MOVE_MARGIN
+    limit = motion.limit
     plan = build_speed_plan(args, accel, limit)
 
     n_moves = len(plan) * args.iterations * 2
@@ -134,18 +135,13 @@ def resonance_map(kl: Klippy, args) -> int:
     if done:
         print('Resuming %s: %d measurements already present' % (root, len(done)))
 
-    print('Preparing: home XY, park at center, switch the gantry and head motors off')
-    guard = ThermalGuard(kl, kl.settings())
-    refuse_blind_z_hop(kl, kl.settings())
-    guard.preflight()
-    park(kl, hw)
+    motion.prepare()
     started = time.time()
     screen = Screen(kl, hw.display)
-    before_move = make_parker(kl, hw, guard)
     try:
         measure_baseline(hw, ds, args, done)         # the noise floor: motors still off
         enter_spreadcycle(kl, hw, restores=False)    # measure in spreadCycle; registers untouched
-        failed = run_sweep(hw, ds, args, plan, accel, screen, before_move, done)
+        failed = run_sweep(hw, ds, args, plan, accel, screen, motion, done)
     finally:
         print('Homing')
         run_restore(lambda: exit_spreadcycle(kl, hw), lambda: rehome_unless_hot(kl),
