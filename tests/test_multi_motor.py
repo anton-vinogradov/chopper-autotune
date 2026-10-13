@@ -5,7 +5,7 @@ import math
 
 import pytest
 
-from chopper_autotune import rail
+from chopper_autotune import rail, tmc
 from chopper_autotune.cli import build_parser
 from chopper_autotune.collect import rail_twins, refuse_multi_motor, release_gantry
 
@@ -369,3 +369,21 @@ def test_a_cycled_release_cycles_every_xy_motor_twins_included_one_by_one():
         'SET_STEPPER_ENABLE STEPPER="%s" ENABLE=%d' % (name, state)
         for name in ('stepper_x', 'stepper_x1', 'stepper_y', 'stepper_y1')
         for state in (1, 0)] + ['SET_STEPPER_ENABLE STEPPER="extruder" ENABLE=0']
+
+
+def test_a_rail_whose_drivers_run_different_registers_has_none_to_keep():
+    # the back-to-back rounds would measure as "your registers" what the printer never ran
+    from types import SimpleNamespace
+
+    from chopper_autotune.collect import block_rivals, current_registers
+    driver = tmc.DRIVERS['5160']
+    stock = tmc.stock_chopper(driver, False)
+    one = SimpleNamespace(baseline={'tbl': 1, 'toff': 4, 'hstrt': 2, 'hend': 3})
+    hw = SimpleNamespace(driver=driver, baseline=one.baseline,
+                         rail=[one, SimpleNamespace(baseline=dict(one.baseline, toff=5))])
+    assert current_registers(hw, stock) is None
+    assert block_rivals(hw, SimpleNamespace()) == (
+        [stock], 'the drivers of the rail run different registers')
+    hw.rail = [one, SimpleNamespace(baseline=dict(one.baseline))]
+    assert current_registers(hw, stock) == tmc.Chopper(1, 4, 2, 3)
+    assert block_rivals(hw, SimpleNamespace()) == ([stock, tmc.Chopper(1, 4, 2, 3)], '')

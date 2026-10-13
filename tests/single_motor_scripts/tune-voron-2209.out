@@ -1,7 +1,7 @@
 === Motor A ===
 Driver tmc2209 on stepper_x (motor A), accelerometer adxl345, kinematics corexy, baseline {'tbl': 1, 'toff': 4, 'hstrt': 2, 'hend': 3}
 Note: tmc2209 has no TPFD, skipping the TPFD sweep
-Plan: multi-start coordinate descent, up to 324 candidates -> up to 660 moves of 87.0mm, capture stream, ETA under 0:21
+Plan: multi-start coordinate descent, up to 324 candidates -> up to 720 moves of 87.0mm, capture stream, ETA under 0:23
 Preparing: home XY, park at center, switch the gantry and head motors off
 Baseline noise: median magnitude 5.0
   tbl1_toff4_hstrt2_hend3 -> 667.8
@@ -189,22 +189,24 @@ Baseline noise: median magnitude 5.0
   tbl3_toff8_hstrt3_hend15 -> 1676.3 audible
   tbl0_toff4_hstrt1_hend15 -> 1098.1
   tbl0_toff4_hstrt2_hend15 -> 1101.3
-Descent best tbl0_toff4_hstrt0_hend3; validating top 3 with extra runs
-Measuring the Klipper-default reference for the improvement report
+Descent best tbl0_toff4_hstrt0_hend3
+Validating 3 candidate(s) with 2 extra iterations each
+Measuring tbl0_toff4_hstrt0_hend3 / tbl2_toff3_hstrt5_hend0 / tbl1_toff4_hstrt2_hend3 back to back, 4 rounds: the gain is counted on these moves
+Re-homing to reset accumulated drift
 
 rank  tbl  toff  hstrt  hend  tpfd  magnitude   spread   n clicks   f_chop 
-1       0     4      0     3     -      638.6      0.0   6      0  35.7kHz 
+1       0     4      0     3     -      638.6      0.0  14      0  35.7kHz 
 2       0     4      1     3     -      638.6      0.0   6      0  35.7kHz 
 3       1     4      0     3     -      638.6      0.0   6      0  34.1kHz 
 4       0     4      2     3     -      638.6      0.0   2      0  35.7kHz 
 5       0     4      3     3     -      638.6      0.0   2      0  35.7kHz 
 6       2     4      0     3     -      638.6      0.0   2      0  32.6kHz 
-7       1     4      2     3     -      638.6      0.0   2      0  34.1kHz 
+7       1     4      2     3     -      638.6      0.0  10      0  34.1kHz 
 8       0     4      4     3     -      638.6      0.0   2      0  35.7kHz 
 9       3     4      0     3     -      638.6      0.0   2      0  31.2kHz 
 10      0     4      5     3     -      638.6      0.0   2      0  35.7kHz 
 
-vs Klipper defaults tbl2_toff3_hstrt5_hend0: 1.2x less vibration (798 -> 639)
+vs Klipper defaults tbl2_toff3_hstrt5_hend0, back to back: 1.2x less vibration, quieter in each of 4 rounds (798 -> 639)
 
 Recommended for printer.cfg:
 
@@ -214,12 +216,12 @@ driver_TOFF: 4
 driver_HSTRT: 0
 driver_HEND: 3
 Restoring baseline registers, homing
-Done in 10m: 384 ok, 0 failed -> <tmp>/chopper-autotune/datasets/<stamp>_x
+Done in 11m: 406 ok, 0 failed -> <tmp>/chopper-autotune/datasets/<stamp>_x
 Next: chopper-autotune analyze <tmp>/chopper-autotune/datasets/<stamp>_x
 === Motor B ===
 Driver tmc2209 on stepper_y (motor B), accelerometer adxl345, kinematics corexy, baseline {'tbl': 1, 'toff': 4, 'hstrt': 2, 'hend': 3}
 Note: tmc2209 has no TPFD, skipping the TPFD sweep
-Plan: multi-start coordinate descent, up to 324 candidates -> up to 660 moves of 87.0mm, capture stream, ETA under 0:21
+Plan: multi-start coordinate descent, up to 324 candidates -> up to 720 moves of 87.0mm, capture stream, ETA under 0:23
 Preparing: home XY, park at center, switch the gantry and head motors off
 Baseline noise: median magnitude 5.0
 Seeded from <tmp>/chopper-autotune/datasets/<stamp>_x: starting at tbl0_toff4_hstrt0_hend3
@@ -379,22 +381,23 @@ Seeded from <tmp>/chopper-autotune/datasets/<stamp>_x: starting at tbl0_toff4_hs
   tbl3_toff8_hstrt3_hend15 -> 1676.3 audible
   tbl0_toff4_hstrt1_hend15 -> 1098.1
   tbl0_toff4_hstrt2_hend15 -> 1101.3
-Descent best tbl0_toff4_hstrt0_hend3; validating top 3 with extra runs
-Measuring the Klipper-default reference for the improvement report
+Descent best tbl0_toff4_hstrt0_hend3
+Validating 3 candidate(s) with 2 extra iterations each
+Measuring tbl0_toff4_hstrt0_hend3 / tbl2_toff3_hstrt5_hend0 / tbl1_toff4_hstrt2_hend3 back to back, 4 rounds: the gain is counted on these moves
 
 rank  tbl  toff  hstrt  hend  tpfd  magnitude   spread   n clicks   f_chop 
-1       0     4      0     3     -      638.6      0.0   6      0  35.7kHz 
+1       0     4      0     3     -      638.6      0.0  14      0  35.7kHz 
 2       0     4      1     3     -      638.6      0.0   6      0  35.7kHz 
 3       1     4      0     3     -      638.6      0.0   6      0  34.1kHz 
 4       0     4      2     3     -      638.6      0.0   2      0  35.7kHz 
 5       0     4      3     3     -      638.6      0.0   2      0  35.7kHz 
 6       2     4      0     3     -      638.6      0.0   2      0  32.6kHz 
-7       0     4      4     3     -      638.6      0.0   2      0  35.7kHz 
-8       3     4      0     3     -      638.6      0.0   2      0  31.2kHz 
-9       0     4      5     3     -      638.6      0.0   2      0  35.7kHz 
-10      0     4      6     3     -      638.6      0.0   2      0  35.7kHz 
+7       1     4      2     3     -      638.6      0.0   8      0  34.1kHz 
+8       0     4      4     3     -      638.6      0.0   2      0  35.7kHz 
+9       3     4      0     3     -      638.6      0.0   2      0  31.2kHz 
+10      0     4      5     3     -      638.6      0.0   2      0  35.7kHz 
 
-vs Klipper defaults tbl2_toff3_hstrt5_hend0: 1.2x less vibration (798 -> 639)
+vs Klipper defaults tbl2_toff3_hstrt5_hend0, back to back: 1.2x less vibration, quieter in each of 4 rounds (798 -> 639)
 
 Recommended for printer.cfg:
 
@@ -404,7 +407,7 @@ driver_TOFF: 4
 driver_HSTRT: 0
 driver_HEND: 3
 Restoring baseline registers, homing
-Done in 8m: 326 ok, 0 failed -> <tmp>/chopper-autotune/datasets/<stamp>_y
+Done in 9m: 348 ok, 0 failed -> <tmp>/chopper-autotune/datasets/<stamp>_y
 Next: chopper-autotune analyze <tmp>/chopper-autotune/datasets/<stamp>_y
 
 === Summary ===

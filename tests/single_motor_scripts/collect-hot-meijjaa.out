@@ -1,6 +1,6 @@
 Driver tmc5160 on stepper_x (motor A), accelerometer adxl345, kinematics cartesian, baseline {'tbl': 1, 'toff': 4, 'hstrt': 2, 'hend': 3, 'tpfd': 4}
 Cruise 1.25s does not fit the axis at 60 mm/s: shrinking to 0.80s (ranking is window-length invariant down to ~0.4s, measured)
-Plan: 2 combinations x 1 speeds -> 16 moves of 120.0mm, capture stream, ETA 0:00
+Plan: 2 combinations x 1 speeds -> 40 moves of 120.0mm, capture stream, ETA 0:02
 Preparing: home XY, park at center, switch the gantry and head motors off
 Baseline noise: median magnitude 5.0
 [1/2] tbl1_toff3_hstrt4_hend3 v60: median 701.1
@@ -59,7 +59,7 @@ Restoring baseline registers, homing
   "speeds": [
     60
   ],
-  "total_moves": 16
+  "total_moves": 40
 }
 === measurements.jsonl ===
 {"id": "baseline", "kind": "baseline", "source": "stream", "ts": "<time>", "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 4.9891946709401225, "p95_magnitude": 6.788736613313221, "rms": 5.002311778648265}, "status": "ok"}

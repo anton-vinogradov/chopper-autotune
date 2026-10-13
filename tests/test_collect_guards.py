@@ -244,7 +244,9 @@ def test_report_winner_reports_improvement_vs_defaults(tmp_path, monkeypatch, ca
                          rail=[SimpleNamespace(stepper='stepper_x')])
     args = SimpleNamespace(trim=0.1, audible_weight=0.25)
     screen = SimpleNamespace(final=lambda text, short=None: finals.append(text))
-    winner = report_winner(hw, ds, args, screen, top=5)
+    rounds = {tmc.KLIPPER_DEFAULT: [{'magnitude': 2000.0, 'score': 2000.0}] * 4,
+              tmc.Chopper(0, 2, 4, 7): [{'magnitude': 1000.0, 'score': 1000.0}] * 4}
+    winner = report_winner(hw, ds, args, screen, 5, tmc.Chopper(0, 2, 4, 7), rounds)
 
     assert winner['chopper'] == tmc.Chopper(0, 2, 4, 7)
     assert ds.manifest()['improvement'] == 2.0
@@ -396,7 +398,10 @@ def test_report_winner_finds_the_stock_reference_when_tpfd_is_not_swept(tmp_path
     hw = SimpleNamespace(driver=tmc.DRIVERS['2240'], stepper='stepper_x', baseline={}, autotune=None,
                          motor='A', rail=[SimpleNamespace(stepper='stepper_x')])
     args = SimpleNamespace(trim=0.1, audible_weight=0.25, tpfd=None)
-    report_winner(hw, ds, args, SimpleNamespace(final=lambda text, short=None: None), top=5)
+    rounds = {tmc.Chopper(2, 3, 5, 2): [{'magnitude': 2000.0, 'score': 2000.0}] * 4,
+              tmc.Chopper(0, 2, 4, 7): [{'magnitude': 1000.0, 'score': 1000.0}] * 4}
+    report_winner(hw, ds, args, SimpleNamespace(final=lambda text, short=None: None), 5,
+                  tmc.Chopper(0, 2, 4, 7), rounds)
     assert ds.manifest()['improvement'] == 2.0
     # the panel reads the fifth (TPFD) register from the config or Klipper's stock value
     state = json.loads((tmp_path / 'state.json').read_text())

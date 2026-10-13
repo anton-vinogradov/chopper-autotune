@@ -84,12 +84,16 @@ def rank(aggregates: 'list[dict]', driver: tmc.Driver, hearing: tmc.Hearing) -> 
     return aggregates
 
 
-def print_table(ranked: 'list[dict]', top: int):
+def print_table(ranked: 'list[dict]', top: int, recommended: 'dict | None' = None):
+    """The top rows, and the recommended one at its own rank when it is below them."""
     # rank flush left: Klipper's console strips the leading spaces of every line
     print('%-4s %4s %5s %6s %5s %5s %10s %8s %3s %6s %8s %s'
           % ('rank', 'tbl', 'toff', 'hstrt', 'hend', 'tpfd', 'magnitude', 'spread', 'n',
              'clicks', 'f_chop', ''))
-    for position, a in enumerate(ranked[:top], 1):
+    rows = list(enumerate(ranked[:top], 1))
+    if recommended is not None and recommended not in ranked[:top]:
+        rows.append((ranked.index(recommended) + 1, recommended))
+    for position, a in rows:
         c = a['chopper']
         print('%-4d %4d %5d %6d %5d %5s %10.1f %8.1f %3d %6d %5.1fkHz %s'
               % (position, c.tbl, c.toff, c.hstrt, c.hend,
@@ -767,7 +771,10 @@ def run_analyze(args) -> int:
     steppers = measured_steppers(manifest)
     print('%s: %d configurations, driver tmc%s on %s\n'
           % (dataset, len(ranked), driver.name, ', '.join(steppers)))
-    print_table(ranked, args.top)
+    saved = manifest.get('winner')
+    recorded = tmc.Chopper(saved['tbl'], saved['toff'], saved['hstrt'], saved['hend'],
+                           saved.get('tpfd')) if saved else None
+    print_table(ranked, args.top, next((a for a in ranked if a['chopper'] == recorded), None))
 
     if not args.no_html:
         path = args.html or str(Path(dataset) / 'report.html')
@@ -775,10 +782,8 @@ def run_analyze(args) -> int:
         print('\nReport: %s' % path)
 
     best = ranked[0]
-    saved = manifest.get('winner')
-    if saved:
-        validated = tmc.Chopper(saved['tbl'], saved['toff'], saved['hstrt'], saved['hend'],
-                                saved.get('tpfd'))
+    if recorded:
+        validated = recorded
         if tmc.validate(validated, driver) is not None:
             print('\nThe winner recorded by the run, %s, is past the tmc%s limits: '
                   'recommending the best loadable combo instead' % (validated.label(), driver.name))
@@ -788,7 +793,9 @@ def run_analyze(args) -> int:
                   % (validated.label(), hearing.limit_hz / 1000))
         elif validated != best['chopper']:
             # recommend what the run validated, not an unvalidated re-rank topper
-            print('\nUsing the validated winner recorded by the run: %s '
+            print('\nKeeping the registers the run kept: %s (no combo was quieter than them '
+                  'in each back-to-back round)' % validated.label() if manifest.get('kept')
+                  else '\nUsing the validated winner recorded by the run: %s '
                   '(top-ranked %s was never re-measured)'
                   % (validated.label(), best['chopper'].label()))
             best = next((a for a in ranked if a['chopper'] == validated),

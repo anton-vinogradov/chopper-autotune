@@ -418,8 +418,9 @@ def test_a_tmc2240_without_hold_current_is_named(capsys):
     settings = dict(SETTINGS, **{'tmc2240 stepper_y': {'driver_slope_control': 3, 'run_current': 2.0,
                                                        'hold_current': 1.0}})
     ThermalGuard(StatusKl(settings=settings), settings)
-    note = [line for line in capsys.readouterr().out.split('\n') if 'hold the full run_current' in line]
+    note = [line for line in capsys.readouterr().out.split('\n') if 'full run_current' in line]
     assert note and 'tmc2240 stepper_x' in note[0] and 'stepper_y' not in note[0]
+    assert 'cool the drivers' in note[0] and 'not below' not in note[0]   # not "lower hold_current"
 
 
 def test_a_dwell_capture_checks_the_guard_every_second():
