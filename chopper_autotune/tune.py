@@ -144,9 +144,10 @@ def run_tune(args) -> int:
         if not args.dry_run and winners:
             # a motor klipper_tmc_autotune manages now is marked: Save skips it
             labels = ' · '.join(
-                '%s %s%s%s' % (motor_label(manifest['stepper'].rsplit('_', 1)[-1]),
-                               combo.compact(), improvement_note(manifest),
-                               ' (autotune)' if managed(manifest) else '')
+                '%s %s%s%s%s' % (motor_label(manifest['stepper'].rsplit('_', 1)[-1]),
+                                 'keep ' if manifest.get('kept') else '', combo.compact(),
+                                 improvement_note(manifest),
+                                 ' (autotune)' if managed(manifest) else '')
                 for manifest, combo in winners)
             free = [motor_label(manifest['stepper'].rsplit('_', 1)[-1])
                     for manifest, _ in winners if not managed(manifest)]
@@ -154,8 +155,11 @@ def run_tune(args) -> int:
             # winner: named only when that is exactly this run
             from .extruder import load_winner_state
             exact = len(free) == len(winners) == 2 and load_winner_state() is None
-            tail = (' — saving' if args.save
-                    else ' — autotune resets these at start' if not free
+            changed = [manifest for manifest, _ in winners
+                       if not managed(manifest) and not manifest.get('kept')]
+            tail = (' — autotune resets these at start' if not free
+                    else ' — your registers stay' if not changed
+                    else ' — saving' if args.save
                     else ' — CHOPPER_SAVE to persist' if exact
                     else ' — to save: see tune.log')
             screen.final('Tune done: %s%s' % (labels, tail), 'Done ' + ' '.join(
@@ -175,14 +179,21 @@ def run_tune(args) -> int:
                                 autotune_advice(settings, manifest['driver'], manifest['stepper'])))
             continue
         print(tmc.cfg_snippet(tmc.DRIVERS[manifest['driver']], manifest['stepper'], combo))
+        if manifest.get('kept'):
+            print('# your registers, kept: no combo was quieter in each back-to-back round')
         if manifest.get('improvement'):
             print('# %.1fx less vibration than Klipper defaults\n'
                   % manifest['improvement'])
         print()
-    free = [manifest for manifest, _ in winners if not managed(manifest)]
+    # a motor that keeps its registers has nothing to write: no backup, no restart for it
+    changed = [(manifest, combo) for manifest, combo in winners if not manifest.get('kept')]
+    free = [manifest for manifest, _ in changed if not managed(manifest)]
     if args.save:
         from .analyze import run_save
-        run_save(Moonraker(args.url), winners)
+        if changed:
+            run_save(Moonraker(args.url), changed)
+        else:
+            print('Nothing to save: every motor keeps its registers')
     elif free:
         # no second twenty-minute run: these datasets can be saved as they are
         for manifest in free:

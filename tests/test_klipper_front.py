@@ -78,7 +78,8 @@ def test_a_grid_collect_moves_the_motor_on_each_combo_and_puts_the_driver_back(
     stock = chip.chopper()
     status, _ = run_tool(front, collect.collect, [
         'collect', '--axis', 'x', '--speed', '60', '--tbl', '1:1', '--toff', '3:4', '--hstrt', '4:4',
-        '--hend', '3:3', '--iterations', '1', '--yes', '--no-raw', '--dataset', str(tmp_path / 'grid')])
+        '--hend', '3:3', '--iterations', '1', '--validate', '0', '--yes', '--no-raw', '--dataset',
+        str(tmp_path / 'grid')])
     assert status == 0
     assert_clean(front)
     moves = front.moves
@@ -345,7 +346,8 @@ def test_without_an_enable_pin_each_combo_still_reaches_the_moving_motor(source,
     front = klipper_front.Front(source, printer_cfg('cartesian').replace('enable_pin: !P20\n', ''))
     status, _ = run_tool(front, collect.collect, [
         'collect', '--axis', 'x', '--speed', '60', '--tbl', '1:1', '--toff', '5:6', '--hstrt', '4:4',
-        '--hend', '3:3', '--iterations', '1', '--yes', '--no-raw', '--dataset', str(tmp_path / 'g')])
+        '--hend', '3:3', '--iterations', '1', '--validate', '0', '--yes', '--no-raw', '--dataset',
+        str(tmp_path / 'g')])
     assert status == 0
     assert_clean(front)
     assert {(move['chips']['tmc2209 stepper_x']['toff'], move['distance'] > 0)

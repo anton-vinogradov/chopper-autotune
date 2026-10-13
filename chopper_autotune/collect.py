@@ -9,9 +9,11 @@ import glob
 import itertools
 import os
 import re
+import statistics
 import sys
 import tempfile
 import time
+from collections import defaultdict
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +36,9 @@ OVERHEAD_STREAM_SEC = 0.3
 OVERHEAD_CSV_SEC = 3.0
 VALIDATE_EXTRA_ITERATIONS = 2
 MAX_VALIDATE_ROUNDS = 4
+# the winner against Klipper defaults and the motor's own registers, in turns; a win
+# counts only when it holds in every round: 4 of 4 by chance is 1 in 16
+BACK_TO_BACK_ROUNDS = 4
 KLIPPY_DIR = os.path.expanduser('~/klipper/klippy')
 THERMAL_FLAGS = ('otpw', 'ot', 't120', 't143', 't150', 't157')
 # TMC2240 die sensor: otpw fires at 120 C by default, shutdown near 165 C; the ADC reads
@@ -557,8 +562,10 @@ class ThermalGuard:
                 and float(settings[name].get('hold_current') or float('inf'))
                 >= float(settings[name].get('run_current') or 0)]
         if held:
-            print('note: %s hold the full run_current at standstill (hold_current not below it): '
-                  'a standstill heats the driver like a move (#133)' % ', '.join(held))
+            print('note: %s stay at their full run_current at standstill, so a standstill heats '
+                  'the driver like a move (#133): cool the drivers. Klipper advises against a '
+                  'hold_current below run_current: a change of current can move a motor'
+                  % ', '.join(held))
         self.unreadable = set()
 
     def check(self):
@@ -1240,44 +1247,143 @@ def shown_registers(hw: Hardware, combo: tmc.Chopper) -> tmc.Chopper:
     return combo
 
 
+def current_registers(hw: Hardware, stock: tmc.Chopper) -> tmc.Chopper:
+    """The motor's registers before the run, spelled like the run's candidates: tpfd
+    None when the run leaves that register alone."""
+    current = tmc.baseline_chopper(getattr(hw, 'baseline', None) or {}, default=stock)
+    return replace(current, tpfd=None) if stock.tpfd is None else current
+
+
+def block_rivals(hw: Hardware, args) -> 'tuple[list[tmc.Chopper], str]':
+    """What the back-to-back rounds measure against the winner: Klipper defaults and the
+    motor's own registers, each once, unless the hearing skips it or the driver cannot
+    take it; and why the own registers are left out, if they are."""
+    hearing = tmc.Hearing.of(args)
+    stock = tmc.stock_chopper(hw.driver, getattr(args, 'tpfd', None) is not None)
+    current = current_registers(hw, stock)
+    why = {}
+    for combo in (stock, current):
+        if tmc.validate(combo, hw.driver) is not None:
+            why[combo] = 'past the tmc%s limits' % hw.driver.name
+        elif hearing.skips(combo, hw.driver):
+            why[combo] = 'below %g kHz, SKIP_AUDIBLE' % (hearing.limit_hz / 1000)
+    return [combo for combo in dict.fromkeys((stock, current)) if combo not in why], \
+        why.get(current, '')
+
+
+def back_to_back(hw: Hardware, ds: Dataset, args, combos: 'list[tmc.Chopper]',
+                 speeds: 'list[int]', travel: float, accel: float, done: set,
+                 before_move) -> 'tuple[dict, int, int]':
+    """Measure the combos in turns, speed by speed, a round at a time, the order reversed
+    every other round, so a drift over the run (heat, a re-home) hits each of them alike.
+    Every move is fresh: new iterations, past any the dataset holds for these combos, so
+    no move the pick saw, or an earlier session took, counts. Returns per combo and round
+    the mean magnitude and its score as the ranking scores it (the audible and the click
+    penalties), or nothing when a move failed; and the counts."""
+    from .search import penalized_score
+    hearing = tmc.Hearing.of(args)
+    taken = [record.get('iteration', 0) for record in ds.records()
+             if record.get('kind') == 'move' and tmc.Chopper(
+                 record['tbl'], record['toff'], record['hstrt'], record['hend'],
+                 record.get('tpfd')) in combos]
+    first = max([args.iterations + VALIDATE_EXTRA_ITERATIONS] + [i + 1 for i in taken])
+    ok = failed = 0
+    for index in range(BACK_TO_BACK_ROUNDS):
+        for speed in speeds:
+            for combo in combos if index % 2 == 0 else combos[::-1]:
+                combo_ok, combo_failed, _, _ = measure_combo(
+                    hw, ds, args, combo, [speed], 1, first + index, travel, accel, done,
+                    before_move)
+                ok += combo_ok
+                failed += combo_failed
+    measured = {record['id']: record for record in ds.records() if record.get('kind') == 'move'}
+    rounds = {}
+    for combo in combos:
+        rounds[combo] = []
+        for index in range(BACK_TO_BACK_ROUNDS):
+            moves = [measured.get(measurement_id(combo, speed, first + index, direction))
+                     for speed in speeds for direction in (1, -1)]
+            if not all(move and move['status'] == 'ok' for move in moves):
+                return {}, ok, failed
+            magnitudes = [move['score']['median_magnitude'] for move in moves]
+            clicks = sum(move['score'].get('clicks', 0) for move in moves)
+            rounds[combo].append({'magnitude': statistics.mean(magnitudes),
+                                  'score': penalized_score(combo, magnitudes, hw.driver, hearing,
+                                                           clicks / len(moves))})
+    return rounds, ok, failed
+
+
+def quieter_every_round(rounds: dict, combo: tmc.Chopper, rival: tmc.Chopper) -> bool:
+    return all(mine['score'] < theirs['score'] for mine, theirs in zip(rounds[combo], rounds[rival]))
+
+
+def mean_magnitude(rounds: dict, combo: tmc.Chopper) -> float:
+    return statistics.mean(one['magnitude'] for one in rounds[combo])
+
+
 def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
-                  trusted: 'set | None' = None) -> 'dict | None':
-    """Print the ranking and recommend a config. When `trusted` is given, the
-    recommendation is the best-ranked combo from that (validated) set — never a
-    single unmeasured lucky combo that floated to the top of the whole grid."""
+                  winner: 'tmc.Chopper | None' = None, rounds: 'dict | None' = None) -> 'dict | None':
+    """Print the ranking and recommend a config: `winner` when the caller picked one (the
+    best checked combo, never a lucky combo measured once), else the rank 1. With
+    `rounds` (back_to_back) the motor's own registers stay unless the winner or Klipper
+    defaults beat them in every round, and a gain over Klipper defaults is claimed only
+    when the recommendation beats them in every round. Without rounds, no claim."""
     from .analyze import aggregate, print_table, rank
     ranked = rank(aggregate(ds, False, args.trim), hw.driver, tmc.Hearing.of(args))
     if not ranked:
         print('No successful measurements — nothing to recommend')
         return None
-    winner = ranked[0]
-    if trusted:
-        validated = [entry for entry in ranked if entry['chopper'] in trusted]
-        if validated:
-            winner = validated[0]
+    rounds = rounds or {}
+    best = next((entry for entry in ranked if entry['chopper'] == winner), ranked[0])['chopper']
+    stock = tmc.stock_chopper(hw.driver, getattr(args, 'tpfd', None) is not None)
+    current = current_registers(hw, stock)
+    # the incumbent gives way only to a combo that beats it in every round
+    chosen = current if current in rounds else best
+    beaten = None
+    for rival in (best, stock):
+        if rival in rounds and rival != chosen and quieter_every_round(rounds, rival, chosen):
+            chosen, beaten = rival, chosen
+    kept = chosen == current != best
+    entry = next(entry for entry in ranked if entry['chopper'] == chosen)
     print()
-    print_table(ranked, top, winner)
+    print_table(ranked, top, entry)
+    finale = 'Chopper: %s%s' % ('keep ' if kept else '', chosen.label())
+    # 16 LCD characters: kept registers are the motor's own, the word says enough
+    short = '%s %s' % (hw.motor, 'keep' if kept else chosen.compact())
+    if kept:
+        print('\nKeep your registers %s: the best found, %s, was not quieter than them in '
+              'each of %d back-to-back rounds (%.0f -> %.0f)'
+              % (current.label(), best.label(), BACK_TO_BACK_ROUNDS,
+                 mean_magnitude(rounds, current), mean_magnitude(rounds, best)))
+    elif chosen == stock != best:
+        print('\nKlipper defaults %s were quieter than %s in each of %d back-to-back rounds: '
+              'they are the recommendation (%.0f -> %.0f)'
+              % (stock.label(), ('your registers ' if beaten == current else 'the best found, ')
+                 + beaten.label(), BACK_TO_BACK_ROUNDS, mean_magnitude(rounds, beaten),
+                 mean_magnitude(rounds, stock)))
+    improvement = None
+    if stock in rounds and chosen != stock:
+        reference, measured = mean_magnitude(rounds, stock), mean_magnitude(rounds, chosen)
+        if quieter_every_round(rounds, chosen, stock):
+            improvement = reference / measured
+            print('\nvs Klipper defaults %s, back to back: %.1fx less vibration, quieter in '
+                  'each of %d rounds (%.0f -> %.0f)'
+                  % (stock.label(), improvement, BACK_TO_BACK_ROUNDS, reference, measured))
+            pct = round((1 - 1 / improvement) * 100)
+            if pct >= 1:
+                finale += ' — %d%% less vibration' % pct
+                short += ' -%d%%' % pct
+        else:
+            print('\nvs Klipper defaults %s, back to back: not quieter in each of %d rounds, '
+                  'so no gain this run can tell from noise (%.0f -> %.0f)'
+                  % (stock.label(), BACK_TO_BACK_ROUNDS, reference, measured))
+    # the panel's vibration column: this run's claim, or none (not an older run's)
+    from .demo import write_state
+    write_state(hw.stepper.rsplit('_', 1)[-1], shown_registers(hw, chosen), improvement)
     # record the recommendation: save/tune must persist THIS combo, not whatever
     # unvalidated one floats to the top of a later full re-rank
-    ds.update_manifest(winner=winner['chopper'].fields())
-    finale = 'Chopper: %s' % winner['chopper'].label()
-    short = '%s %s' % (hw.motor, winner['chopper'].compact())
-    magnitudes = {entry['chopper']: entry['magnitude'] for entry in ranked}
-    stock = tmc.stock_chopper(hw.driver, getattr(args, 'tpfd', None) is not None)
-    reference = magnitudes.get(stock)
-    if reference and winner['chopper'] != stock:
-        # the run measured Klipper defaults too, so it can say what the tuning bought —
-        # same-session numbers, the panel's vibration column fills without a Show run
-        quieter = reference / winner['magnitude']
-        ds.update_manifest(improvement=round(quieter, 2))
-        print('\nvs Klipper defaults %s: %.1fx less vibration (%.0f -> %.0f)'
-              % (stock.label(), quieter, reference, winner['magnitude']))
-        from .demo import write_state
-        write_state(hw.stepper.rsplit('_', 1)[-1], shown_registers(hw, winner['chopper']), quieter)
-        pct = round((1 - 1 / quieter) * 100)
-        if pct >= 1:                                # a statistical tie is not a win
-            finale += ' — %d%% less vibration' % pct
-            short += ' -%d%%' % pct
+    ds.update_manifest(winner=chosen.fields(), kept=kept,
+                       improvement=round(improvement, 2) if improvement else None)
     if autotune_tag(hw.driver.name, hw.autotune):
         print('\nBest measured (not for saving: %s):\n' % AUTOTUNE_MEASURED)
     elif hw.autotune is not None:
@@ -1285,9 +1391,9 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
         print('\nBest measured (%s):\n' % autotune_advice({}, hw.driver.name, hw.stepper))
     else:
         print('\nRecommended for printer.cfg:\n')
-    print(tmc.cfg_snippet(hw.driver, hw.stepper, winner['chopper']))
+    print(tmc.cfg_snippet(hw.driver, hw.stepper, chosen))
     screen.final(finale, short)
-    return winner
+    return entry
 
 
 def run_grid(kl: Klippy, hw: Hardware, ds: Dataset, args, plan, travel: float, accel: float,
@@ -1350,7 +1456,28 @@ def validate_top(kl: Klippy, hw: Hardware, ds: Dataset, args, speeds: 'list[int]
             ok += combo_ok
             failed += combo_failed
             validated.add(combo)
-    report_winner(hw, ds, args, screen, max(10, args.validate), trusted=validated)
+    ranked = rank(aggregate(ds, False, args.trim), hw.driver, tmc.Hearing.of(args))
+    winner = next((entry['chopper'] for entry in ranked if entry['chopper'] in validated), None)
+    rounds = {}
+    if winner is not None:
+        rivals, left_out = block_rivals(hw, args)
+        stock = tmc.stock_chopper(hw.driver, getattr(args, 'tpfd', None) is not None)
+        current = current_registers(hw, stock)
+        if left_out and current != winner:
+            print('Your registers %s are not measured back to back (%s): the winner is not '
+                  'checked against them' % (current.label(), left_out))
+        combos = list(dict.fromkeys([winner] + rivals))
+        if len(combos) > 1:
+            print('Measuring %s back to back, %d rounds: the gain is counted on these moves'
+                  % (' / '.join(combo.label() for combo in combos), BACK_TO_BACK_ROUNDS))
+            rounds, block_ok, block_failed = back_to_back(hw, ds, args, combos, speeds, travel,
+                                                          accel, done, before_move)
+            ok += block_ok
+            failed += block_failed
+            if not rounds:
+                print('A move of the back-to-back rounds failed: no gain is claimed, and the '
+                      'winner is recommended unchecked against your registers')
+    report_winner(hw, ds, args, screen, max(10, args.validate), winner, rounds)
     return ok, failed
 
 
@@ -1417,13 +1544,6 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
     best = multi_start_descent(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd,
                                start, evaluate)
     print('Descent best %s' % best.label())
-
-    if stock not in history and not hearing.skips(stock, hw.driver):
-        # the improvement report needs the stock reference; the descent's spanning
-        # seeds usually visit it, this covers the runs where they did not (~10 s)
-        print('Measuring the Klipper-default reference for the improvement report')
-        measure_candidate(stock)
-
     if not args.validate:
         report_winner(hw, ds, args, screen, 10)
         return stats['ok'], stats['failed']
@@ -1499,6 +1619,9 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
     overhead = OVERHEAD_CSV_SEC if args.csv else OVERHEAD_STREAM_SEC
     per_move = args.measure_time + 2 * max(speeds) / accel + overhead
     validation_moves = args.validate * VALIDATE_EXTRA_ITERATIONS * len(speeds) * 2
+    # then the back-to-back rounds: the winner, Klipper defaults and the motor's own registers
+    checking = BACK_TO_BACK_ROUNDS * (1 + len(block_rivals(hw, args)[0])) * len(speeds) * 2 \
+        if args.validate else 0
     plan = []
     if args.search == 'grid':
         plan = build_plan(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd, speeds,
@@ -1506,14 +1629,15 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
         if not plan:
             raise SystemExit('empty plan: all combinations rejected by datasheet constraints'
                              + (' or audible' if hearing.skip else ''))
-        n_moves = len(plan) * args.iterations * 2 + validation_moves
+        n_moves = len(plan) * args.iterations * 2 + validation_moves + checking
         print('Plan: %d combinations x %d speeds -> %d moves of %.1fmm, capture %s, ETA %s'
               % (len(plan) // len(speeds), len(speeds), n_moves, travel, args.source,
                  eta_text(n_moves * per_move)))
     else:
         from .search import descent_budget
         budget = descent_budget(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd)
-        n_moves = budget * len(speeds) * args.iterations * 2 + MAX_VALIDATE_ROUNDS * validation_moves
+        n_moves = budget * len(speeds) * args.iterations * 2 \
+            + MAX_VALIDATE_ROUNDS * validation_moves + checking
         print('Plan: multi-start coordinate descent, up to %d candidates -> up to %d moves '
               'of %.1fmm, capture %s, ETA under %s'
               % (budget, n_moves, travel, args.source, eta_text(n_moves * per_move)))
