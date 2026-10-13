@@ -254,6 +254,17 @@ def test_a_recorded_winner_the_hearing_skips_is_neither_recommended_nor_saved(tm
     assert tune.winner_of(str(ds.root))[1] == tmc.Chopper(3, 7, 0, 0)
 
 
+def test_analyze_names_registers_the_run_kept(tmp_path, capsys):
+    # the run kept the motor's own registers: no "top-ranked ... was never re-measured"
+    own = tmc.Chopper(*REPORTED[-1][0])
+    ds = reported_dataset(tmp_path, tmc.Hearing(), winner=own)
+    ds.update_manifest(kept=True)
+    run_analyze(build_parser().parse_args(['analyze', str(ds.root), '--no-html']))
+    out = capsys.readouterr().out
+    assert 'Keeping the registers the run kept: %s' % own.label() in out
+    assert 'never re-measured' not in out and 'driver_TOFF: %d' % own.toff in out
+
+
 def save_latest(monkeypatch, tmp_path, argv, extruder_state=None):
     """CHOPPER_SAVE over the datasets in tmp_path; what it hands run_save, or None."""
     from types import SimpleNamespace

@@ -92,6 +92,15 @@ def test_tune_save_batches_all_winners(tmp_path, monkeypatch):
     tune.run_tune(tune_args(save=True))
     assert [manifest['stepper'] for manifest, _ in saved] == ['stepper_x', 'stepper_y']
     assert saved[0][1] == tmc.Chopper(0, 8, 7, 5)
+    # a motor that keeps its own registers has nothing to write: no backup, no restart
+    saved.clear()
+    Dataset.open(roots['y']).update_manifest(kept=True)
+    tune.run_tune(tune_args(save=True))
+    assert [manifest['stepper'] for manifest, _ in saved] == ['stepper_x']
+    Dataset.open(roots['x']).update_manifest(kept=True)
+    saved.clear()
+    tune.run_tune(tune_args(save=True))
+    assert saved == []
 
 
 def test_winner_of_prefers_the_recorded_winner(tmp_path):
@@ -142,6 +151,14 @@ def test_tune_reports_the_outcome_on_screen(tmp_path, monkeypatch):
     assert tune.run_tune(tune_args()) == 0
     assert finals and finals[-1].startswith('Tune done: A 0/8/7/5 · B 0/2/7/5')
     assert 'CHOPPER_SAVE to persist' in finals[-1]
+    # a motor whose own registers held against the winner says so
+    Dataset.open(roots['y']).update_manifest(kept=True, winner={'tbl': 0, 'toff': 2, 'hstrt': 7,
+                                                                'hend': 5})
+    assert tune.run_tune(tune_args()) == 0
+    assert finals[-1].startswith('Tune done: A 0/8/7/5 · B keep 0/2/7/5')
+    Dataset.open(roots['x']).update_manifest(kept=True)
+    assert tune.run_tune(tune_args()) == 0
+    assert finals[-1].endswith(' — your registers stay')
 
     # a failure must speak too — via the global CLI announcer now (any tool, any error)
     finals.clear()

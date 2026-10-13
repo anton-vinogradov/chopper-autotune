@@ -727,7 +727,9 @@ def run_analyze(args) -> int:
                   % (validated.label(), hearing.limit_hz / 1000))
         elif validated != best['chopper']:
             # recommend what the run validated, not an unvalidated re-rank topper
-            print('\nUsing the validated winner recorded by the run: %s '
+            print('\nKeeping the registers the run kept: %s (no combo was quieter than them '
+                  'in each back-to-back round)' % validated.label() if manifest.get('kept')
+                  else '\nUsing the validated winner recorded by the run: %s '
                   '(top-ranked %s was never re-measured)'
                   % (validated.label(), best['chopper'].label()))
             best = next((a for a in ranked if a['chopper'] == validated),

@@ -316,15 +316,15 @@ def demo(kl: Klippy, args) -> int:
     return 0
 
 
-def write_state(axis: str, tuned: tmc.Chopper, quieter: float):
+def write_state(axis: str, tuned: tmc.Chopper, quieter: 'float | None'):
     """Record the last measured improvement so the KlipperScreen panel can show how much
     quieter tuning made the motor: RESULTS_HOME/state.json -> {"x": {"regs": "2/1/4/14",
     "quieter": 2.38}, ...}. Keyed by the tuned registers so the panel can drop it as stale
-    once the motor is retuned."""
+    once the motor is retuned; None when a run measured no gain, so the panel shows none."""
     from .dataset import RESULTS_HOME, save_json
     save_json(RESULTS_HOME / 'state.json',
               {axis: {'regs': '/'.join(str(v) for v in tuned.fields().values()),
-                      'quieter': round(quieter, 2)}}, merge=True)
+                      'quieter': round(quieter, 2) if quieter else None}}, merge=True)
 
 
 def _showcase(kl, hw, args, ds, configs, speed, travel, accel, before_move, screen):
