@@ -1250,13 +1250,13 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
     if not ranked:
         print('No successful measurements — nothing to recommend')
         return None
-    print()
-    print_table(ranked, top)
     winner = ranked[0]
     if trusted:
         validated = [entry for entry in ranked if entry['chopper'] in trusted]
         if validated:
             winner = validated[0]
+    print()
+    print_table(ranked, top, winner)
     # record the recommendation: save/tune must persist THIS combo, not whatever
     # unvalidated one floats to the top of a later full re-rank
     ds.update_manifest(winner=winner['chopper'].fields())
@@ -1350,8 +1350,7 @@ def validate_top(kl: Klippy, hw: Hardware, ds: Dataset, args, speeds: 'list[int]
             ok += combo_ok
             failed += combo_failed
             validated.add(combo)
-    if validated:
-        report_winner(hw, ds, args, screen, max(10, args.validate), trusted=validated)
+    report_winner(hw, ds, args, screen, max(10, args.validate), trusted=validated)
     return ok, failed
 
 
@@ -1376,10 +1375,9 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
     if cache:
         print('Resuming: %d candidates already measured' % len(cache))
 
-    def measure_candidate(combo: tmc.Chopper, iterations: int, first_iteration: int = 0):
+    def measure_candidate(combo: tmc.Chopper):
         combo_ok, combo_failed, magnitudes, combo_clicks = measure_combo(
-            hw, ds, args, combo, speeds, iterations, first_iteration, travel, accel,
-            done, before_move)
+            hw, ds, args, combo, speeds, args.iterations, 0, travel, accel, done, before_move)
         stats['ok'] += combo_ok
         stats['failed'] += combo_failed
         history[combo].extend(magnitudes)
@@ -1391,7 +1389,7 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
         if hearing.skips(combo, hw.driver):
             cache[combo] = float('inf')
             return cache[combo]
-        measure_candidate(combo, args.iterations)
+        measure_candidate(combo)
         score = score_of(combo) if history[combo] else float('inf')
         cache[combo] = score
         note = (' audible' if hearing.audible(combo, hw.driver) else '') \
@@ -1418,19 +1416,20 @@ def run_descent(kl: Klippy, hw: Hardware, ds: Dataset, args, tpfd: 'Range | None
 
     best = multi_start_descent(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd,
                                start, evaluate)
-    finalists = sorted((c for c in cache if cache[c] != float('inf')), key=cache.get)[:args.validate]
-    print('Descent best %s; validating top %d with extra runs' % (best.label(), len(finalists)))
-    for combo in finalists:
-        measure_candidate(combo, VALIDATE_EXTRA_ITERATIONS, first_iteration=args.iterations)
+    print('Descent best %s' % best.label())
 
     if stock not in history and not hearing.skips(stock, hw.driver):
         # the improvement report needs the stock reference; the descent's spanning
         # seeds usually visit it, this covers the runs where they did not (~10 s)
         print('Measuring the Klipper-default reference for the improvement report')
-        measure_candidate(stock, args.iterations)
+        measure_candidate(stock)
 
-    report_winner(hw, ds, args, screen, 10, trusted=set(finalists))
-    return stats['ok'], stats['failed']
+    if not args.validate:
+        report_winner(hw, ds, args, screen, 10)
+        return stats['ok'], stats['failed']
+    ok, failed = validate_top(kl, hw, ds, args, speeds, travel, accel, done, before_move,
+                             screen)
+    return stats['ok'] + ok, stats['failed'] + failed
 
 
 def check_resume(manifest: dict, speeds: 'list[int]', accel: float, measure_time: float,
@@ -1514,7 +1513,7 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
     else:
         from .search import descent_budget
         budget = descent_budget(hw.driver, args.tbl, args.toff, args.hstrt, args.hend, tpfd)
-        n_moves = budget * len(speeds) * args.iterations * 2 + validation_moves
+        n_moves = budget * len(speeds) * args.iterations * 2 + MAX_VALIDATE_ROUNDS * validation_moves
         print('Plan: multi-start coordinate descent, up to %d candidates -> up to %d moves '
               'of %.1fmm, capture %s, ETA under %s'
               % (budget, n_moves, travel, args.source, eta_text(n_moves * per_move)))
