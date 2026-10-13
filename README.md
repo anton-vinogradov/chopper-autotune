@@ -249,7 +249,7 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 | `SEED_FROM` | — | start the descent from another dataset's winner (fast second motor) |
 | `AUDIBLE_KHZ` / `AUDIBLE_WEIGHT` / `SKIP_AUDIBLE` | `30` / `0.25` / `0` | the audible limit, its penalty, and skipping instead, as in `CHOPPER_TUNE` |
 | `ITERATIONS` | `1` | repeats per combination |
-| `VALIDATE` | `3` | re-measure top N candidates with extra runs before recommending (`0` = off) |
+| `VALIDATE` | `3` | re-measure the top N candidates with extra runs, round after round until the top N holds, and recommend from them (`0` = off) |
 | `MEASURE_TIME` | `1.25` | cruise seconds per move |
 | `ACCEL` | `max_accel/10` | move acceleration |
 | `TRIM` | `0.1` | guard fraction of the cruise window (with `CSV=1`: `0.25` of the whole capture) |

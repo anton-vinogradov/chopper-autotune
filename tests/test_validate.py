@@ -156,6 +156,55 @@ def test_validate_recommends_only_from_validated_set(tmp_path, monkeypatch):
     assert len(validated) == 8
 
 
+def test_descent_rechecks_until_its_recommendation_tops_the_table(tmp_path, monkeypatch, capsys):
+    # #164: the first three combos the descent meets read low once and regress on the
+    # re-check, as tbl0_toff3_hstrt3_hend15_tpfd15 did; checked once, one of them was
+    # recommended from below the ten rows the table shows
+    order = []
+
+    def lucky_first(hw, ds_, args, combo, speed, iteration, direction, travel, accel,
+                    before_move):
+        if combo not in order:
+            order.append(combo)
+        index = order.index(combo)
+        value = (900.0 if iteration == 0 else 1300.0) if index < 3 else 1000.0 + index
+        record = {'id': measurement_id(combo, speed, iteration, direction), 'kind': 'move',
+                  'status': 'ok', **combo.fields(), 'score': {'median_magnitude': value}}
+        ds_.append(record)
+        return record
+
+    monkeypatch.setattr(collect_module, 'run_measurement', lucky_first)
+    ds = Dataset.create(tmp_path / 'ds', {})
+    kl = FakeKl()
+    args = argparse.Namespace(tbl=tmc.Range(1, 2), toff=tmc.Range(2, 5), hstrt=tmc.Range(0, 3),
+                              hend=tmc.Range(0, 6), validate=3, iterations=1, trim=0.1,
+                              seed_from=None, audible_weight=0.25, source='stream')
+    collect_module.run_descent(kl, make_hw(kl), ds, args, None, [58], 70.0, 1000, set(),
+                               lambda d, t: None, Screen(kl, display=True))
+
+    from chopper_autotune.analyze import aggregate, rank
+    ranked = rank(aggregate(ds, False, 0.1), tmc.DRIVERS['2209'], tmc.Hearing())
+    winner = tmc.Chopper(**ds.manifest()['winner'])
+    assert winner == ranked[0]['chopper'] and ranked[0]['n'] == 6
+    assert winner not in order[:3]
+    table = capsys.readouterr().out.split('rank  tbl')[-1].split('Recommended for printer.cfg')[0]
+    assert table.split('\n')[1].split()[1:5] == [str(winner.tbl), str(winner.toff),
+                                                 str(winner.hstrt), str(winner.hend)]
+
+
+def test_the_table_adds_the_recommended_row_at_its_own_rank(capsys):
+    from chopper_autotune.analyze import print_table, rank
+    ranked = rank([{'chopper': tmc.Chopper(0, toff, 4, 4), 'magnitude': 1000.0 + toff,
+                    'spread': 10.0, 'n': 2} for toff in range(2, 16)], tmc.DRIVERS['2209'],
+                  tmc.Hearing())
+    print_table(ranked, 10, ranked[12])
+    rows = capsys.readouterr().out.strip().split('\n')[1:]
+    assert [row.split()[0] for row in rows] == [str(n) for n in range(1, 11)] + ['13']
+    assert rows[-1].split()[2] == str(ranked[12]['chopper'].toff)
+    print_table(ranked, 10, ranked[3])
+    assert len(capsys.readouterr().out.strip().split('\n')) == 11
+
+
 def test_parker_parks_before_drift_reaches_rail():
     parks = []
     kl = FakeKl()
