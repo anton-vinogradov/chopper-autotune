@@ -287,6 +287,17 @@ class RailMove:
         if differ:
             print('WARNING: the drivers of motor %s differ in %s: one register set may run them '
                   'unlike' % (hw.motor, '; '.join(differ)))
+        homing = {drive.stepper: self.settings['tmc%s %s' % (drive.driver.name, drive.stepper)]
+                  .get('home_current') for drive in hw.rail}
+        if len(set(map(str, homing.values()))) > 1:
+            print('WARNING: the drivers of motor %s home at different currents (Kalico '
+                  'home_current: %s). A change of current can move a stepper, so a G28 can '
+                  'leave %s apart. The run homes at its start and again mid-run, so this can '
+                  'happen during the run'
+                  % (hw.motor, ', '.join('%s %s' % (stepper, '%g A' % float(current) if current
+                                                    else 'its run_current')
+                                         for stepper, current in homing.items()),
+                     ' and '.join(homing)))
         self.notes()
 
     def describe(self, drive: Hardware) -> str:

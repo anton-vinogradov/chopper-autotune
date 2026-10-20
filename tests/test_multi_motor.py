@@ -387,3 +387,17 @@ def test_a_rail_whose_drivers_run_different_registers_has_none_to_keep():
     hw.rail = [one, SimpleNamespace(baseline=dict(one.baseline))]
     assert current_registers(hw, stock) == tmc.Chopper(1, 4, 2, 3)
     assert block_rivals(hw, SimpleNamespace()) == ([stock, tmc.Chopper(1, 4, 2, 3)], '')
+
+
+def test_the_plan_warns_when_the_drivers_of_a_rail_home_at_different_currents(capsys):
+    # tavalin's Kalico G28 ran stepper_y at 1.5 A and stepper_y1 at 0.4 A: after the run's
+    # mid re-home the pair measured twice as quiet, or lost its direction asymmetry
+    from chopper_autotune.collect import travel_for
+    for x1, warned in ((0.4, True), (1.5, False)):
+        motion, _ = planned(rail_settings(**{'tmc5160__stepper_x': {'home_current': 1.5},
+                                             'tmc5160__stepper_x1': {'run_current': 0.8,
+                                                                     'home_current': x1}}))
+        motion.plan([(60, travel_for(60, motion.accel(None, 60, 1.25), 1.25))])
+        out = capsys.readouterr().out
+        assert ('WARNING: the drivers of motor A home at different currents (Kalico home_current: '
+                'stepper_x 1.5 A, stepper_x1 %g A)' % x1 in out) == warned
