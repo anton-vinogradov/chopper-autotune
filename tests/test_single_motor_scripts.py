@@ -40,6 +40,8 @@ RUNS = {
     'demo-b': (demo.demo, ['demo', '--axis', 'y', '--speed', '40', '--report', '--iterations', '1']),
     'demo-live': (demo.demo, ['demo', '--axis', 'x', '--speed', '60', '--rounds', '1',
                               '--repeats', '1']),
+    'demo-ab': (demo.showcase_together, ['demo', '--speed', '60', '--rounds', '1',
+                                         '--repeats', '1']),
     'map': (resonance_map.resonance_map, ['map', '--axis', 'x', '--min-speed', '40', '--max-speed',
                                           '60', '--step', '10', '--yes', '--no-raw']),
     # both motors, the second seeded with the first's winner: on one printer, a descent is long
@@ -48,10 +50,10 @@ RUNS = {
 PARK_INTERVAL = {'collect-rehome': 3}
 HOT_AFTER = {'collect-hot': 3}
 PRINTERS = ('meijjaa', 'voron-2209', 'dual-y-voron-2209')
-# on the dual-Y Voron motor B is a rail, not a single motor
+# on the dual-Y Voron motor B is a rail, not a single motor, and the show of both runs it
 CASES = [(run, printer) for run in RUNS for printer in PRINTERS
          if (run != 'tune' or printer == 'voron-2209')
-         and not (printer.startswith('dual-y') and run.endswith('-b'))]
+         and not (printer.startswith('dual-y') and run.endswith(('-b', '-ab')))]
 DATASET = ('manifest.json', 'measurements.jsonl')
 PRINTED_ON = 'klipper-v0.13.0'
 
@@ -105,7 +107,7 @@ def run(source: str, printer: str, case: str, tmp_path, monkeypatch, capsys) -> 
         monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<front>')
         tool(build_parser().parse_args(argv))
     else:
-        if tool is not demo.demo:
+        if tool not in (demo.demo, demo.showcase_together):
             argv = argv + ['--dataset', str(tmp_path / 'dataset')]
         if case in HOT_AFTER:
             with pytest.raises(collect.DriverTooHot):

@@ -283,7 +283,7 @@ def test_a_tune_of_both_motors_runs_the_pair_before_the_motor_alone(source, sync
                if script.startswith('G1 ')) < pair_off
     assert front.moves and {move['stepper'] for move in front.moves} == {'stepper_x'}
     runs, summary = capsys.readouterr().out.split('=== Summary ===')
-    assert 'note: motor B, with two motors, is tuned first: motor A runs alone' in runs
+    assert 'note: motor B goes first, because motor A runs alone' in runs
     assert ('SYNC_MOTORS again after the tune' in runs) == sync
     assert runs.index('=== Motor B ===') < runs.index('=== Motor A ===')
     assert summary.index('[tmc5160 stepper_x]') < summary.index('[tmc5160 stepper_y]') \
@@ -653,6 +653,46 @@ def test_a_tune_stops_at_a_driver_not_put_back_before_the_next_motor_homes(sourc
                 if move['belts']['y'] and not from_homing(front, move)]
 
 
+NO_TRIGGER = 'gcode/script failed: No trigger on x after full movement'
+
+
+def failing_closing_homing(front, kl, error: str = NO_TRIGGER):
+    """kl, with the first closing homing failing. As a sensorless one that never triggers,
+    Klipper then switches every motor off and forgets the homing (motor_off); another
+    `error`, a timeout, leaves the motors as they were."""
+    send = kl.gcode
+
+    def gcode(script):
+        if script == 'G28 X Y':                     # the closing one; the others go to the center
+            if error == NO_TRIGGER:
+                front.run('M84')
+            raise KlippyError(error)
+        return send(script)
+    kl.gcode = gcode
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_a_tune_stops_at_a_failed_closing_homing_before_the_next_motor_homes(source, monkeypatch):
+    # the motors of a belt may have settled apart while off (decision 7): motor B's homing
+    # and moves would run on them
+    from chopper_autotune import tune
+    require(source)
+    front = klipper_front.Front(source, own_cfg('meijjaa'))
+    kl = front.connect()
+    failing_closing_homing(front, kl)
+    monkeypatch.setattr(tune, 'Klippy', lambda path: types.SimpleNamespace(connect=lambda: kl))
+    monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<front>')
+    with pytest.raises(rail.GantryUnhomed, match=r'home X and Y again: the final homing failed '
+                                                 r'\(gcode/script failed: No trigger on x'):
+        tune.run_tune(build_parser().parse_args(['tune', '--speed', '60', '--no-raw']))
+    assert len(front.homings) == 1
+    assert not [move for move in front.head_moves
+                if move['belts']['y'] and not from_homing(front, move)]
+    steppers = front.status({'stepper_enable': None})['stepper_enable']['steppers']
+    assert not [name for name, on in steppers.items() if on]
+    assert front.status({'toolhead': ['homed_axes']})['toolhead']['homed_axes'] == ''
+
+
 @pytest.mark.parametrize('source', SOURCES)
 @pytest.mark.parametrize('write, times', [
     # the drivers' own registers before the G28; the run's mode after it
@@ -809,12 +849,9 @@ def test_what_would_spoil_a_rail_run_is_refused_before_any_gcode(source, case, t
 @pytest.mark.parametrize('tool, argv', [
     ('resonance_map:run_resonance_map', ['map', '--axis', 'x', '--dry-run']),
     ('current:run_current_tune', ['current', '--dry-run']),
-    ('demo:run_demo', ['demo', '--axis', 'x', '--speed', '60', '--dry-run']),
-    ('demo:run_demo', ['demo', '--dry-run']),
 ])
 def test_the_one_motor_tools_refuse_a_two_motor_axis_before_any_gcode(source, tool, argv,
                                                                      monkeypatch):
-    # DEMO refuses at its entry: its per-motor loop would read it as 'motor A skipped'
     import importlib
     require(source)
     module, name = tool.split(':')

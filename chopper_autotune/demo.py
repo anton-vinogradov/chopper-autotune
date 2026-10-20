@@ -12,16 +12,18 @@ from dataclasses import replace
 from datetime import datetime
 
 from . import __version__, tmc
-from .collect import (MOVE_MARGIN, ForceMove, RunStopped, Screen, ThermalGuard, capture_stream,
-                      coupled_xy, default_dataset_root, detect_hardware, enter_spreadcycle,
-                      exit_spreadcycle, fit_measure_time, home_xy, measure_baseline, motor_label,
-                      now, refuse_after_shutdown, refuse_blind_z_hop, refuse_if_printing,
-                      refuse_multi_motor, rehome_unless_hot, restore_chopper, run_measurement,
-                      run_restore, travel_for)
-from .current import live_limits
+from .collect import (MOVE_MARGIN, Hardware, RunStopped, Screen, ThermalGuard, capture_stream,
+                      coupled_xy, current_registers, default_dataset_root, detect_hardware,
+                      enter_spreadcycle, exit_spreadcycle, fit_measure_time, home_xy,
+                      measure_baseline, motor_label, now, rail_of, rail_twins, refuse_after_shutdown,
+                      refuse_blind_z_hop, refuse_if_printing, refuse_multi_motor, refused,
+                      rehome_unless_hot, restore_chopper, run_measurement, run_restore,
+                      set_rail_fields, travel_for, untouched_autotune)
+from .current import live_limits, velocity_caps
 from .dataset import Dataset
 from .klippy import Klippy, KlippyError, find_socket
 from .metrics import vibration_score
+from .rail import RailMove, motion_for, rails_first, refuse_cut, refuse_rail_run
 
 BAR_WIDTH = 40
 
@@ -37,11 +39,14 @@ def run_demo(args) -> int:
                          'LIVE plays the audible showcase (the default)')
     kl = Klippy(find_socket(args.socket)).connect()
     try:
+        settings = kl.settings()
         # before the per-motor loop: a refusal there reads as 'motor A/B skipped'
-        refuse_multi_motor(kl.settings(), args.axis)
+        refuse_multi_motor(settings, args.axis, rails=True)
+        if any(rail_twins(settings, axis) for axis in args.axis):
+            refuse_rail_run(kl, False)                  # DEMO has no CSV
         if args.axis == 'xy' and not args.report:
             return showcase_together(kl, args)          # both motors together, like printing
-        axes = ['x', 'y'] if args.axis == 'xy' else [args.axis]
+        axes = rails_first(settings, list(MOTORS), 'demo') if args.axis == 'xy' else [args.axis]
         worst = 0
         for axis in axes:
             per_motor = Namespace(**vars(args))
@@ -49,9 +54,7 @@ def run_demo(args) -> int:
             try:
                 worst = max(worst, demo(kl, per_motor))
             except SystemExit as skip:
-                # only a per-motor refusal (a string message) is skippable; an integer
-                # code is the SIGTERM handler — CHOPPER_STOP must stop the whole demo
-                if len(axes) == 1 or not isinstance(skip.code, str) or isinstance(skip, RunStopped):
+                if len(axes) == 1 or not refused(skip):
                     raise
                 print('motor %s skipped: %s' % (motor_label(axis), skip))
                 worst = max(worst, 2)
@@ -75,24 +78,41 @@ def before_registers(args, driver: tmc.Driver) -> tmc.Chopper:
     return replace(args.default, tpfd=driver.default.tpfd) if driver.has_tpfd else args.default
 
 
+def rail_registers(hw: Hardware) -> tmc.Chopper:
+    """The tuned registers the demo plays on the motor: the ones its drivers run, one set
+    for every driver of a rail, played against the defaults."""
+    tuned = current_registers(hw, hw.driver.default)
+    if tuned is not None:
+        return tuned
+    if untouched_autotune(hw):          # autotune's are read live, after the first homing
+        return tmc.baseline_chopper(hw.baseline, hw.baseline.get('tpfd'), hw.driver.default)
+    sets = [(drive.stepper, tmc.baseline_chopper(drive.baseline, default=hw.driver.default).label())
+            for drive in hw.rail]
+    # the action first: the display shows its first characters (failure_display)
+    if hw.autotune is not None:
+        raise SystemExit('make %s run the same registers under klipper_tmc_autotune, then retry: '
+                         '%s. The demo plays one set against the defaults'
+                         % (' and '.join(stepper for stepper, _ in sets),
+                            ', '.join('%s runs %s' % pair for pair in sets)))
+    raise SystemExit('give every driver of motor %s the same registers, then retry: the config '
+                     'gives %s. The demo plays one set against the defaults. CHOPPER_SAVE writes '
+                     'the same set into each driver. Nothing was moved'
+                     % (hw.motor, ', '.join('%s %s' % pair for pair in sets)))
+
+
 def showcase_together(kl, args) -> int:
     """Live show for the whole printer: put default vs tuned on BOTH motors and do the same
     coordinated back-and-forth that runs each motor at its own resonance speed at once (a
     diagonal on CoreXY, so the head moves in X and Y and the gantry moves too, like printing),
     so a listener hears the whole machine change, not one motor at a time. Reports the combined
     drop in vibration."""
-    hw = {axis: detect_hardware(kl, axis) for axis in MOTORS}
-    tpfd = {axis: hw[axis].baseline.get('tpfd') for axis in MOTORS}
-    tuned = {axis: tmc.baseline_chopper(hw[axis].baseline, tpfd[axis], hw[axis].driver.default)
-             for axis in MOTORS}
+    hw = {axis: rail_of(detect_hardware(kl, axis)) for axis in MOTORS}
+    tuned = {axis: rail_registers(hw[axis]) for axis in MOTORS}
     default = {axis: before_registers(args, hw[axis].driver) for axis in MOTORS}
     # autotune's motor runs its own registers, not its config lines: judged once read live
     if all(hw[axis].autotune is None and tuned[axis] == default[axis] for axis in MOTORS):
         raise SystemExit('current registers equal the defaults on both motors — tune and save first')
 
-    board = hw['x']
-    accel = args.accel or board.max_accel / 10
-    span = min(hw['x'].axis_span, hw['y'].axis_span)
     speed = {}
     for axis in MOTORS:
         speed[axis] = args.speed.lo if args.speed is not None else known_speed(axis)
@@ -103,15 +123,17 @@ def showcase_together(kl, args) -> int:
     print('Show on both motors together — diagonal move running motor A at %d and motor B at %d '
           'mm/s at once (both at resonance; head moves in X and Y): defaults vs tuned %s / %s'
           % (speed['x'], speed['y'], tuned['x'].label(), tuned['y'].label()))
+    if any(hw[axis].twins for axis in MOTORS):
+        return _show_rails(kl, hw, args, speed, tuned, default)
+    board = hw['x']
+    accel = args.accel or board.max_accel / 10
+    span = min(hw['x'].axis_span, hw['y'].axis_span)
     if args.dry_run:
         return 0
 
     refuse_if_printing(kl)
     kl.subscribe_accel(board.accel_chip)
     screen = Screen(kl, board.display)
-    configs = [('default', default), ('tuned', tuned)]
-    playing = {'default': '>> DEFAULTS', 'tuned': '>> TUNED'}
-    results = {name: [] for name, _ in configs}
     guard = ThermalGuard(kl, kl.settings())
     # outside the try: after its release the finally would write toff into the switched-off
     # drivers, which re-energizes a hot one on a stepper without an enable pin
@@ -121,38 +143,90 @@ def showcase_together(kl, args) -> int:
     try:
         # home and hold at center with the motors ENABLED (park disables them) for G1 moves
         home_xy(kl, 'G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, *board.center))
-        for axis in MOTORS:
-            enter_spreadcycle(kl, hw[axis])
-            # on autotune's motor the registers it runs, read live: 'tuned' plays and
-            # puts back what the motor runs, not config lines autotune overrides
-            tuned[axis] = tmc.baseline_chopper(hw[axis].baseline, hw[axis].baseline.get('tpfd'),
-                                               hw[axis].driver.default)
-        if all(tuned[axis] == default[axis] for axis in MOTORS):
-            raise SystemExit('the drivers run the defaults on both motors — nothing to show')
-        for r in range(1, args.rounds + 1):
-            round_avg = {}
-            for name, regs in configs:
-                for axis in MOTORS:
-                    kl.gcode(tmc.set_fields_script(hw[axis].stepper, regs[axis].fields()))
-                screen.update('%d/%d  %s' % (r, args.rounds, playing[name]), force=True,
-                              short='%d/%d %s' % (r, args.rounds, name.upper()))
-                print('\n>> round %d/%d  %s — listen (both motors)' % (r, args.rounds, playing[name]))
-                mags = _sweep(board, speed, accel, span, args, guard.check)
-                if mags:
-                    results[name].extend(mags)
-                    round_avg[name] = statistics.mean(mags)
-            if 'default' in round_avg and 'tuned' in round_avg:
-                factor = round_avg['default'] / round_avg['tuned']
-                summary = 'both motors: %.1fx less vibration' % factor
-                screen.update(summary, force=True, short='%.1fx less vib' % factor)
-                print('   => %s' % summary)
+        results = _play(kl, hw, args, tuned, default, screen,
+                        lambda: _sweep(board, speed, accel, span, args, guard.check))
     finally:
         run_restore(
             *[lambda axis=axis: restore_chopper(kl, hw[axis]) for axis in MOTORS],
             *[lambda axis=axis: exit_spreadcycle(kl, hw[axis]) for axis in MOTORS],
             lambda: kl.gcode('M204 S%.0f' % accel_now),
             lambda: rehome_unless_hot(kl))
+    return _verdict(results, screen, tuned)
 
+
+def _show_rails(kl, hw, args, speed, tuned, default) -> int:
+    """The show where an axis has two motors: one G1 of the head through the bed center
+    runs each belt at its own speed (head_velocity), every rail moved as the runs on a rail
+    move it (RailMove), along the head's course in head mm. It sweeps the whole zone
+    between the kept edges, as the show on one motor per axis does."""
+    board = hw['x']
+    vx, vy = head_velocity(board.kinematics, speed['x'], speed['y'])
+    feed = math.hypot(vx, vy)
+    args.csv = False                       # RailMove asks; the show always streams
+    motion = RailMove(kl, board, args, also=(hw['y'],), vec=(vx / feed, vy / feed))
+    accel = motion.accel(args.accel, feed, args.measure_time)
+    fit_measure_time([feed], accel, motion.limit, args.measure_time, keep_limit=True)  # refuses
+    stroke = math.floor(motion.limit)      # %.3f ends must not round past the kept edges
+    for axis in MOTORS:
+        refuse_cut(motion.belt_caps(axis), speed[axis], 'motor ' + hw[axis].motor)
+    # the belts catch Kalico's limited_corexy and max_x/y_velocity, the head the rest
+    refuse_cut(velocity_caps(board.kinematics, motion.vec, motion.limits['max_velocity']), feed,
+               'the head')
+    print('  head: F%.0f, M204 S%.0f%s' % (feed * 60, motion.asked, motion.per_axis_cut()))
+    motion.conditions(feed, stroke)
+    if args.dry_run:
+        return 0
+
+    refuse_if_printing(kl)
+    kl.subscribe_accel(board.accel_chip)
+    # Screen asks Klipper first: a Stop there must not land between prepare and the way back
+    screen = Screen(kl, board.display)
+    motion.prepare()
+    try:
+        results = _play(kl, hw, args, tuned, default, screen,
+                        lambda: _rail_sweep(board, motion, feed, accel, stroke, args))
+    finally:
+        motion.restore()
+    return _verdict(results, screen, tuned)
+
+
+def _play(kl, hw, args, tuned, default, screen, sweep) -> dict:
+    """Every driver in spreadCycle, then each round the defaults and the tuned registers on
+    both motors, a sweep on each: the vibration each set played."""
+    for axis in MOTORS:
+        for drive in hw[axis].rail:
+            enter_spreadcycle(kl, drive)
+        # on autotune's motor the registers it runs, read live: 'tuned' plays and
+        # puts back what the motor runs, not config lines autotune overrides
+        tuned[axis] = rail_registers(hw[axis])
+    if all(tuned[axis] == default[axis] for axis in MOTORS):
+        raise SystemExit('the drivers run the defaults on both motors — nothing to show')
+    configs = [('default', default), ('tuned', tuned)]
+    playing = {'default': '>> DEFAULTS', 'tuned': '>> TUNED'}
+    results = {name: [] for name, _ in configs}
+    for r in range(1, args.rounds + 1):
+        round_avg = {}
+        for name, regs in configs:
+            for axis in MOTORS:
+                set_rail_fields(kl, hw[axis], regs[axis].fields())
+            screen.update('%d/%d  %s' % (r, args.rounds, playing[name]), force=True,
+                          short='%d/%d %s' % (r, args.rounds, name.upper()))
+            print('\n>> round %d/%d  %s — listen (both motors)' % (r, args.rounds, playing[name]))
+            mags = sweep()
+            if mags:
+                results[name].extend(mags)
+                round_avg[name] = statistics.mean(mags)
+        if 'default' in round_avg and 'tuned' in round_avg:
+            factor = round_avg['default'] / round_avg['tuned']
+            summary = 'both motors: %.1fx less vibration' % factor
+            screen.update(summary, force=True, short='%.1fx less vib' % factor)
+            print('   => %s' % summary)
+    return results
+
+
+def _verdict(results, screen, tuned) -> int:
+    """The show's end: how much less both motors vibrate on the tuned registers, on the
+    console, the display and the panel (write_state)."""
     if not results['default'] or not results['tuned']:
         raise SystemExit('show failed to collect measurements')
     d, t = statistics.mean(results['default']), statistics.mean(results['tuned'])
@@ -201,6 +275,25 @@ def _sweep(board, speed, accel, span, args, check=lambda: None):
     return mags
 
 
+def _rail_sweep(board, motion, feed, accel, stroke, args):
+    """_sweep moved by the rails' motion, the move to the start of each stroke included: a
+    failed one (the motors off, M84) reaches motion.failed, which stops the show and hands
+    the gantry over, where the closing G28 would home motors that may sit apart."""
+    mags = []
+    for _ in range(args.repeats):
+        for direction in (1, -1):
+            try:
+                motion(direction, stroke)
+                _, data = capture_stream(board, motion.script(direction * stroke, feed, accel),
+                                         stroke / feed + feed / accel)
+                mags.append(vibration_score(data, 0.25)['median_magnitude'])
+            except (KlippyError, ValueError, TimeoutError, OSError) as failure:
+                refuse_after_shutdown(failure)
+                motion.failed(failure)
+                print('  sweep failed: %s' % failure)
+    return mags
+
+
 def demo(kl: Klippy, args) -> int:
     args.source = 'stream'
     args.csv = False
@@ -208,10 +301,9 @@ def demo(kl: Klippy, args) -> int:
     if args.trim is None:
         args.trim = 0.1
 
-    hw = detect_hardware(kl, args.axis)
-    motion = ForceMove(kl, hw)
-    tpfd = hw.baseline.get('tpfd')
-    tuned = tmc.baseline_chopper(hw.baseline, tpfd, hw.driver.default)
+    hw = rail_of(detect_hardware(kl, args.axis))
+    motion = motion_for(kl, hw, args)
+    tuned = rail_registers(hw)
     default = before_registers(args, hw.driver)
     if hw.autotune is None and tuned == default:
         raise SystemExit('current registers equal the defaults — nothing to demo '
@@ -235,16 +327,18 @@ def demo(kl: Klippy, args) -> int:
             if speed is None:
                 raise SystemExit('no clear resonance speed found; pass SPEED=')
 
-    accel = args.accel or motion.default_accel
+    accel = motion.accel(args.accel, speed, args.measure_time)
     # a high resonance speed can push the default cruise past the axis (measured: the
     # re-tensioned rig moved motor B's resonance to ~100 mm/s and the demo refused) —
     # shrink the cruise like collect does instead of skipping the motor
-    cruise = fit_measure_time([int(speed)], accel, motion.limit, args.measure_time)
+    cruise = fit_measure_time([int(speed)], accel, motion.limit, args.measure_time,
+                              keep_limit=bool(hw.twins))
     if cruise < args.measure_time:
         print('Cruise %.2fs does not fit the axis at %d mm/s: shrinking to %.2fs'
               % (args.measure_time, speed, cruise))
         args.measure_time = cruise               # run_measurement slices by this window
     travel = travel_for(speed, accel, cruise)
+    motion.plan([(speed, travel)])
 
     live = not args.report
     mode = 'live showcase, %d rounds' % args.rounds if live else 'measure %d each' % args.iterations
@@ -258,16 +352,21 @@ def demo(kl: Klippy, args) -> int:
     root = default_dataset_root('%s_demo_%s' % (datetime.now().strftime('%Y%m%d_%H%M%S'), args.axis))
     ds = Dataset.create(root, {'version': __version__, 'created': now(), 'mode': 'demo',
                                'axis': args.axis, 'stepper': hw.stepper, 'driver': hw.driver.name,
-                               'speed': speed, 'default': default.label(), 'tuned': tuned.label()})
-    motion.prepare()
+                               'speed': speed, 'default': default.label(), 'tuned': tuned.label(),
+                               **motion.manifest_fields()})
+    # Screen asks Klipper first: a Stop there must not land between a rail's prepare and
+    # the way back
     screen = Screen(kl, hw.display)
+    motion.prepare()
     configs = [('default', default), ('tuned', tuned)]
     results = {name: [] for name, _ in configs}
     try:
-        measure_baseline(hw, ds, args, set())      # the noise floor: motors still off
-        enter_spreadcycle(kl, hw)
+        # the noise floor: one motor's are off, a rail's hold (motion.standstill)
+        measure_baseline(hw, ds, args, set(), *motion.standstill)
+        for drive in hw.rail:
+            enter_spreadcycle(kl, drive)
         # as in showcase_together: on autotune's motor, what it runs, read live
-        tuned = tmc.baseline_chopper(hw.baseline, hw.baseline.get('tpfd'), hw.driver.default)
+        tuned = rail_registers(hw)
         if tuned == default:
             raise SystemExit('klipper_tmc_autotune runs the driver defaults on motor %s — nothing '
                              'to demo' % hw.motor)
@@ -278,7 +377,7 @@ def demo(kl: Klippy, args) -> int:
         else:
             for iteration in range(args.iterations):
                 for name, combo in configs:
-                    kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
+                    set_rail_fields(kl, hw, combo.fields())
                     for direction in (1, -1):
                         record = run_measurement(hw, ds, args, combo, speed, iteration, direction,
                                                  travel, accel, motion)
@@ -300,7 +399,9 @@ def demo(kl: Klippy, args) -> int:
     print('  defaults %-10s %6.0f  %s' % (default.label(), d, bar(d, scale)))
     print('  tuned    %-10s %6.0f  %s' % (tuned.label(), t, bar(t, scale)))
     print('\n  %.2fx less vibration overall' % (d / t))
-    if noise and t > noise and d > noise:
+    # a rail's floor is measured with every motor holding: their noise at standstill, which
+    # the moves have not, would make the gain above it too high
+    if not hw.twins and noise and t > noise and d > noise:
         print('  %.2fx less vibration above the %.0f noise floor' % ((d - noise) / (t - noise), noise))
     screen.final('Chopper demo: %.1fx less vibration' % (d / t), '%s %.1fx less vib' % (hw.motor, d / t))
     write_state(args.axis, tuned, d / t)
@@ -327,7 +428,7 @@ def _showcase(kl, hw, args, ds, configs, speed, travel, accel, motion, screen):
     for r in range(1, args.rounds + 1):
         round_avg = {}
         for name, combo in configs:
-            kl.gcode(tmc.set_fields_script(hw.stepper, combo.fields()))
+            set_rail_fields(kl, hw, combo.fields())
             screen.update('%d/%d  %s' % (r, args.rounds, playing[name]), force=True,
                           short='%d/%d %s' % (r, args.rounds, name.upper()))
             print('\n>> round %d/%d  %s  (%s) — listen' % (r, args.rounds, playing[name],

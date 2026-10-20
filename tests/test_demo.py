@@ -1,4 +1,5 @@
 import argparse
+import types
 
 import pytest
 
@@ -27,9 +28,10 @@ def test_chopper_parser():
 
 
 def make_hw(baseline):
-    return Hardware(kl=None, stepper='stepper_x', driver=tmc.DRIVERS['2209'],
-                    accel_chip='adxl345', kinematics='corexy', axis_span=260,
-                    center=(130, 130), max_accel=10000, baseline=baseline)
+    # rail_of asks the settings for twins: none here
+    return Hardware(kl=types.SimpleNamespace(settings=lambda: {}), stepper='stepper_x',
+                    driver=tmc.DRIVERS['2209'], accel_chip='adxl345', kinematics='corexy',
+                    axis_span=260, center=(130, 130), max_accel=10000, baseline=baseline)
 
 
 def demo_args(**over):

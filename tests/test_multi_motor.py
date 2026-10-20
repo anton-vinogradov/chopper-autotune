@@ -1,6 +1,7 @@
-"""Several motors on one axis (AWD, a two-motor gantry, #129): COLLECT, FIND_SPEED and
-TUNE plan the axis as a rail (chopper_autotune/rail.py, run on printers in test_rail.py);
-the tools that move or tune one motor refuse it before any G-code."""
+"""Several motors on one axis (AWD, a two-motor gantry, #129): COLLECT, FIND_SPEED, TUNE
+and DEMO plan the axis as a rail (chopper_autotune/rail.py, run on printers in
+test_rail.py and test_rail_demo.py); the tools that move or tune one motor refuse it
+before any G-code."""
 import math
 
 import pytest
@@ -61,7 +62,7 @@ RAIL = {'printer': {'kinematics': 'cartesian', 'max_accel': 500},
 
 
 def test_only_the_rail_query_brings_in_the_twins():
-    # the tools that drive stepper_x alone (MAP, DEMO, ENVELOPE, CURRENT, BELTS, EXTRUDER)
+    # the tools that drive stepper_x alone (MAP, ENVELOPE, CURRENT, BELTS, EXTRUDER)
     # get no twin; a run asking for the rail reads each twin from its own section, no G-code
     from chopper_autotune.collect import detect_hardware, rail_of
     kl = RecordingKl(RAIL)
@@ -95,8 +96,9 @@ def rail_settings(kinematics: str = 'cartesian', **sections) -> dict:
 def test_the_one_motor_tools_refuse_a_two_motor_axis_and_the_rail_runs_take_it():
     refuse_multi_motor({'stepper_x': {}, 'stepper_y': {}, 'stepper_z': {}, 'stepper_z1': {}})
     with pytest.raises(SystemExit, match=r'not on two-motor axes yet \(#129\): stepper_x1, stepper_y1 '
-                                         r'share an axis with stepper_x/stepper_y; of such an axis '
-                                         r'only the chopper registers are tuned for now'):
+                                         r'share an axis with stepper_x/stepper_y. On such an axis, '
+                                         r'use CHOPPER_TUNE, CHOPPER_COLLECT, CHOPPER_FIND_SPEED, '
+                                         r'CHOPPER_DEMO or CHOPPER_ENVELOPE. Nothing was moved$'):
         refuse_multi_motor(AWD)
     refuse_multi_motor(rail_settings(), rails=True)
     refuse_multi_motor(rail_settings('limited_corexy'), rails=True)
@@ -135,10 +137,10 @@ def _never(*args, **kwargs):
      r'drop CSV=1', ('scan', 'collect')),
     ('chopper_autotune.tune', 'run_tune', ['tune', '--dry-run'], rail_settings('hybrid_corexy'),
      r'not on hybrid_corexy', ('scan', 'collect')),
-    ('chopper_autotune.demo', 'run_demo', ['demo', '--dry-run'], AWD,
-     r'not on two-motor axes yet \(#129\)', ('showcase_together', 'demo')),
-    ('chopper_autotune.demo', 'run_demo', ['demo', '--report', '--dry-run'], AWD,
-     r'not on two-motor axes yet \(#129\)', ('showcase_together', 'demo')),
+    ('chopper_autotune.demo', 'run_demo', ['demo', '--dry-run'], rail_settings('hybrid_corexy'),
+     r'not on hybrid_corexy', ('showcase_together', 'demo')),
+    ('chopper_autotune.demo', 'run_demo', ['demo', '--report', '--dry-run'],
+     rail_settings('hybrid_corexy'), r'not on hybrid_corexy', ('showcase_together', 'demo')),
 ])
 def test_pipeline_entry_points_refuse_first(monkeypatch, module, function, argv, settings, refusal,
                                             next_steps):
@@ -157,7 +159,7 @@ def test_pipeline_entry_points_refuse_first(monkeypatch, module, function, argv,
 
 
 def test_only_the_driven_axes_count():
-    # a dual-Y gantry can still map or demo X; Y or both are refused there
+    # a dual-Y gantry can still map X; Y or both are refused there
     dual_y = {'stepper_x': {}, 'stepper_y': {}, 'stepper_y1': {}}
     refuse_multi_motor(dual_y, 'x')
     for axes in ('y', 'xy'):

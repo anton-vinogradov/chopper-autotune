@@ -1,20 +1,20 @@
 """A rail: the motors Klipper steps together on one axis, stepper_x and its twins
-stepper_x1... (AWD, a two-motor gantry, #129). COLLECT, FIND_SPEED and TUNE tune a rail
-whole: every driver gets the same registers (set_rail_fields), and the rail moves by a G1
-of the head along the vector that turns its belt alone, with every X/Y motor on from the
-first homing to the last. MAP, DEMO and CURRENT drive one motor: they refuse such an axis
+stepper_x1... (AWD, a two-motor gantry, #129). COLLECT, FIND_SPEED, TUNE and DEMO run a
+rail whole: every driver gets the same registers (set_rail_fields), and the rail moves by a
+G1 of the head along the vector that turns its belt alone, with every X/Y motor on from the
+first homing to the last. MAP and CURRENT drive one motor: they refuse such an axis
 (refuse_multi_motor)."""
 from __future__ import annotations
 
 import math
 import sys
 
-from . import collect, tmc
+from . import tmc
 from .collect import (ForceMove, Hardware, RunStopped, ThermalGuard, autotune_goal,
-                      driver_of, exit_spreadcycle, gear_factor, home_xy, motor_label,
-                      rail_steppers, refuse_after_shutdown, refuse_blind_z_hop, rehome_unless_hot,
-                      release_gantry, restore_chopper, run_restore, set_rail_fields, travel_for,
-                      xy_driver_sections)
+                      driver_of, exit_spreadcycle, gear_factor, home_xy, motor_label, rail_steppers,
+                      rail_twins, refuse_after_shutdown, refuse_blind_z_hop, refused,
+                      rehome_unless_hot, release_gantry, restore_chopper, run_restore,
+                      set_rail_fields, travel_for, xy_driver_sections)
 from .current import (accel_along, axis_limits, belt_cap, free_strokes, live_limits, stress_vector,
                       velocity_caps, velocity_needs)
 from .klippy import Klippy, KlippyError
@@ -139,6 +139,35 @@ def config_registers(drive: Hardware) -> str:
     return tmc.Chopper(**dict(drive.driver.default.fields(), **drive.baseline)).label()
 
 
+def refuse_cut(caps: dict, speed: float, what: str):
+    """Refuse a speed G1 would cut: max_velocity caps a move without an error, and the
+    window would measure a slower belt than the run asked (caps: velocity_caps)."""
+    cap = belt_cap(caps)
+    if cap < speed:
+        # the action first: the display shows its first characters (failure_display)
+        raise SystemExit('raise %s or more: now %s, it caps %s at %.0f of the %d mm/s the run '
+                         'needs. Nothing was moved'
+                         % (' and '.join(velocity_needs(caps, speed)),
+                            ', '.join('%g' % value for value, limit in caps.values() if limit < speed),
+                            what, cap, speed))
+
+
+def rails_first(settings: dict, axes: 'list[str]', run: str) -> 'list[str]':
+    """The axes of a run of both motors, a rail before a motor alone on its axis: that one
+    runs with every X/Y motor off (FORCE_MOVE), and before the rail's run its motors would
+    come back on apart, unsynced. Said where both kinds meet."""
+    rails = [axis for axis in axes if rail_twins(settings, axis)]
+    if not rails or len(rails) == len(axes):
+        return axes
+    ordered = sorted(axes, key=lambda axis: axis not in rails)
+    alone = next(axis for axis in ordered if axis not in rails)
+    print('note: motor %s goes first, because motor %s runs alone on its axis, with every X/Y '
+          'motor off%s'
+          % (motor_label(rails[0]), motor_label(alone), '. Run G28 and SYNC_MOTORS again after the '
+             '%s' % run if 'motors_sync' in settings else ''))
+    return ordered
+
+
 def motion_for(kl: Klippy, hw: Hardware, args):
     """How the run moves the motor: a rail when it has twins (rail_of), else FORCE_MOVE."""
     return RailMove(kl, hw, args) if hw.twins else ForceMove(kl, hw)
@@ -152,13 +181,17 @@ class RailMove:
     the position, so no drift to account and no homing on a schedule: a homing can leave
     the two motors of a belt apart (#164). The X/Y motors stay on the whole run, and the
     re-home after a failed attempt runs on the registers the drivers had before the run,
-    never on a candidate's: a sensorless homing was tuned on those."""
+    never on a candidate's: a sensorless homing was tuned on those. The show of both
+    motors moves several rails (`also`) by one G1 along the head's course `vec`, in head mm
+    (k = 1), each rail on its own registers."""
 
-    def __init__(self, kl: Klippy, hw: Hardware, args):
+    def __init__(self, kl: Klippy, hw: Hardware, args, also: 'tuple[Hardware, ...]' = (),
+                 vec: 'tuple[float, float] | None' = None):
         self.kl, self.hw = kl, hw
+        self.rails = [hw, *also]
         self.settings = settings = kl.settings()
         refuse_rail_run(kl, args.csv)
-        self.vec = stress_vector(hw.kinematics, hw.stepper.rsplit('_', 1)[-1])
+        self.vec = vec or stress_vector(hw.kinematics, hw.stepper.rsplit('_', 1)[-1])
         self.k = math.hypot(*self.vec)
         self.unit = tuple(part / self.k for part in self.vec)
         self.bed = [(float(settings['stepper_' + axis].get('position_min', 0.0)),
@@ -176,7 +209,7 @@ class RailMove:
         self.per_axis, self.per_axis_source = ((config_limits(settings, hw.kinematics), 'by config')
                                                if args.dry_run else
                                                (axis_limits(kl, hw.kinematics), 'now'))
-        self.caps = velocity_caps(hw.kinematics, self.vec, self.limits['max_velocity'], self.per_axis)
+        self.caps = self.belt_caps(hw.stepper.rsplit('_', 1)[-1])
         self.cap = belt_cap(self.caps)
         self.speed_cap = int(math.floor(self.cap + 1e-6))
         self.asked = hw.max_accel / 10
@@ -184,6 +217,27 @@ class RailMove:
         self.stumbled = False
         self.failures = 0
         self.restores, self.reloads, self.freed = [], [], []
+
+    @property
+    def drives(self) -> 'list[Hardware]':
+        return [drive for rail in self.rails for drive in rail.rail]
+
+    @property
+    def motors(self) -> str:
+        """'motor A', or 'motors A and B' for a move of both."""
+        return ('motor ' if len(self.rails) == 1 else 'motors ') + ' and '.join(
+            rail.motor for rail in self.rails)
+
+    def belt_caps(self, axis: str) -> dict:
+        """velocity_caps of the belt of `axis`: along the vector that turns it alone, the
+        per-axis limits in force counted."""
+        return velocity_caps(self.hw.kinematics, stress_vector(self.hw.kinematics, axis),
+                             self.limits['max_velocity'], self.per_axis)
+
+    @property
+    def resync(self) -> str:
+        """The tail of a stop that switched the motors off: [motors_sync] lost its sync."""
+        return '; run SYNC_MOTORS after you home again' if 'motors_sync' in self.settings else ''
 
     @property
     def standstill(self) -> tuple:
@@ -199,6 +253,12 @@ class RailMove:
     def reach(self, asked: float) -> float:
         """The belt accel a move gets for M204 S<asked/k>: Kalico's limited_* may cap it."""
         return self.k * accel_along(self.hw.kinematics, self.vec, asked / self.k, self.per_axis)
+
+    def per_axis_cut(self) -> str:
+        """What the moves get of the accel asked, said where Kalico's per-axis limits cut it."""
+        reached = self.reach(self.asked)
+        return ('; per-axis limits (%s) give it %.0f' % (self.per_axis_source, reached)
+                if reached < self.asked - 1e-6 else '')
 
     def accel(self, asked: 'float | None', top: float, cruise: float) -> float:
         """The run's belt accel as the moves get it. ACCEL= when given; else the tools'
@@ -240,36 +300,34 @@ class RailMove:
 
     def plan(self, moves: 'list[tuple[float, float]]', extension: 'int | None' = None):
         """Say what the run does, before anything moves (the dry run prints the same), and
-        refuse a speed G1 would cut: max_velocity caps a move without an error, and the
-        window would measure a slower belt than the dataset says."""
-        hw, settings = self.hw, self.settings
+        refuse a speed G1 would cut (refuse_cut)."""
+        hw = self.hw
         speeds = [speed for speed, _ in moves]
-        if self.cap < max(speeds):
-            # the action first: the display shows its first characters (failure_display)
-            raise SystemExit('raise %s or more: now %s, it caps motor %s at %.0f of the %d mm/s the '
-                             'run needs. Nothing was moved'
-                             % (' and '.join(velocity_needs(self.caps, max(speeds))),
-                                ', '.join('%g' % value for value, cap in self.caps.values()
-                                          if cap < max(speeds)),
-                                hw.motor, self.cap, max(speeds)))
-        speed, travel = max(moves, key=lambda move: move[1])
-        start, end = self.ends(travel, 1)
+        refuse_cut(self.caps, max(speeds), 'motor ' + hw.motor)
         print('Motor %s is a rail of %d TMC%s drivers (%s): one G1 of the head moves them together %s; '
               'speeds and accels in belt mm, as on one motor'
               % (hw.motor, len(hw.rail), hw.driver.name, ', '.join(drive.stepper for drive in hw.rail),
                  self.course()))
-        reached = self.reach(self.asked)
         low, high = min(speeds), max(speeds)
         print('  head: F%s for %s mm/s of belt, M204 S%.0f for %.0f mm/s2 of belt%s'
               % ('%.0f' % (low / self.k * 60) + ('-%.0f' % (high / self.k * 60) if high > low else ''),
                  '%g' % low + ('-%g' % high if high > low else ''), self.asked / self.k, self.asked,
-                 '; per-axis limits (%s) give it %.0f' % (self.per_axis_source, reached)
-                 if reached < self.asked - 1e-6 else ''))
-        print('  moves through the bed center, the longest from X%.1f Y%.1f to X%.1f Y%.1f (G-code '
-              'coordinates); nearest a bed edge %.1f mm, at %g mm/s (kept: X %g, Y %g mm)'
-              % (start[0], start[1], end[0], end[1], self.margin(travel), speed, *self.edges))
+                 self.per_axis_cut()))
+        print('  max_velocity %g caps the belt at %.0f mm/s' % (self.limits['max_velocity'], self.cap))
         if extension:
             print('  a curve still rising at the top extends the scan up to %d mm/s' % extension)
+        self.conditions(*max(moves, key=lambda move: move[1]))
+
+    def conditions(self, speed: float, travel: float):
+        """What every move of the rails meets, said before anything moves: where the longest
+        one (`travel` at `speed`) runs, what the run frees for its moves, each driver, how
+        the drivers of a rail differ, the notes."""
+        settings = self.settings
+        start, end = self.ends(travel, 1)
+        print('  moves through the bed center, the longest from X%.1f Y%.1f to X%.1f Y%.1f (G-code '
+              'coordinates); nearest a bed edge %.1f mm, at %s mm/s (kept: X %g, Y %g mm)'
+              % (start[0], start[1], end[0], end[1], self.margin(travel), '%g' % round(speed, 1),
+                 *self.edges))
         freed = ['minimum_cruise_ratio %g -> 0' % self.limits['minimum_cruise_ratio']]
         if self.limits['speed_factor'] != 1:
             freed.append('speed factor %g%% -> 100%%' % (self.limits['speed_factor'] * 100))
@@ -278,25 +336,26 @@ class RailMove:
         if any(freqs.values()):
             freed.append('input shaper (by config %s) -> off' % ', '.join(
                 '%s %g Hz' % (axis.upper(), freq) for axis, freq in freqs.items()))
-        print('  limits: max_velocity %g caps the belt at %.0f mm/s; for the moves %s (every '
-              'homing runs on your own)' % (self.limits['max_velocity'], self.cap, ', '.join(freed)))
-        for drive in hw.rail:
+        print('  for the moves: %s (every homing runs on your own settings)' % ', '.join(freed))
+        for drive in self.drives:
             print('  %s' % self.describe(drive))
-        differ = self.differences()
-        if differ:
-            print('WARNING: the drivers of motor %s differ in %s: one register set may run them '
-                  'unlike' % (hw.motor, '; '.join(differ)))
-        homing = {drive.stepper: self.settings['tmc%s %s' % (drive.driver.name, drive.stepper)]
-                  .get('home_current') for drive in hw.rail}
-        if len(set(map(str, homing.values()))) > 1:
-            print('WARNING: the drivers of motor %s home at different currents (Kalico '
-                  'home_current: %s). A change of current can move a stepper, so a G28 can '
-                  'leave %s apart. The run homes at its start and after a failed move, so this '
-                  'can happen during the run'
-                  % (hw.motor, ', '.join('%s %s' % (stepper, '%g A' % float(current) if current
-                                                    else 'its run_current')
-                                         for stepper, current in homing.items()),
-                     ' and '.join(homing)))
+        for rail in self.rails:
+            differ = self.differences(rail)
+            if differ:
+                print('WARNING: the drivers of motor %s differ in %s: one register set may run them '
+                      'unlike' % (rail.motor, '; '.join(differ)))
+            homing = {drive.stepper: settings['tmc%s %s' % (drive.driver.name, drive.stepper)]
+                      .get('home_current') for drive in rail.rail}
+            if len(set(map(str, homing.values()))) > 1:
+                print('WARNING: the drivers of motor %s home at different currents (Kalico '
+                      'home_current: %s). A change of current can move a stepper, so a G28 can '
+                      'leave %s apart. The run homes at its start and after a failed move. If a '
+                      'mid-run homing leaves them apart, the run compares register sets measured '
+                      'before and after it'
+                      % (rail.motor, ', '.join('%s %s' % (stepper, '%g A' % float(current) if current
+                                                          else 'its run_current')
+                                               for stepper, current in homing.items()),
+                         ' and '.join(homing)))
         self.notes()
 
     def describe(self, drive: Hardware) -> str:
@@ -314,13 +373,13 @@ class RailMove:
             'shares its enable pin (a re-enable puts the config toff back)'
             if shares_enable(self.settings, drive.stepper) else 'its own enable pin')
 
-    def differences(self) -> 'list[str]':
+    def differences(self, rail: Hardware) -> 'list[str]':
         """What the drivers of the rail run unlike beside the registers the run sets."""
         sections = {drive.stepper: self.settings['tmc%s %s' % (drive.driver.name, drive.stepper)]
-                    for drive in self.hw.rail}
+                    for drive in rail.rail}
         found = []
         registers = {drive.stepper: config_registers(drive)
-                     for drive in self.hw.rail if drive.autotune is None}
+                     for drive in rail.rail if drive.autotune is None}
         for name, values in [('registers', registers)] + [
                 (option, {stepper: section.get(option) for stepper, section in sections.items()})
                 for option in RUNNING_OPTIONS]:
@@ -449,30 +508,30 @@ class RailMove:
         run at once, as a shutdown does: X or Y lost (M84, a failed G28), or Z (a mesh or
         [z_thermal_adjust] lifts it under the moves)."""
         why = ' '.join(str(error).split())
-        sync = '; then SYNC_MOTORS, the motors were off' if 'motors_sync' in self.settings else ''
         # the display shows 'FAIL ' and the first characters of these (failure_display)
         if not set('xy') <= set(self.kl.homed_axes()):
             raise GantryUnhomed('home X and Y again: they lost their homing mid-run (%s), so the run '
-                                'stopped; the X/Y motors are off%s' % (why, sync))
+                                'stopped; the X/Y motors are off%s' % (why, self.resync))
         if 'Must home axis first' in str(error):
             raise GantryUnhomed('home all axes (G28), then retry: a move needs Z homed (%s), so the '
-                                'run stopped; the X/Y motors are off%s' % (why, sync))
+                                'run stopped; the X/Y motors are off%s' % (why, self.resync))
         self.failures += 1
         if self.failures >= FAILED_IN_A_ROW:
-            raise RunStopped('fix what fails, then run again: %d moves of motor %s failed in a row, '
+            raise RunStopped('fix what fails, then run again: %d moves of %s failed in a row, '
                              'the last with: %s. The run stopped rather than re-home before every '
-                             'move' % (self.failures, self.hw.motor, why))
+                             'move' % (self.failures, self.motors, why))
         self.stumbled = True
 
     def rehome(self):
         """G28 on the registers and mode each driver had before the run, then the run's
-        own again: a sensorless homing on a candidate may stop early or not at all."""
-        kl, hw = self.kl, self.hw
+        own again, on each rail: a sensorless homing on a candidate may stop early or not at
+        all, and a rail left on its own registers would play them in the run's place."""
+        kl = self.kl
         print('Re-homing on the drivers\' own registers')
         try:
-            for drive in hw.rail:
+            for drive in self.drives:
                 restore_chopper(kl, drive)
-            for drive in hw.rail:
+            for drive in self.drives:
                 exit_spreadcycle(kl, drive)
             for step in self.freed:
                 step()
@@ -481,12 +540,13 @@ class RailMove:
         self.home()
         try:
             free_strokes(kl, self.settings, self.limits, [])
-            for drive in hw.rail:
+            for drive in self.drives:
                 if drive.stealth:
                     field, force, _ = drive.stealth
                     kl.gcode(tmc.set_fields_script(drive.stepper, {field: force}))
-            if hw.candidate:
-                set_rail_fields(kl, hw, hw.candidate)
+            for rail in self.rails:
+                if rail.candidate:
+                    set_rail_fields(kl, rail, rail.candidate)
         except KlippyError as failure:
             self.stuck(failure)
         self.stumbled = False
@@ -501,9 +561,11 @@ class RailMove:
     def restore(self, *after):
         """Every step of the way back gets its chance (run_restore): each driver its own
         registers, then its own mode, then the limits, then the closing homing, the bed
-        mesh after it; `after` last. A driver not put back ends the run as a failure once
-        every step had its chance: what runs next (TUNE's next motor) would home on it."""
-        kl, rail, failed = self.kl, self.hw.rail, []
+        mesh after it; `after` last. A driver not put back, or a closing homing that
+        failed, ends the run as a failure once every step had its chance, after a refusal
+        of this motor too: what runs next (TUNE's next motor, DEMO's after a refusal of
+        this one) would home on that driver, or on motors of a rail that may sit apart."""
+        kl, drives, failed, unhomed = self.kl, self.drives, [], []
 
         def tracked(step):
             def run():
@@ -513,24 +575,39 @@ class RailMove:
                     failed.append(step)
                     raise
             return run
-        run_restore(*[tracked(lambda drive=drive: restore_chopper(kl, drive)) for drive in rail],
-                    *[tracked(lambda drive=drive: exit_spreadcycle(kl, drive)) for drive in rail],
-                    *self.restores, lambda: self.close(failed), *self.reloads, *after)
-        if failed and sys.exc_info()[1] is None:
+        run_restore(*[tracked(lambda drive=drive: restore_chopper(kl, drive)) for drive in drives],
+                    *[tracked(lambda drive=drive: exit_spreadcycle(kl, drive)) for drive in drives],
+                    *self.restores, lambda: self.close(failed, unhomed), *self.reloads, *after)
+        flying = sys.exc_info()[1]
+        if flying is not None and not refused(flying):
+            return
+        if failed:
             # the display shows 'FAIL ' and the first characters of this (failure_display)
-            raise RegistersStuck('check the X/Y drivers (DUMP_TMC), then home by hand: a driver of '
-                                 'motor %s could not be put back after the run (above)'
-                                 % self.hw.motor)
+            raise RegistersStuck('check the X/Y drivers (DUMP_TMC), then home by hand: one of the '
+                                 'drivers of %s could not be put back after the run (above)'
+                                 % self.motors)
+        if unhomed:
+            refuse_after_shutdown(unhomed[0])
+            # the display shows 'FAIL ' and the first characters of this (failure_display)
+            raise GantryUnhomed('home X and Y again: the final homing failed (%s), so the run '
+                                'stopped; the X/Y motors are off%s'
+                                % (' '.join(str(unhomed[0]).split()), self.resync))
 
-    def close(self, failed: list):
+    def close(self, failed: list, unhomed: list):
         """The closing homing, on the drivers' own registers. If one of them could not be
         put back, a G28 might run on a candidate's; if X or Y lost the homing, the motors
-        of a rail may sit apart: the gantry goes to the user's hands instead."""
+        of a rail may sit apart: the gantry goes to the user's hands instead. So it does
+        when this G28 fails: after a failed homing Klipper switches every motor off."""
         if not failed and not isinstance(sys.exc_info()[1], GantryUnhomed):
-            rehome_unless_hot(self.kl)
-            return
+            try:
+                rehome_unless_hot(self.kl)
+                return
+            except KlippyError as failure:
+                unhomed.append(failure)
         release_gantry(self.kl, cycle=True)
         if failed:
             print('Not homing: a driver could not be put back (above), and a G28 on a candidate\'s '
                   'registers can home wrong. The X/Y motors are off: check each driver with DUMP_TMC, '
                   'then home by hand')
+        if unhomed:
+            raise unhomed[0]

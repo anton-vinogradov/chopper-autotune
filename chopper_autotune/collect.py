@@ -395,9 +395,9 @@ def refuse_corexz(settings: dict):
 
 def refuse_multi_motor(settings: dict, axes: str = 'xy', rails: bool = False):
     """A second motor on an axis (AWD, a two-motor gantry, #129) makes the axis a rail
-    Klipper steps whole. The runs that tune a rail whole (rails: COLLECT, FIND_SPEED,
-    TUNE) take the rails they support (rail.refuse_unsupported); the tools that drive or
-    tune one motor refuse such an axis, where the twin would idle on the belt, hold
+    Klipper steps whole. The runs that drive a rail whole (rails: COLLECT, FIND_SPEED,
+    TUNE, DEMO) take the rails they support (rail.refuse_unsupported); the tools that drive
+    or tune one motor refuse such an axis, where the twin would idle on the belt, hold
     against it after a re-home, and miss the registers and the current. Before anything
     moves, dry run included; only the axes the run drives count (a dual-Y gantry can
     still tune X)."""
@@ -412,9 +412,9 @@ def refuse_multi_motor(settings: dict, axes: str = 'xy', rails: bool = False):
                 refuse_unsupported(settings, axis)
         return
     raise SystemExit('not on two-motor axes yet (#129): %s share%s an axis with '
-                     'stepper_x/stepper_y; of such an axis only the chopper registers are tuned '
-                     'for now (CHOPPER_TUNE, CHOPPER_COLLECT, CHOPPER_FIND_SPEED). Nothing was '
-                     'moved' % (', '.join(twins), '' if len(twins) > 1 else 's'))
+                     'stepper_x/stepper_y. On such an axis, use CHOPPER_TUNE, CHOPPER_COLLECT, '
+                     'CHOPPER_FIND_SPEED, CHOPPER_DEMO or CHOPPER_ENVELOPE. Nothing was moved'
+                     % (', '.join(twins), '' if len(twins) > 1 else 's'))
 
 
 def motors_off_but_z(kl: Klippy, cycle: bool = False) -> str:
@@ -508,6 +508,13 @@ def release_gantry(kl: Klippy, cycle: bool = False):
 
 class RunStopped(SystemExit):
     """A stop of the whole run, never a per-motor skip (see demo.run_demo)."""
+
+
+def refused(stop: BaseException) -> bool:
+    """A refusal of one motor: a SystemExit with a message, not a RunStopped. The integer
+    code is the SIGTERM handler's (CHOPPER_STOP), which stops everything."""
+    return isinstance(stop, SystemExit) and isinstance(stop.code, str) \
+        and not isinstance(stop, RunStopped)
 
 
 class UnsupportedKlipper(RunStopped):
