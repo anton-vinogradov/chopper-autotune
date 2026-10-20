@@ -149,10 +149,10 @@ class RailMove:
     cartesian; a diagonal on CoreXY, where the other rail's belt holds still), through the
     center of the bed and back. Speeds, accels and travel stay belt mm, as a FORCE_MOVE's:
     the head gets F = v/k*60 and M204 S = a/k, k the belt mm per head mm. Klipper keeps
-    the position, so no drift to account; the X/Y motors stay on the whole run, and a
-    re-home (every PARK_INTERVAL_MOVES, and after a failed attempt) runs on the registers
-    the drivers had before the run, never on a candidate's: a sensorless homing was
-    tuned on those."""
+    the position, so no drift to account and no homing on a schedule: a homing can leave
+    the two motors of a belt apart (#164). The X/Y motors stay on the whole run, and the
+    re-home after a failed attempt runs on the registers the drivers had before the run,
+    never on a candidate's: a sensorless homing was tuned on those."""
 
     def __init__(self, kl: Klippy, hw: Hardware, args):
         self.kl, self.hw = kl, hw
@@ -181,7 +181,6 @@ class RailMove:
         self.speed_cap = int(math.floor(self.cap + 1e-6))
         self.asked = hw.max_accel / 10
         self.guard = None
-        self.moves = 0
         self.stumbled = False
         self.failures = 0
         self.restores, self.reloads, self.freed = [], [], []
@@ -292,8 +291,8 @@ class RailMove:
         if len(set(map(str, homing.values()))) > 1:
             print('WARNING: the drivers of motor %s home at different currents (Kalico '
                   'home_current: %s). A change of current can move a stepper, so a G28 can '
-                  'leave %s apart. The run homes at its start and again mid-run, so this can '
-                  'happen during the run'
+                  'leave %s apart. The run homes at its start and after a failed move, so this '
+                  'can happen during the run'
                   % (hw.motor, ', '.join('%s %s' % (stepper, '%g A' % float(current) if current
                                                     else 'its run_current')
                                          for stepper, current in homing.items()),
@@ -423,20 +422,18 @@ class RailMove:
         home_xy(self.kl, 'M204 S%s\nG28 X Y\nG90\nM204 S%.3f\nG1 X%.3f Y%.3f F%d\nM400'
                 % (self.limits['max_accel'], self.asked / self.k, center[0], center[1],
                    APPROACH_FEED))
-        self.moves = 0
 
     def __call__(self, direction: int, travel: float):
         """Before each attempt: the guard, the G-code offset in force (a SET_GCODE_OFFSET
-        mid-run moves every G1 by it), a re-home when due, then the head to the start of
-        this move. A repeat from where the last move ended would run no distance (Klipper
+        mid-run moves every G1 by it), a re-home after a failed attempt, then the head to
+        the start of this move. A repeat from where the last move ended would run no distance (Klipper
         skips it) and the window would land on the standstill."""
         self.guard.check()
         if not self.stumbled:
             self.failures = 0
         self.origin = self.offset()
-        if self.stumbled or self.moves >= collect.PARK_INTERVAL_MOVES:
+        if self.stumbled:
             self.rehome()
-        self.moves += 1
         start, _ = self.ends(travel, direction)
         self.kl.gcode('M204 S%.3f\nG1 X%.3f Y%.3f F%d\nM400'
                       % (self.asked / self.k, start[0], start[1], APPROACH_FEED))

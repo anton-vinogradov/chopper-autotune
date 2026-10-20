@@ -413,8 +413,9 @@ def running_client(front, failing=()):
 def test_every_homing_of_a_rail_run_is_on_the_drivers_own_registers(source, printer, tmp_path,
                                                                     monkeypatch, capsys):
     # sensorless homing was tuned on the config's registers and the printer's accel: the
-    # periodic re-home and the one after a failed attempt put them back first, then the
-    # candidate and the run's M204 again
+    # re-home after a failed attempt puts them back first, then the candidate and the run's
+    # M204 again. No homing on a schedule, the single motor's every 3 moves here: a homing
+    # can leave the two motors of a belt apart, and a G1 keeps the position (#164)
     require(source)
     monkeypatch.setattr(collect, 'PARK_INTERVAL_MOVES', 3)
     front = klipper_front.Front(source, own_cfg(printer))
@@ -430,9 +431,9 @@ def test_every_homing_of_a_rail_run_is_on_the_drivers_own_registers(source, prin
         kl.close()
     assert code == 0
     assert_clean(front)
-    # before the 4th move, its retry, the 7th: a re-home every 3 moves since the last
-    assert capsys.readouterr().out.count("Re-homing on the drivers' own registers") == 3
-    assert len(front.homings) == 5
+    # the start, before the retry of the 4th move, the end
+    assert capsys.readouterr().out.count("Re-homing on the drivers' own registers") == 1
+    assert len(front.homings) == 3
     own = limits_in_force(front)['minimum_cruise_ratio']
     for homing in front.homings:
         assert (homing['axes'], homing['accel'], homing['chips'], homing['cruise_ratio']) \
@@ -656,14 +657,13 @@ def test_a_tune_stops_at_a_driver_not_put_back_before_the_next_motor_homes(sourc
 @pytest.mark.parametrize('write, times', [
     # the drivers' own registers before the G28; the run's mode after it
     (OWN_X1, {1}), ({FIELD: SPREAD}, {2})], ids=['before the homing', 'after it'])
-def test_a_write_around_a_re_home_that_fails_stops_the_run(source, write, times, tmp_path,
-                                                          monkeypatch):
-    # no G28 on registers unknown (decision 5), no move measured on them
+def test_a_write_around_a_re_home_that_fails_stops_the_run(source, write, times, tmp_path):
+    # no G28 on registers unknown (decision 5), no move measured on them; the re-home is
+    # the one before the retry of the 4th move
     require(source)
-    monkeypatch.setattr(collect, 'PARK_INTERVAL_MOVES', 3)
     front = klipper_front.Front(source, own_cfg('meijjaa'))
     configured = chips(front)
-    kl = front.connect()
+    kl = running_client(front, {5})
     refusing(kl, tmc.set_fields_script('stepper_x1', write), times)
     root = tmp_path / 'grid'
     try:
