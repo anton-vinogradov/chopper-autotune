@@ -7,26 +7,36 @@ from __future__ import annotations
 import os
 import re
 import statistics
+import time
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 from . import tmc
-from .dataset import Dataset, RESULTS_HOME
+from .dataset import Dataset, RESULTS_HOME, load_json, save_json
 from .moonraker import Moonraker
 
 
-def dataset_dirs(bases=(RESULTS_HOME / 'datasets', Path('datasets'))) -> 'list[Path]':
+def written(path: Path) -> float:
+    """When a dataset last took data."""
+    records = path / 'measurements.jsonl'
+    return (records if records.is_file() else path / 'manifest.json').stat().st_mtime
+
+
+def dataset_bases() -> 'tuple[Path, ...]':
+    """Where the runs keep their datasets: under printer_data, or ./datasets on a machine
+    without it (collect.default_dataset_root)."""
+    return RESULTS_HOME / 'datasets', Path('datasets')
+
+
+def dataset_dirs(bases=None) -> 'list[Path]':
     """Oldest to newest by actual data write time, not by name: a custom-named dataset
     would otherwise lexicographically shadow newer timestamped ones forever."""
-    def written(path):
-        records = path / 'measurements.jsonl'
-        return (records if records.is_file() else path / 'manifest.json').stat().st_mtime
-
-    return sorted((path for base in bases if base.is_dir() for path in base.iterdir()
-                   if (path / 'manifest.json').is_file()), key=written)
+    return sorted((path for base in bases or dataset_bases() if base.is_dir()
+                   for path in base.iterdir() if (path / 'manifest.json').is_file()), key=written)
 
 
-def latest_dataset(bases=(RESULTS_HOME / 'datasets', Path('datasets'))) -> str:
+def latest_dataset(bases=None) -> str:
     for path in reversed(dataset_dirs(bases)):
         # scans and demos are not tuning results: analyzing (worse, SAVE-ing) a
         # two-combo demo dataset as "the latest run" would persist nonsense
@@ -38,9 +48,7 @@ def latest_dataset(bases=(RESULTS_HOME / 'datasets', Path('datasets'))) -> str:
 def aggregate(ds: Dataset, recompute: bool, trim_fraction: float) -> 'list[dict]':
     groups = defaultdict(list)
     clicks = defaultdict(int)
-    for record in ds.records():
-        if record.get('kind') != 'move' or record.get('status') != 'ok':
-            continue
+    for record in ds.moves():
         if recompute:
             if 'raw' not in record:
                 raise SystemExit('--recompute needs raw csv, dataset was collected with --no-raw')
@@ -261,12 +269,13 @@ def active_config_files(mk, root: str = 'printer.cfg') -> 'dict[str, str]':
     return active
 
 
-def _persist(mk, edits: 'list[tuple[str, object]]', what: str):
+def _persist(mk, edits: 'list[tuple[str, object]]', what: str, lines: 'list[str]' = ()):
     """Apply per-section edit functions to the live config through the Moonraker
     files API: all edits in memory first, then every touched file is backed up,
     then the edits are uploaded and Klipper restarted once. A failure mid-upload
     can leave files from different items out of sync, but the originals are
-    already backed up by that point."""
+    already backed up by that point. lines: what the console gets once every edit
+    applies, before the first upload."""
     if mk.is_printing():
         raise SystemExit('printer is busy printing, not touching the config')
     files = {name: content for name, content in active_config_files(mk).items()
@@ -288,6 +297,7 @@ def _persist(mk, edits: 'list[tuple[str, object]]', what: str):
         if name not in edited:
             edited.append(name)
 
+    tell(mk, lines)
     for name in edited:
         mk.upload_config(name.rsplit('.', 1)[0] + BACKUP_SUFFIX, originals[name])
     for name in edited:
@@ -297,28 +307,43 @@ def _persist(mk, edits: 'list[tuple[str, object]]', what: str):
           % (what, ', '.join(edited), BACKUP_SUFFIX))
 
 
-def unloadable(driver_name: str, fields: dict) -> 'str | None':
-    """Why Klipper would refuse these registers in the config, None when it loads them."""
-    return tmc.validate(tmc.Chopper(**fields), tmc.DRIVERS.get(driver_name))
-
-
-def refuse_unloadable(driver_name: str, stepper: str, fields: dict):
-    """The last check before any register write to the config: a saved combo Klipper
-    refuses at load keeps it from starting, and the undo macros live inside Klipper."""
-    why = unloadable(driver_name, fields)
-    if why:
-        raise SystemExit('refusing to save %s to [tmc%s %s]: %s'
-                         % (tmc.Chopper(**fields).label(), driver_name, stepper, why))
-
-
-def refuse_twin_write(mk, stepper: str):
+def twin_refusal(settings: dict, stepper: str) -> 'str | None':
     """A register write to stepper_x/stepper_y alone leaves a twin on the same axis
     (stepper_x1...) with its old registers (#129)."""
     from .collect import rail_twins
-    twins = rail_twins(mk.settings(), stepper.rsplit('_', 1)[-1])
+    twins = rail_twins(settings, stepper.rsplit('_', 1)[-1])
     if twins:
-        raise SystemExit('refusing to write registers to %s only: %s share its axis and would '
-                         'keep their old registers (see issue #129)' % (stepper, ', '.join(twins)))
+        return ('refusing to write registers to %s only: %s share its axis and would keep their '
+                'old registers (see issue #129)' % (stepper, ', '.join(twins)))
+    return None
+
+
+def refuse_twin_write(mk, stepper: str):
+    why = twin_refusal(mk.settings(), stepper)
+    if why:
+        raise SystemExit(why)
+
+
+def save_refusal(settings: dict, driver_name: str, stepper: str, fields: 'dict | None' = None,
+                 autotune: 'str | None' = None) -> 'str | None':
+    """Why registers may not be written into [tmc<driver_name> <stepper>], None when they
+    may. fields: the registers, when they are known; autotune: the klipper_tmc_autotune
+    goal the result was measured under. A combo Klipper refuses at load keeps it from
+    starting, and the undo macros live inside Klipper."""
+    from .collect import autotune_goal, autotune_refusal, measured_under_autotune
+    if fields is not None:
+        why = tmc.validate(tmc.Chopper(**fields), tmc.DRIVERS.get(driver_name))
+        if why:
+            return 'refusing to save %s to [tmc%s %s]: %s' % (tmc.Chopper(**fields).label(),
+                                                              driver_name, stepper, why)
+    why = twin_refusal(settings, stepper)
+    if why:
+        return why
+    if autotune_goal(settings, stepper) is not None:
+        return autotune_refusal(driver_name, stepper, settings)
+    if autotune:
+        return measured_under_autotune(driver_name, stepper)
+    return None
 
 
 def shares_enable(settings: dict, stepper: str) -> bool:
@@ -354,22 +379,22 @@ def run_apply(mk, stepper: str, chopper: tmc.Chopper):
                 pass
 
 
-def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]', extruder_state: 'dict | None' = None):
+def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]', extruder_state: 'dict | None' = None,
+             lines: 'list[str]' = ()):
     """Persist chopper winners into the Klipper config, one restart for the batch;
-    the extruder's stored winner (see extruder.save_winner_state) rides along."""
-    from .collect import measured_under_autotune, refuse_autotune_save
+    the extruder's stored winner (see extruder.save_winner_state) rides along. lines:
+    what the console gets before the write (see _persist)."""
     settings = mk.settings()
     for manifest, combo in items:
-        refuse_unloadable(manifest['driver'], manifest['stepper'], combo.fields())
-        refuse_twin_write(mk, manifest['stepper'])
-        refuse_autotune_save(settings, manifest['driver'], manifest['stepper'])
-        if manifest.get('autotune'):
-            raise SystemExit(measured_under_autotune(manifest['driver'], manifest['stepper']))
+        why = save_refusal(settings, manifest['driver'], manifest['stepper'], combo.fields(),
+                           manifest.get('autotune'))
+        if why:
+            raise SystemExit(why)
     if extruder_state:
-        refuse_unloadable(extruder_state['driver'], 'extruder', extruder_state['fields'])
-        refuse_autotune_save(settings, extruder_state['driver'], 'extruder')
-        if extruder_state.get('autotune'):
-            raise SystemExit(measured_under_autotune(extruder_state['driver'], 'extruder'))
+        why = save_refusal(settings, extruder_state['driver'], 'extruder', extruder_state['fields'],
+                           extruder_state.get('autotune'))
+        if why:
+            raise SystemExit(why)
     edits = [('tmc%s %s' % (manifest['driver'], manifest['stepper']),
               lambda text, section, combo=combo: updated_config(text, section,
                                                                 combo.fields()))
@@ -378,7 +403,7 @@ def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]', extruder_state: 'dict 
         edits.append(('tmc%s extruder' % extruder_state['driver'],
                       lambda text, section: updated_config(text, section,
                                                            extruder_state['fields'])))
-    _persist(mk, edits, 'the new registers')
+    _persist(mk, edits, 'the new registers', lines)
 
 
 def run_save_currents(mk, items: 'list[tuple[str, str, float]]'):
@@ -412,17 +437,25 @@ def tuned_tmc_sections(files: 'dict[str, str]') -> 'list[str]':
 
 # a rollback restarts the plan: the panel's step marks and Results read these files,
 # and their numbers were measured against the registers being rolled away (the skip
-# threshold, the envelope ceilings and the map are chopper properties). The extruder
-# winner memory (extruder.json) survives — SAVE_LAST must still be able to re-apply it.
+# threshold, the envelope ceilings and the map are chopper properties). The runs stay:
+# the datasets and the extruder winner (extruder.json); a save skips them by RESTORED.
 STALE_ON_RESTORE = ('belts.json', 'current.json', 'envelope.json', 'map.json', 'state.json')
+RESTORED = 'restored.json'
 
 
-def _reset_instrument_state():
+def _record_restore():
     for name in STALE_ON_RESTORE:
         try:
             os.remove(RESULTS_HOME / name)
         except OSError:
             pass
+    save_json(RESULTS_HOME / RESTORED, {'time': time.time()})
+
+
+def last_restore() -> float:
+    """When CHOPPER_RESTORE last rolled the config back, 0 if never. A run measured before
+    it is not saved: the next CHOPPER_SAVE would write the rolled-back registers again."""
+    return load_json(RESULTS_HOME / RESTORED).get('time', 0.0)
 
 
 def run_restore_config(args) -> int:
@@ -444,7 +477,7 @@ def run_restore_config(args) -> int:
             original = name[:-len(BACKUP_SUFFIX)] + '.cfg'
             mk.upload_config(original, mk.download_config(name))
             print('restored %s from %s' % (original, name))
-        _reset_instrument_state()
+        _record_restore()
         mk.gcode('RESTART')
         print('Klipper is restarting on the pre-save config (registers AND currents)')
         return 0
@@ -462,83 +495,135 @@ def run_restore_config(args) -> int:
     _persist(mk, [(section,
                    lambda text, s, d=default: updated_config(text, s, d.fields()))
                   for section, default in defaults.items()], 'the Klipper default registers')
-    _reset_instrument_state()
+    _record_restore()
     return 0
 
 
-def run_save_latest(args) -> int:
-    """Persist the most recent tuning result for each motor into the config, batched into
-    one restart. Backs the panel's Save button: save what the last tuning achieved, whether
-    the motors were tuned separately (Tune A, Tune B) or together (Tune both)."""
-    from .collect import autotune_goal, autotune_refusal, measured_under_autotune, motor_label, rail_twins
-    from .extruder import load_winner_state
-    from .tune import NothingInaudible, winner_of
-    mk = Moonraker(args.url)
-    seen, items, skipped, settings = set(), [], [], None
-    for path in reversed(dataset_dirs()):
-        info = Dataset(str(path)).manifest()
-        axis = info.get('axis')
-        if axis in ('x', 'y') and axis not in seen and 'search' in info:
-            if settings is None:
-                settings = mk.settings()
-            twins = rail_twins(settings, axis)
-            if twins:
-                # like a stale extruder winner: skip it, keep saving the rest
-                seen.add(axis)
-                print('motor %s: NOT saving %s (%s share its axis, see issue #129)'
-                      % (motor_label(axis), Path(path).name, ', '.join(twins)))
-                continue
-            if autotune_goal(settings, 'stepper_' + axis) is not None:
-                seen.add(axis)
-                skipped.append(autotune_refusal(info.get('driver', 'XXXX'), 'stepper_' + axis, settings))
-                print('motor %s: NOT saving %s: %s' % (motor_label(axis), Path(path).name, skipped[-1]))
-                continue
-            try:
-                manifest, combo = winner_of(str(path), args)
-            except NothingInaudible as reason:
-                seen.add(axis)
-                skipped.append('motor %s: %s' % (motor_label(axis), reason))
-                print('motor %s: NOT saving %s: %s' % (motor_label(axis), Path(path).name, reason))
-                continue
-            except SystemExit as reason:
-                # an aborted-at-start dataset has no measurements — fall back to an
-                # older complete one instead of blocking Save entirely
-                print('motor %s: skipping %s (%s)' % (motor_label(axis), Path(path).name, reason))
-                continue
-            seen.add(axis)
-            if info.get('autotune'):
-                # the newest result stands for the motor: an older one would be stale
-                skipped.append(measured_under_autotune(info.get('driver', 'XXXX'), 'stepper_' + axis))
-                print('motor %s: NOT saving %s: %s' % (motor_label(axis), Path(path).name, skipped[-1]))
-                continue
-            items.append((manifest, combo))
-            print('motor %s: saving %s (from %s)' % (motor_label(axis), combo.label(), Path(path).name))
-    extruder_state = load_winner_state()
-    why = extruder_state and unloadable(extruder_state['driver'], extruder_state['fields'])
+MOTOR_AXES = {'A': 'x', 'B': 'y'}
+
+
+def configured(settings: dict, driver_name: str, stepper: str, fields: dict) -> bool:
+    """Whether the config already gives [tmc<driver_name> <stepper>] these registers; a
+    register without its driver_* line runs at the driver's stock value."""
+    section = settings.get('tmc%s %s' % (driver_name, stepper), {})
+    stock = tmc.DRIVERS[driver_name].default.fields()
+    return all(int(section.get('driver_' + field, stock[field])) == value
+               for field, value in fields.items())
+
+
+def axis_choice(args, axis: str, settings: dict, since: float,
+                runs: 'list[Path] | None' = None) -> 'tuple[str, tuple | None, bool]':
+    """What CHOPPER_SAVE does with a motor of the gantry: its console line, the (manifest,
+    registers) to write or None, and whether the line is a refusal. The motor's run is
+    its newest tuning dataset among runs (default: all of them); one stopped before its
+    first measurement does not count."""
+    from .collect import BACK_TO_BACK_ROUNDS, motor_label
+    from .tune import winner_of
+    motor = 'motor ' + motor_label(axis)
+    for path in reversed(runs or dataset_dirs()):
+        manifest = Dataset(path).manifest()
+        if manifest.get('axis') != axis or 'search' not in manifest:
+            continue
+        winner = manifest.get('winner')
+        if not winner and not Dataset(path).moves():
+            print('%s: skipping run %s: it has no measurements' % (motor, path.name))
+            continue
+        if written(path) < since:
+            return ('%s: not saving run %s: it is older than the last CHOPPER_RESTORE. Saving it '
+                    'would undo that rollback. To save it anyway: CHOPPER_ANALYZE DATASET=%s SAVE=1'
+                    % (motor, path.name, path)), None, False
+        why = save_refusal(settings, manifest.get('driver', 'XXXX'), 'stepper_' + axis,
+                           autotune=manifest.get('autotune'))
+        if why:
+            return '%s: %s' % (motor, why), None, True
+        if not winner:
+            return ('%s: not saving run %s: it was stopped before the end, or it was a full sweep '
+                    '(SEARCH=grid) with VALIDATE=0. So repeat measurements have not confirmed its '
+                    'top-ranked registers. To save them anyway: CHOPPER_ANALYZE DATASET=%s SAVE=1'
+                    % (motor, path.name, path)), None, False
+        if manifest.get('kept') and configured(settings, manifest['driver'], 'stepper_' + axis,
+                                               winner):
+            return ('%s: your registers %s stay. In run %s, neither the winner nor Klipper '
+                    'defaults was quieter than them in all %d rounds'
+                    % (motor, tmc.Chopper(**winner).label(), path.name, BACK_TO_BACK_ROUNDS)), \
+                None, False
+        try:
+            manifest, combo = winner_of(str(path), args)
+        except SystemExit as reason:
+            return '%s: %s' % (motor, reason), None, True
+        return ('%s: %s %s from run %s' % (motor, 'would save' if args.dry_run else 'saving',
+                                           combo.label(), path.name)), (manifest, combo), False
+    return '%s: no tuning run to save' % motor, None, False
+
+
+def extruder_choice(args, settings: dict, since: float) -> 'tuple[str, dict | None, bool]':
+    """As axis_choice for the extruder, whose run is the winner CHOPPER_EXTRUDER stored."""
+    from .extruder import STATE, load_winner_state
+    state = load_winner_state()
+    if not state:
+        return 'motor E: no CHOPPER_EXTRUDER run to save', None, False
+    taken = os.path.getmtime(STATE)
+    if taken < since:
+        return ('motor E: not saving the last CHOPPER_EXTRUDER run: it is older than the last '
+                'CHOPPER_RESTORE. Saving it would undo that rollback', None, False)
+    why = save_refusal(settings, state['driver'], 'extruder', state['fields'], state.get('autotune')) \
+        or inaudible_refusal(state, tmc.Hearing.of(args, state))
     if why:
-        # a stale winner must not block the motors' save: skip it, say how to replace it
-        print('extruder: NOT saving the stored winner %s (%s) — re-run CHOPPER_EXTRUDER'
-              % (extruder_state['fields'], why))
-        extruder_state = None
-    if extruder_state and settings is None:
-        settings = mk.settings()
-    extruder_skip = None
-    if extruder_state and autotune_goal(settings, 'extruder') is not None:
-        extruder_skip = autotune_refusal(extruder_state['driver'], 'extruder', settings)
-    elif extruder_state and extruder_state.get('autotune'):
-        extruder_skip = measured_under_autotune(extruder_state['driver'], 'extruder')
-    elif extruder_state:
-        extruder_skip = inaudible_refusal(extruder_state, tmc.Hearing.of(args, extruder_state))
-    if extruder_skip:
-        skipped.append(extruder_skip)
-        print('extruder: NOT saving the stored winner: %s' % extruder_skip)
-        extruder_state = None
-    if extruder_state:
-        print('extruder: saving %s (last CHOPPER_EXTRUDER winner)' % extruder_state['fields'])
+        return 'motor E: ' + why, None, True
+    return ('motor E: %s %s from the CHOPPER_EXTRUDER run of %s'
+            % ('would save' if args.dry_run else 'saving',
+               tmc.Chopper(**state['fields']).label(),
+               datetime.fromtimestamp(taken).strftime('%Y-%m-%d %H:%M')), state, False)
+
+
+def tell(mk, lines: 'list[str]'):
+    """Print the lines and, from a detached run, send them to the Klipper console, where its
+    log is not seen. Not from a foreground one (run.sh --sync): its macro holds Klipper's
+    G-code queue, and what it prints reaches the console anyway."""
+    from .collect import Screen, console_text
+    for line in lines:
+        print(line)
+    if not lines or os.environ.get('CHOPPER_SYNC') \
+            or 'RESPOND' not in (mk.accepted_commands() or {'RESPOND'}):
+        return
+    try:
+        mk.gcode('\n'.join('RESPOND PREFIX="%s" MSG="%s"' % (Screen.CONSOLE_PREFIX, console_text(line))
+                           for line in lines))
+    except Exception:
+        pass
+
+
+def run_save_latest(args, motors: 'str | None' = None, runs: 'list[Path] | None' = None) -> int:
+    """CHOPPER_SAVE: write the newest result of each motor (motors: letters of A, B and E,
+    MOTOR= by default) into the config, one restart for the batch. Before it the console
+    gets a line per motor: the registers and their run, or why the motor is not saved.
+    runs: the datasets to take the motors' runs from instead of all; CHOPPER_TUNE SAVE=1
+    passes its own, newer than any CHOPPER_RESTORE whatever the clock says."""
+    mk = Moonraker(args.url)
+    settings = mk.settings()
+    since = 0.0 if runs else last_restore()
+    lines, refusals, items, extruder_state = [], [], [], None
+    for motor in motors or args.motor:
+        if motor == 'E':
+            line, extruder_state, refused = extruder_choice(args, settings, since)
+        else:
+            line, item, refused = axis_choice(args, MOTOR_AXES[motor], settings, since, runs)
+            if item:
+                items.append(item)
+        lines.append(line)
+        if refused:
+            refusals.append(line)
+    if not items and not extruder_state and refusals:
+        # the refusal is the failure: the display shows what to change, and the console
+        # gets it once, as the failure (M118 from a detached run, stderr from a dry run)
+        tell(mk, [line for line in lines if line != refusals[0]])
+        raise SystemExit(refusals[0])
     if not items and not extruder_state:
-        # the skipped reason is the one worth the display: it says what to change
-        raise SystemExit(skipped[0] if skipped else 'no tuning datasets to save — run CHOPPER_TUNE first')
-    run_save(mk, items, extruder_state)
+        tell(mk, lines + ['Nothing to save, Klipper keeps running'])
+    elif args.dry_run:
+        tell(mk, lines + ['DRY_RUN=1: nothing written, Klipper keeps running'])
+    else:
+        run_save(mk, items, extruder_state, lines)
     return 0
 
 
@@ -549,9 +634,12 @@ def hearing_text(hearing: tmc.Hearing) -> str:
 
 def inaudible_refusal(state: dict, hearing: tmc.Hearing) -> 'str | None':
     """Why a stored extruder winner the hearing skips is not saved, or None."""
-    if hearing.skips(tmc.Chopper(**state['fields']), tmc.DRIVERS[state['driver']]):
-        return ('it runs below %g kHz (SKIP_AUDIBLE): re-run CHOPPER_EXTRUDER with this '
-                'AUDIBLE_KHZ' % (hearing.limit_hz / 1000))
+    combo = tmc.Chopper(**state['fields'])
+    if hearing.skips(combo, tmc.DRIVERS[state['driver']]):
+        # the action first: the display shows its first characters (failure_display)
+        return ('re-run CHOPPER_EXTRUDER with AUDIBLE_KHZ=%g: SKIP_AUDIBLE skips its stored '
+                'winner %s, which runs below %g kHz'
+                % (hearing.limit_hz / 1000, combo.label(), hearing.limit_hz / 1000))
     return None
 
 
@@ -626,7 +714,7 @@ def run_compare(args) -> int:
     return 0
 
 
-def newest_dataset(bases=(RESULTS_HOME / 'datasets', Path('datasets'))) -> Path:
+def newest_dataset(bases=None) -> Path:
     """Most recently written dataset of any kind, for progress reporting."""
     candidates = [path for path in dataset_dirs(bases)
                   if (path / 'measurements.jsonl').is_file()]
@@ -636,7 +724,7 @@ def newest_dataset(bases=(RESULTS_HOME / 'datasets', Path('datasets'))) -> Path:
 
 
 def run_status(args) -> int:
-    from datetime import datetime, timezone
+    from datetime import timezone
     path = Path(args.dataset) if args.dataset else newest_dataset()
     ds = Dataset.open(path)
     manifest = ds.manifest()

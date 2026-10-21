@@ -411,3 +411,21 @@ def test_the_show_on_both_motors_puts_back_the_printer_it_found(source):
     assert_clean(front)
     assert {section: chip.chopper() for section, chip in front.chips.items()} == chips
     assert limits_in_force(front) == limits
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_the_lines_of_a_save_reach_the_console_whole(source):
+    # a save runs detached: before the restart these lines are all the person sees of it
+    from chopper_autotune.analyze import tell
+    from chopper_autotune.collect import console_text
+    require(source)
+    front = klipper_front.Front(source, printer_cfg())
+    lines = ['motor A: saving tbl0_toff8_hstrt7_hend5 from run 20261021_101500_x',
+             'motor B: not saving [tmc2209 stepper_y]: autotune resets its chopper at start; the '
+             'log says what to do. #1 "quoted" & <b>',
+             'motor E: not saving run 20261021_x. To save it: CHOPPER_ANALYZE '
+             'DATASET=/home/pi/printer_data/config/chopper-autotune/datasets/20261021_x SAVE=1']
+    tell(types.SimpleNamespace(accepted_commands=lambda: None, gcode=front.run), lines)
+    assert_clean(front)
+    assert [line for line in front.console if line.startswith('Chopper:')] \
+        == ['Chopper: ' + console_text(line) for line in lines]

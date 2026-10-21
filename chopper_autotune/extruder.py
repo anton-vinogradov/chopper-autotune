@@ -18,8 +18,8 @@ import statistics
 from . import tmc
 from .collect import (Range, Screen, autotune_advice, autotune_goal, autotune_stealth, autotune_tag,
                       capture_stream, detect_hardware, live_chopper, live_stealth,
-                      measured_under_autotune, refuse_autotune_save, refuse_if_printing,
-                      refuse_unhearable, run_restore, unexpected_stealth, wake_stepper)
+                      refuse_autotune_save, refuse_if_printing, refuse_unhearable, run_restore,
+                      unexpected_stealth, wake_stepper)
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
 from .metrics import transients, vibration_score
@@ -236,24 +236,8 @@ def run_extruder(args) -> int:
 
 def extruder_tune(kl: Klippy, args) -> int:
     if args.save_last:                              # persist the stored winner, no re-tune
-        state = load_winner_state()
-        if not state:
-            raise SystemExit('no stored extruder winner — run CHOPPER_EXTRUDER first')
-        from .analyze import _persist, inaudible_refusal, refuse_unloadable, updated_config
-        from .moonraker import Moonraker
-        refuse_unloadable(state['driver'], 'extruder', state['fields'])
-        why = inaudible_refusal(state, tmc.Hearing.of(args, state))
-        if why:
-            raise SystemExit('the stored extruder winner %s: %s' % (state['fields'], why))
-        refuse_autotune_save(kl.settings(), state['driver'], 'extruder')
-        if state.get('autotune'):
-            raise SystemExit(measured_under_autotune(state['driver'], 'extruder'))
-        print('Persisting the stored extruder winner: %s' % state['fields'])
-        _persist(Moonraker(args.url),
-                 [('tmc%s extruder' % state['driver'],
-                   lambda text, section: updated_config(text, section, state['fields']))],
-                 'the extruder registers')
-        return 0
+        from .analyze import run_save_latest
+        return run_save_latest(args, 'E')
 
     settings = kl.settings()
     driver, driver_name, baseline_regs, stealth, min_temp = extruder_context(settings)
@@ -363,9 +347,11 @@ def extruder_tune(kl: Klippy, args) -> int:
                      'E %s' % winner.compact())
 
         if args.save:
-            from .analyze import _persist, refuse_unloadable, updated_config
+            from .analyze import _persist, save_refusal, updated_config
             from .moonraker import Moonraker
-            refuse_unloadable(driver_name, 'extruder', winner.fields())
+            why = save_refusal(settings, driver_name, 'extruder', winner.fields())
+            if why:
+                raise SystemExit(why)
             _persist(Moonraker(args.url),
                      [('tmc%s extruder' % driver_name,
                        lambda text, section: updated_config(text, section, winner.fields()))],

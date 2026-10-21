@@ -1,3 +1,8 @@
+import os
+import re
+import time
+from datetime import datetime
+
 import pytest
 
 from chopper_autotune import tmc
@@ -137,98 +142,6 @@ def test_run_save_ignores_its_own_backups():
     assert mk.uploads == ['printer.chopper-backup.cfg', 'printer.cfg']
 
 
-def test_run_save_latest_saves_newest_tuning_dataset_per_motor(monkeypatch, tmp_path):
-    import argparse
-
-    from chopper_autotune import analyze
-    from chopper_autotune.dataset import Dataset
-
-    for name, manifest in [
-        ('01_x', {'axis': 'x', 'search': 'grid'}),
-        ('02_y', {'axis': 'y', 'search': 'descent'}),
-        ('03_x', {'axis': 'x', 'search': 'descent'}),               # newer x -> this one wins
-        ('04_x', {'axis': 'x', 'mode': 'find-speed'}),              # no 'search' -> ignored
-        ('05_x', {'axis': 'x', 'mode': 'demo'}),                    # ignored
-    ]:
-        Dataset.create(tmp_path / name, manifest)
-
-    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: sorted(tmp_path.iterdir()))
-    called = []
-
-    def fake_winner(root, weight):
-        called.append(root.rsplit('/', 1)[-1])
-        return (Dataset(root).manifest(), tmc.Chopper(0, 8, 7, 5))
-
-    monkeypatch.setattr('chopper_autotune.tune.winner_of', fake_winner)
-    monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: None)
-    monkeypatch.setattr(analyze, 'Moonraker', lambda url: FakeMoonraker({}))
-    saved = {}
-    monkeypatch.setattr(analyze, 'run_save',
-                        lambda mk, items, extruder_state=None: saved.update(
-                            items=items, extruder=extruder_state))
-
-    analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
-
-    assert set(called) == {'03_x', '02_y'}                 # newest tuning dataset per motor
-    assert {m['axis'] for m, _ in saved['items']} == {'x', 'y'}
-    assert saved['extruder'] is None
-
-
-def test_run_save_latest_skips_a_motor_with_a_twin_and_saves_the_rest(monkeypatch, tmp_path, capsys):
-    # AWD on X only: motor A would reach one driver of its pair; B and the extruder still save
-    import argparse
-
-    from chopper_autotune import analyze
-    from chopper_autotune.dataset import Dataset
-    for name, axis in (('01_x', 'x'), ('02_y', 'y')):
-        Dataset.create(tmp_path / name, {'axis': axis, 'search': 'descent'})
-    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: sorted(tmp_path.iterdir()))
-    monkeypatch.setattr('chopper_autotune.tune.winner_of',
-                        lambda root, weight: (Dataset(root).manifest(), tmc.Chopper(0, 8, 7, 5)))
-    state = {'driver': '2209', 'fields': {'tbl': 3, 'toff': 7, 'hstrt': 6, 'hend': 0}}
-    monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: state)
-    monkeypatch.setattr(analyze, 'Moonraker',
-                        lambda url: FakeMoonraker({}, settings={'stepper_x': {}, 'stepper_x1': {}}))
-    saved = {}
-    monkeypatch.setattr(analyze, 'run_save',
-                        lambda mk, items, extruder_state=None: saved.update(
-                            items=items, extruder=extruder_state))
-
-    analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
-
-    assert [m['axis'] for m, _ in saved['items']] == ['y']
-    assert saved['extruder'] == state
-    assert 'motor A: NOT saving' in capsys.readouterr().out
-
-
-def test_run_save_latest_includes_the_extruder_winner(monkeypatch):
-    import argparse
-
-    from chopper_autotune import analyze
-    state = {'driver': '2209', 'fields': {'tbl': 3, 'toff': 7, 'hstrt': 6, 'hend': 0}}
-    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: [])
-    monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: state)
-    monkeypatch.setattr(analyze, 'Moonraker', lambda url: type('M', (), {'settings': lambda self: {}})())
-    saved = {}
-    monkeypatch.setattr(analyze, 'run_save',
-                        lambda mk, items, extruder_state=None: saved.update(
-                            items=items, extruder=extruder_state))
-
-    # no axis datasets at all: the stored extruder winner alone is enough to save
-    analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
-    assert saved['items'] == [] and saved['extruder'] == state
-
-
-def test_run_save_latest_errors_without_datasets(monkeypatch):
-    import argparse
-
-    from chopper_autotune import analyze
-    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: [])
-    monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: None)
-    with pytest.raises(SystemExit, match='no tuning datasets'):
-        analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
-
-
 def test_run_save_uploads_all_backups_before_edits():
     files = {'printer.cfg': '[include extra.cfg]\n' + CFG,
              'extra.cfg': '[tmc2209 stepper_z]\nuart_pin: PC10\ndriver_TOFF: 4\n'}
@@ -345,7 +258,7 @@ def test_restore_resets_the_plan_marks(tmp_path, monkeypatch):
     # thresholds/ceilings/map were measured against the rolled-away registers
     for name in ('belts.json', 'current.json', 'envelope.json', 'map.json', 'state.json'):
         assert not (tmp_path / name).exists(), name
-    # the extruder winner memory survives: SAVE_LAST must still be able to re-apply it
+    # the runs stay; a save skips them by the time of the rollback
     assert (tmp_path / 'extruder.json').exists()
 
 
@@ -392,34 +305,6 @@ def test_rank_never_recommends_a_combo_klipper_would_not_load():
             {'chopper': tmc.Chopper(2, 4, 7, 8), 'magnitude': 50.0, 'n': 2}]
     assert [r['chopper'] for r in rank(rows, tmc.DRIVERS['2660'], tmc.Hearing())] == [tmc.Chopper(2, 4, 7, 8)]
     assert len(rank(rows, tmc.DRIVERS['2209'], tmc.Hearing())) == 2
-
-
-def test_run_save_latest_skips_a_stale_extruder_winner(monkeypatch, capsys):
-    import argparse
-
-    from chopper_autotune import analyze
-    stale = {'driver': '2660', 'fields': {'tbl': 2, 'toff': 4, 'hstrt': 7, 'hend': 10}}
-    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: [])
-    monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: stale)
-    with pytest.raises(SystemExit, match='no tuning datasets'):
-        analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
-    assert 'NOT saving the stored winner' in capsys.readouterr().out
-
-
-def test_extruder_save_last_refuses_a_winner_klipper_would_not_load(monkeypatch, tmp_path):
-    import json
-    from types import SimpleNamespace
-
-    from chopper_autotune import extruder
-    state_file = tmp_path / 'extruder.json'
-    state_file.write_text(json.dumps({'driver': '2660',
-                                      'fields': {'tbl': 2, 'toff': 4, 'hstrt': 7, 'hend': 10}}))
-    monkeypatch.setattr(extruder, 'STATE', str(state_file))
-    mk = FakeMoonraker({'printer.cfg': CFG.replace('tmc2209 stepper_x', 'tmc2660 extruder')})
-    monkeypatch.setattr('chopper_autotune.moonraker.Moonraker', lambda url: mk)
-    with pytest.raises(SystemExit, match='Klipper refuses'):
-        extruder.extruder_tune(None, SimpleNamespace(save_last=True, url='http://x'))
-    assert mk.uploads == [] and mk.scripts == []
 
 
 def test_run_save_refuses_to_write_one_driver_of_a_pair():
@@ -509,19 +394,6 @@ def test_run_save_refuses_a_motor_klipper_tmc_autotune_manages():
     assert mk.uploads == [] and mk.scripts == []
 
 
-def test_run_save_latest_skips_a_managed_motor_and_names_why(monkeypatch):
-    import argparse
-
-    from chopper_autotune import analyze
-    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: ['/datasets/x'])
-    monkeypatch.setattr(analyze, 'Dataset', lambda path: type('D', (), {'manifest': lambda self: {
-        'axis': 'x', 'search': 'descent', 'driver': '2209'}})())
-    monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: None)
-    monkeypatch.setattr(analyze, 'Moonraker', lambda url: type('M', (), {'settings': lambda self: AUTOTUNE})())
-    with pytest.raises(SystemExit, match=r'not saving \[tmc2209 stepper_x\]: autotune resets'):
-        analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
-
-
 @pytest.mark.parametrize('command, driver, stepper', [('tune', '2240', 'stepper_x'),
                                                        ('extruder', '5160', 'extruder'),
                                                        ('save', '2209', 'stepper_y')])
@@ -572,63 +444,338 @@ def test_a_winner_measured_under_autotune_is_not_saved_once_it_is_gone():
     assert mk.uploads == [] and mk.scripts == []
 
 
-def test_run_save_latest_skips_a_dataset_measured_under_autotune(monkeypatch):
-    import argparse
+CFG_ABE = """[tmc2209 stepper_x]
+uart_pin: PA1
+driver_TOFF: 3
+
+[tmc2209 stepper_y]
+uart_pin: PA2
+driver_TOFF: 3
+
+[tmc2209 extruder]
+uart_pin: PA3
+driver_TOFF: 3
+"""
+
+A, B, E = tmc.Chopper(0, 8, 7, 5), tmc.Chopper(1, 6, 4, 2), tmc.Chopper(3, 7, 6, 0)
+
+
+@pytest.fixture
+def runs(tmp_path, monkeypatch):
+    """runs(name, axis, winner, top=winner, age=0, kept=False, **manifest): a tuning run of
+    motor A (axis x) or B (y) that CHOPPER_SAVE finds, written `age` seconds ago. `top`
+    is its rank 1; without a winner the run recorded none, without either it measured
+    nothing."""
+    from chopper_autotune import analyze
+    from chopper_autotune.dataset import Dataset
+    base = tmp_path / 'datasets'
+    listing = analyze.dataset_dirs
+    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: listing((base,)))
+
+    def run(name, axis, winner=None, top=None, age=0.0, kept=False, **manifest):
+        ds = Dataset.create(base / name, dict({'axis': axis, 'search': 'descent', 'driver': '2209',
+                                               'stepper': 'stepper_' + axis, 'trim': 0.1}, **manifest))
+        if winner:
+            ds.update_manifest(winner=winner.fields(), kept=kept)
+        if top or winner:
+            for combo, magnitude in ((top or winner, 900.0), (tmc.Chopper(2, 3, 5, 0), 1000.0)):
+                ds.append({'id': combo.label(), 'kind': 'move', 'status': 'ok', **combo.fields(),
+                           'score': {'median_magnitude': magnitude}})
+        when = time.time() - age
+        for path in (ds.manifest_path, ds.records_path):
+            if path.exists():
+                os.utime(path, (when, when))
+        return ds.root
+    return run
+
+
+def extruder_run(winner, age=0.0, driver='2209', autotune=None, hearing=tmc.Hearing()):
+    """The winner CHOPPER_EXTRUDER stored, `age` seconds ago."""
+    from chopper_autotune import extruder
+    extruder.save_winner_state(driver, winner, autotune, hearing)
+    when = time.time() - age
+    os.utime(extruder.STATE, (when, when))
+
+
+@pytest.fixture
+def save(monkeypatch):
+    """CHOPPER_SAVE with the macro's parameters against `mk` (default: printer.cfg = CFG_ABE)."""
+    from chopper_autotune import analyze
+    from chopper_autotune.cli import _gcode_args, boolean_flags, build_parser
+
+    def run(*params, mk=None):
+        mk = mk or FakeMoonraker({'printer.cfg': CFG_ABE})
+        monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+        parser = build_parser()
+        analyze.run_save_latest(parser.parse_args(_gcode_args(['save', *params],
+                                                              boolean_flags(parser))))
+        return mk
+    return run
+
+
+def console(mk) -> 'list[str]':
+    """What reached the Klipper console, line by line."""
+    return [re.fullmatch(r'RESPOND PREFIX="Chopper:" MSG="(.*)"', line).group(1)
+            for script in mk.scripts for line in script.split('\n') if line.startswith('RESPOND')]
+
+
+def changed(mk) -> 'set[str]':
+    """The sections of CFG_ABE whose registers a save rewrote."""
+    text = mk.files['printer.cfg']
+    return {name for name in ('stepper_x', 'stepper_y', 'extruder')
+            if re.search(r'driver_TOFF: (\d+)', text.split('[tmc2209 %s]' % name)[1]).group(1) != '3'}
+
+
+@pytest.mark.parametrize('motor, saved', [
+    ('A', {'stepper_x'}), ('B', {'stepper_y'}), ('E', {'extruder'}), ('ae', {'stepper_x', 'extruder'}),
+    (None, {'stepper_x', 'stepper_y', 'extruder'})])
+def test_save_writes_only_the_motors_it_is_given(runs, save, motor, saved):
+    # a tester who re-tuned motor A would otherwise write motor B's older, noisy result too
+    runs('01_y', 'y', B, age=60)
+    runs('02_x', 'x', A)
+    extruder_run(E)
+    mk = save(*(['MOTOR=' + motor] if motor else []))
+    assert changed(mk) == saved
+    assert mk.scripts[-1] == 'RESTART'
+
+
+def test_the_console_names_the_registers_and_the_run_of_each_motor_before_the_restart(runs, save):
+    # the save runs detached: its log is not seen, and the restart ends the session
+    from chopper_autotune import extruder
+    runs('01_y', 'y', B, age=60)
+    runs('02_x', 'x', A)
+    extruder_run(E, age=30)
+    mk = save()
+    when = datetime.fromtimestamp(os.path.getmtime(extruder.STATE)).strftime('%Y-%m-%d %H:%M')
+    assert console(mk) == ['motor A: saving %s from run 02_x' % A.label(),
+                           'motor B: saving %s from run 01_y' % B.label(),
+                           'motor E: saving %s from the CHOPPER_EXTRUDER run of %s' % (E.label(), when)]
+    assert mk.scripts[-1] == 'RESTART' and 'RESPOND' in mk.scripts[0]
+
+
+@pytest.mark.parametrize('sync, commands', [(True, None), (False, {'M117', 'SET_TMC_FIELD'})])
+def test_the_lines_reach_the_console_only_where_they_can(runs, save, monkeypatch, capsys, sync, commands):
+    # a foreground run's macro holds Klipper's G-code queue, and its output reaches the
+    # console anyway; without [respond] a RESPOND is an 'Unknown command' line
+    runs('01_x', 'x', A)
+    if sync:
+        monkeypatch.setenv('CHOPPER_SYNC', '1')
+    mk = save('MOTOR=A', 'DRY_RUN=1', mk=FakeMoonraker({'printer.cfg': CFG_ABE}, commands=commands))
+    assert mk.scripts == []
+    assert 'motor A: would save %s from run 01_x' % A.label() in capsys.readouterr().out
+
+
+def test_a_dry_run_shows_the_same_lines_and_writes_nothing(runs, save):
+    runs('01_y', 'y', B, age=60)
+    runs('02_x', 'x', A)
+    extruder_run(E, age=30)
+    saved = save()
+    dry = save('DRY_RUN=1')
+    assert console(dry) == [line.replace(': saving ', ': would save ') for line in console(saved)] \
+        + ['DRY_RUN=1: nothing written, Klipper keeps running']
+    assert dry.uploads == [] and 'RESTART' not in dry.scripts
+
+
+def test_a_motor_whose_run_kept_its_registers_is_not_rewritten(runs, save):
+    # nothing to write for it: no backup, no restart
+    own = tmc.Chopper(0, 2, 2, 12)
+    runs('01_x', 'x', own, kept=True)
+    runs('02_y', 'y', B, age=60)
+    holding = {'tmc2209 stepper_x': {'driver_' + field: value for field, value in own.fields().items()}}
+    mk = save(mk=FakeMoonraker({'printer.cfg': CFG_ABE}, settings=holding))
+    assert changed(mk) == {'stepper_y'}
+    assert console(mk)[0] == ('motor A: your registers %s stay. In run 01_x, neither the winner '
+                              'nor Klipper defaults was quieter than them in all 4 rounds'
+                              % own.label())
+    mk = save('MOTOR=A', mk=FakeMoonraker({'printer.cfg': CFG_ABE}, settings=holding))
+    assert mk.uploads == [] and 'RESTART' not in mk.scripts
+
+
+def test_registers_a_run_kept_are_saved_once_the_config_holds_others(runs, save):
+    # another save or a hand edit since: the motor's last result is not in the config
+    own = tmc.Chopper(0, 2, 2, 12)
+    runs('01_x', 'x', own, kept=True)
+    mk = save('MOTOR=A', mk=FakeMoonraker({'printer.cfg': CFG_ABE},
+                                          settings={'tmc2209 stepper_x': {'driver_toff': 3}}))
+    assert 'driver_TOFF: 2' in mk.files['printer.cfg'].split('[tmc2209 stepper_y]')[0]
+    assert console(mk) == ['motor A: saving %s from run 01_x' % own.label()]
+
+
+@pytest.mark.parametrize('manifest', [{}, {'search': 'grid', 'validate': 0}])
+def test_a_run_without_a_winner_is_not_saved_and_the_line_says_how_to_save_it(
+        runs, save, monkeypatch, manifest):
+    # stopped before its finalists were re-measured, or a grid with VALIDATE=0: its rank 1
+    # was measured once; an older run of the motor is not what the person meant either
+    from chopper_autotune import analyze, cli
+    runs('01_x', 'x', B, age=60)
+    root = runs('02_x', 'x', top=A, **manifest)
+    mk = save('MOTOR=A')
+    assert mk.uploads == [] and 'RESTART' not in mk.scripts
+    command = 'CHOPPER_ANALYZE DATASET=%s SAVE=1' % root
+    assert console(mk)[0].startswith('motor A: not saving run 02_x: it was stopped before the end, '
+                                     'or it was a full sweep')
+    assert console(mk)[0].endswith('anyway: ' + command)
+    # the command in the line saves the run's rank 1 once the person asks for it
+    analyzed = FakeMoonraker({'printer.cfg': CFG_ABE})
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: analyzed)
+    assert cli.main(['analyze'] + command.split()[1:] + ['NO_HTML=1']) == 0
+    assert 'driver_TOFF: %d' % A.toff in analyzed.files['printer.cfg'].split('[tmc2209 stepper_y]')[0]
+
+
+def test_a_run_stopped_before_its_first_measurement_leaves_the_older_one_in_force(runs, save):
+    # as collect writes it: the noise floor with the motors off, then a move that failed
+    from chopper_autotune.dataset import Dataset
+    runs('01_x', 'x', A, age=60)
+    ds = Dataset(runs('02_x', 'x'))
+    ds.append({'id': 'baseline', 'kind': 'baseline', 'status': 'ok', 'score': {'median_magnitude': 40.0}})
+    ds.append({'id': B.label(), 'kind': 'move', 'status': 'failed', **B.fields(), 'error': 'timeout'})
+    assert changed(save('MOTOR=A')) == {'stepper_x'}
+
+
+def test_only_a_tuning_run_is_the_run_of_a_motor(runs, save):
+    # a speed scan and a demo measure the motor too, but they choose no registers
+    from chopper_autotune.dataset import Dataset
+    base = runs('01_x', 'x', A, age=60).parent
+    for name, mode in (('02_speed_x', 'find-speed'), ('03_demo_x', 'demo')):
+        ds = Dataset.create(base / name, {'mode': mode, 'axis': 'x', 'stepper': 'stepper_x',
+                                          'driver': '2209'})
+        ds.append({'id': B.label(), 'kind': 'move', 'status': 'ok', **B.fields(),
+                   'score': {'median_magnitude': 500.0}})
+    mk = save('MOTOR=A')
+    assert console(mk) == ['motor A: saving %s from run 01_x' % A.label()]
+
+
+@pytest.mark.parametrize('backup', [False, True])
+def test_runs_from_before_the_last_restore_are_not_saved(runs, save, monkeypatch, backup):
+    # the next save must not write the rolled-back registers again
+    from types import SimpleNamespace
 
     from chopper_autotune import analyze
-    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: ['/datasets/x'])
-    monkeypatch.setattr(analyze, 'Dataset', lambda path: type('D', (), {'manifest': lambda self: {
-        'axis': 'x', 'search': 'descent', 'driver': '2209', 'autotune': 'auto'}})())
-    monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: {
-        'driver': '2209', 'fields': {'tbl': 1, 'toff': 3, 'hstrt': 5, 'hend': 2}, 'autotune': 'silent'})
-    monkeypatch.setattr(analyze, 'Moonraker', lambda url: type('M', (), {'settings': lambda self: {}})())
-    monkeypatch.setattr('chopper_autotune.tune.winner_of', lambda path, weight: (
-        {'driver': '2209', 'stepper': 'stepper_x', 'autotune': 'auto'}, tmc.Chopper(0, 8, 7, 5)))
+    old = runs('01_x', 'x', A, age=60)
+    extruder_run(E, age=60)
+    files = {'printer.cfg': CFG_ABE, 'printer.chopper-backup.cfg': CFG_ABE}
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: FakeMoonraker(files))
+    analyze.run_restore_config(SimpleNamespace(defaults=not backup, backup=backup, url=''))
+    mk = save()
+    assert console(mk) == ['motor A: not saving run 01_x: it is older than the last CHOPPER_RESTORE. '
+                           'Saving it would undo that rollback. To save it anyway: '
+                           'CHOPPER_ANALYZE DATASET=%s SAVE=1' % old,
+                           'motor B: no tuning run to save',
+                           'motor E: not saving the last CHOPPER_EXTRUDER run: it is older than the '
+                           'last CHOPPER_RESTORE. Saving it would undo that rollback',
+                           'Nothing to save, Klipper keeps running']
+    assert mk.uploads == [] and 'RESTART' not in mk.scripts
+    runs('02_x', 'x', B, age=-60)
+    extruder_run(E, age=-60)
+    assert changed(save()) == {'stepper_x', 'extruder'}
+
+
+@pytest.mark.parametrize('files, printing, failure', [
+    ({'printer.cfg': CFG_ABE}, True, 'busy printing'),
+    ({'printer.cfg': CFG_ABE.replace('tmc2209 stepper_x', 'tmc2240 stepper_x')}, False,
+     r'section \[tmc2209 stepper_x\] not found')])
+def test_the_console_hears_of_a_save_only_once_it_can_write(runs, save, files, printing, failure):
+    # 'saving' and then the failure would announce a write that never happens
+    runs('01_x', 'x', A)
+    mk = FakeMoonraker(files, printing=printing)
+    with pytest.raises(SystemExit, match=failure):
+        save('MOTOR=A', mk=mk)
+    assert console(mk) == [] and mk.uploads == []
+
+
+def test_a_refusal_reaches_the_console_once(runs, save):
+    # as the failure itself: M118 from a detached run, stderr from a dry run
+    runs('01_x', 'x', A)
+    mk = FakeMoonraker({'printer.cfg': CFG_ABE}, settings=AUTOTUNE)
+    with pytest.raises(SystemExit, match=r'^motor A: not saving \[tmc2209 stepper_x\]'):
+        save('MOTOR=A', mk=mk)
+    assert console(mk) == []
+
+
+def test_a_test_reads_no_datasets_but_its_own(save, tmp_path, monkeypatch):
+    # a developer's ./datasets (git ignores it) or the printer's own runs turned save tests red
+    from chopper_autotune.dataset import Dataset
+    checkout = tmp_path / 'checkout'
+    ds = Dataset.create(checkout / 'datasets' / '01_x', {'axis': 'x', 'search': 'descent',
+                                                         'driver': '2209', 'stepper': 'stepper_x',
+                                                         'winner': A.fields()})
+    ds.append({'id': A.label(), 'kind': 'move', 'status': 'ok', **A.fields(),
+               'score': {'median_magnitude': 900.0}})
+    monkeypatch.chdir(checkout)
+    assert console(save('MOTOR=A')) == ['motor A: no tuning run to save',
+                                        'Nothing to save, Klipper keeps running']
+
+
+def test_with_nothing_to_save_klipper_keeps_running(save):
+    mk = save()
+    assert console(mk) == ['motor A: no tuning run to save', 'motor B: no tuning run to save',
+                           'motor E: no CHOPPER_EXTRUDER run to save',
+                           'Nothing to save, Klipper keeps running']
+    assert mk.uploads == [] and 'RESTART' not in mk.scripts
+
+
+def test_save_last_saves_what_save_motor_e_saves(runs, save, monkeypatch):
+    from chopper_autotune import analyze, extruder
+    from chopper_autotune.cli import build_parser
+    runs('01_x', 'x', A)
+    extruder_run(E)
+    saved = save('MOTOR=E')
+    mk = FakeMoonraker({'printer.cfg': CFG_ABE})
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    assert extruder.extruder_tune(None, build_parser().parse_args(['extruder', '--save-last'])) == 0
+    assert console(mk) == console(saved) and mk.files == saved.files
+    assert changed(mk) == {'extruder'}
+
+
+def test_save_skips_a_motor_with_a_twin_and_saves_the_rest(runs, save):
+    # AWD on X only: motor A would reach one driver of its pair; B and the extruder still save
+    runs('01_x', 'x', A)
+    runs('02_y', 'y', B)
+    extruder_run(E)
+    mk = save(mk=FakeMoonraker({'printer.cfg': CFG_ABE}, settings={'stepper_x': {}, 'stepper_x1': {}}))
+    assert changed(mk) == {'stepper_y', 'extruder'}
+    assert console(mk)[0].startswith('motor A: refusing to write registers to stepper_x only: '
+                                     'stepper_x1 share its axis')
+
+
+def test_save_skips_the_autotune_motor_and_saves_the_other(runs, save):
+    runs('01_x', 'x', A)
+    runs('02_y', 'y', B)
+    mk = save('MOTOR=AB', mk=FakeMoonraker({'printer.cfg': CFG_ABE}, settings=AUTOTUNE))
+    assert changed(mk) == {'stepper_y'}
+    # alone, the refusal is the failure: the display says what to change
+    from chopper_autotune.collect import failure_display
+    with pytest.raises(SystemExit, match=r'^motor A: not saving \[tmc2209 stepper_x\]: autotune resets') \
+            as refused:
+        save('MOTOR=A', mk=FakeMoonraker({'printer.cfg': CFG_ABE}, settings=AUTOTUNE))
+    assert 'the log says what to do' in failure_display('save FAILED: %s' % refused.value.code)
+
+
+def test_save_skips_a_run_measured_under_autotune(runs, save):
+    # its CoolStep lowered the current under load: the optimum was found at another current
+    runs('01_x', 'x', A, autotune='auto')
+    extruder_run(E, autotune='silent')
+    mk = FakeMoonraker({'printer.cfg': CFG_ABE})
     with pytest.raises(SystemExit, match=r'not saving \[tmc2209 stepper_x\]: measured under autotune'):
-        analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
+        save('MOTOR=AE', mk=mk)
+    assert mk.uploads == [] and 'RESTART' not in mk.scripts
+    assert len(console(mk)) == 1
+    assert console(mk)[0].startswith('motor E: not saving [tmc2209 extruder]: measured under autotune')
+    # the other motor still saves
+    runs('02_y', 'y', B)
+    mk = save('MOTOR=AB')
+    assert changed(mk) == {'stepper_y'}
+    assert console(mk)[0].startswith('motor A: not saving [tmc2209 stepper_x]: measured under autotune')
 
 
-def save_latest_with(monkeypatch, manifests, winners, settings, extruder=None):
-    """run_save_latest over fake datasets: manifests by path, winners by path (or a
-    SystemExit for an aborted-at-start one); returns what reached run_save."""
-    import argparse
-
-    from chopper_autotune import analyze
-    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: list(manifests))
-    monkeypatch.setattr(analyze, 'Dataset', lambda path: type('D', (), {
-        'manifest': lambda self: manifests[path]})())
-    monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: extruder)
-    monkeypatch.setattr(analyze, 'Moonraker', lambda url: type('M', (), {'settings': lambda self: settings})())
-
-    def winner_of(path, weight):
-        if isinstance(winners[path], BaseException):
-            raise winners[path]
-        return winners[path]
-    monkeypatch.setattr('chopper_autotune.tune.winner_of', winner_of)
-    saved = {}
-    monkeypatch.setattr(analyze, 'run_save', lambda mk, items, extruder_state=None: saved.update(
-        items=items, extruder=extruder_state))
-    analyze.run_save_latest(argparse.Namespace(audible_weight=0.25, url='http://x'))
-    return saved
-
-
-def test_save_skips_the_autotune_motor_and_saves_the_other(monkeypatch):
-    x = {'axis': 'x', 'search': 'descent', 'driver': '2209', 'stepper': 'stepper_x'}
-    y = {'axis': 'y', 'search': 'descent', 'driver': '2209', 'stepper': 'stepper_y'}
-    combo = tmc.Chopper(0, 8, 7, 5)
-    saved = save_latest_with(monkeypatch, {'/d/x': x, '/d/y': y},
-                             {'/d/x': (x, combo), '/d/y': (y, combo)},
-                             {'autotune_tmc stepper_x': {'tuning_goal': 'performance'}})
-    assert saved['items'] == [(y, combo)]
-
-
-def test_an_aborted_autotune_dataset_does_not_hide_an_older_result(monkeypatch):
-    # the newest dataset, measured under autotune, stopped before any measurement:
-    # the older complete one (no autotune then) is still the motor's result
-    old = {'axis': 'x', 'search': 'descent', 'driver': '2209', 'stepper': 'stepper_x'}
-    new = dict(old, autotune='auto')
-    combo = tmc.Chopper(0, 8, 7, 5)
-    saved = save_latest_with(monkeypatch, {'/d/old': old, '/d/new': new},
-                             {'/d/old': (old, combo), '/d/new': SystemExit('no successful measurements')},
-                             {})
-    assert saved['items'] == [(old, combo)]
+def test_save_skips_an_extruder_winner_klipper_would_not_load(runs, save):
+    # a TMC2660 winner stored before the hysteresis limit: it must not block the motors
+    runs('01_x', 'x', A)
+    stale = tmc.Chopper(2, 4, 7, 10)
+    extruder_run(stale, driver='2660')
+    files = {'printer.cfg': CFG_ABE.replace('tmc2209 extruder', 'tmc2660 extruder')}
+    mk = save(mk=FakeMoonraker(files))
+    assert 'driver_TOFF: 8' in mk.files['printer.cfg'] and 'driver_TOFF: 4' not in mk.files['printer.cfg']
+    assert console(mk)[2].startswith('motor E: refusing to save %s to [tmc2660 extruder]' % stale.label())
+    with pytest.raises(SystemExit, match='Klipper refuses'):
+        save('MOTOR=E', mk=FakeMoonraker(files))
