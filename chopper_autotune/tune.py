@@ -5,11 +5,12 @@ all winners are written into the Klipper config in one batch with a single resta
 """
 from __future__ import annotations
 
+from dataclasses import fields
 from pathlib import Path
 
 from . import tmc
-from .collect import (Range, Screen, autotune_advice, autotune_goal, collect, driver_of,
-                      motor_label, refuse_autotune_save, refuse_multi_motor, refuse_unhearable,
+from .collect import (Screen, autotune_advice, autotune_goal, collect, driver_of, motor_label,
+                      refuse_autotune_save, refuse_multi_motor, refuse_nothing_to_try,
                       run_motors, save_command, tell_next, worth_saving)
 from .dataset import Dataset
 from .find_speed import no_peak, scan, tune_at
@@ -34,9 +35,8 @@ def scan_args(args, axis: str):
     return sub_args(args, ['find-speed', '--axis', axis, '--yes'])
 
 
-def collect_args(args, axis: str, speed: Range, seed_from: 'str | None'):
-    argv = ['collect', '--axis', axis, '--speed', '%d:%d' % (speed.lo, speed.hi),
-            '--search', 'descent', '--tpfd', '0:15',
+def collect_args(args, axis: str, speed: int, seed_from: 'str | None'):
+    argv = ['collect', '--axis', axis, '--speed', str(speed), '--search', 'descent',
             '--iterations', str(args.iterations), '--yes']
     for flag, value in (('--audible-khz', args.audible_khz), ('--audible-weight', args.audible_weight)):
         if value is not None:
@@ -45,12 +45,16 @@ def collect_args(args, axis: str, speed: Range, seed_from: 'str | None'):
         argv.append('--skip-audible')
     if seed_from:
         argv += ['--seed-from', seed_from]
-    return sub_args(args, argv)
+    search = sub_args(args, argv)
+    for field in fields(tmc.Space):
+        setattr(search, field.name, getattr(args, field.name))
+    return search
 
 
 def winner_of(root: str, args=None) -> 'tuple[dict, tmc.Chopper]':
     """The motor's result in a dataset: the winner its run recorded, unless the hearing
-    (the command line's, then the run's) skips it; else a re-rank with that hearing."""
+    (the command line's, then the run's) skips it; else a re-rank with that hearing and
+    the run's ranges."""
     from .analyze import aggregate, rank
     ds = Dataset.open(root)
     manifest = ds.manifest()
@@ -69,7 +73,7 @@ def winner_of(root: str, args=None) -> 'tuple[dict, tmc.Chopper]':
                   'taking the best inaudible combo instead'
                   % (ds.root.name, winner.label(), hearing.limit_hz / 1000))
     aggregates = aggregate(ds, False, manifest.get('trim') or 0.1)
-    ranked = rank(aggregates, driver, hearing)
+    ranked = rank(aggregates, driver, hearing, tmc.Space.recorded(manifest))
     if not ranked and aggregates and hearing.skip:
         # the action first: the display shows its first characters (failure_display)
         raise SystemExit('re-run CHOPPER_TUNE with AUDIBLE_KHZ=%g: SKIP_AUDIBLE skips all of %s'
@@ -106,6 +110,10 @@ def left_undone(args, settings: dict, axes: 'list[str]', axis: str,
 
 
 def run_tune(args) -> int:
+    if args.speed is not None and args.axis == 'xy':
+        from .cli import command_line
+        raise SystemExit('add MOTOR=A or B: each motor has its own resonance speed. For example: %s'
+                         % command_line('tune', args, axis='x'))
     axes = ['x', 'y'] if args.axis == 'xy' else [args.axis]
     kl = Klippy(find_socket(args.socket)).connect()
     settings = kl.settings()
@@ -120,8 +128,8 @@ def run_tune(args) -> int:
         # say it now, not after the speed scan
         name = driver_of(settings, 'stepper_' + axis)
         if name:
-            search = collect_args(args, axis, Range(1, 1), None)
-            refuse_unhearable(tmc.DRIVERS[name], search.tbl, search.toff, tmc.Hearing.of(search))
+            search, driver = collect_args(args, axis, 1, None), tmc.DRIVERS[name]
+            refuse_nothing_to_try(driver, tmc.Space.of(search, driver), tmc.Hearing.of(search))
     if args.save:
         # say it now, not after twenty minutes of tuning
         for axis in axes:
@@ -145,7 +153,7 @@ def run_tune(args) -> int:
                 elif recommended is None:
                     tell_next(kl, left_undone(args, settings, axes, axis, winners))
                     raise SystemExit(no_peak(motor_label(axis), tune_at(axis, loudest, args)))
-                speed = Range(recommended, recommended)
+                speed = recommended
             code, root = collect(kl, collect_args(args, axis, speed, seed_root), popup=False)
             worst = max(worst, code)
             if root:

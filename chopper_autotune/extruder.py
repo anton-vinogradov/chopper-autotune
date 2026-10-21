@@ -16,9 +16,9 @@ import os
 import statistics
 
 from . import tmc
-from .collect import (Range, Screen, autotune_advice, autotune_goal, autotune_stealth, autotune_tag,
+from .collect import (Screen, autotune_advice, autotune_goal, autotune_stealth, autotune_tag,
                       capture_stream, detect_hardware, live_chopper, live_stealth,
-                      refuse_autotune_save, refuse_if_printing, refuse_unhearable, run_restore,
+                      refuse_autotune_save, refuse_if_printing, refuse_nothing_to_try, run_restore,
                       unexpected_stealth, wake_stepper)
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
@@ -132,10 +132,7 @@ def measure(hw, speed: float) -> 'tuple[float, int]':
     return vibration_score(samples, 0.0)['median_magnitude'], transients(samples)['clicks']
 
 
-FIELD_RANGES = (Range(0, 3), Range(1, 8), Range(0, 7), Range(0, 15))   # tbl/toff/hstrt/hend
-
-
-def descent(hw, kl, driver, speed: float, hearing: tmc.Hearing, screen: Screen,
+def descent(hw, kl, driver, speed: float, hearing: tmc.Hearing, screen: Screen, space: tmc.Space,
             rounds: int = 2, budget: 'int | None' = None) -> 'tuple[tmc.Chopper, dict]':
     """Multi-start coordinate descent (search.py — the same engine as the axis tune:
     joint tbl+toff phase and spanning hend seeds, closing the measured toff x hend
@@ -160,7 +157,8 @@ def descent(hw, kl, driver, speed: float, hearing: tmc.Hearing, screen: Screen,
 
     # the E descent never sweeps tpfd, so its stock is spelled without it — a carried
     # constant would reach the winner unmeasured and overwrite the config's TPFD line
-    winner = multi_start_descent(driver, *FIELD_RANGES, None, tmc.stock_chopper(driver, False),
+    winner = multi_start_descent(driver, space,
+                                 space.nearest(tmc.stock_chopper(driver, False), driver),
                                  evaluate, rounds)
     return winner, cache
 
@@ -260,11 +258,13 @@ def extruder_tune(kl: Klippy, args) -> int:
         return extruder_show(kl, args, driver, baseline_regs, stealth, temp)
     speeds = [float(v) for v in range(args.min_speed, args.max_speed + 1)]
     hearing = tmc.Hearing.of(args)
-    refuse_unhearable(driver, FIELD_RANGES[0], FIELD_RANGES[1], hearing)   # before the heat-up
+    space = tmc.Space.of(args)
+    refuse_nothing_to_try(driver, space, hearing)   # before the heat-up
 
-    budget = descent_budget(driver, *FIELD_RANGES, None)
+    budget = descent_budget(driver, space)
     print('Extruder chopper tune: tmc%s, current registers %s' % (
         driver_name, baseline_regs or tmc.stock_chopper(driver, False).fields()))
+    print('Registers the run tries: %s' % space.text())
     print('  hotend will HEAT to %.0fC (filament stays in); scan %s mm/s on stock '
           'registers%s; then a multi-start register descent at the resonance '
           '(<=%d candidates x ~%.0fs, usually far fewer — converging starts share the cache)'
@@ -317,8 +317,7 @@ def extruder_tune(kl: Klippy, args) -> int:
                   % (speed, '  (weak peak — the field may be flat here)' if flat else ''))
 
         print('Register descent at %.1f mm/s...' % speed)
-        winner, cache = descent(hw, kl, driver, speed, hearing, screen,
-                                budget=budget)
+        winner, cache = descent(hw, kl, driver, speed, hearing, screen, space, budget=budget)
 
         # winner's curse guard: re-measure the descent's top few before recommending
         top = sorted((c for c in cache if cache[c] != float('inf')), key=cache.get)[:VALIDATE_TOP]

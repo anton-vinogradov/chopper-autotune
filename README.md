@@ -63,6 +63,8 @@ The frequency is an upper bound. A spreadCycle cycle has two slow decays, an on 
 
 **It refuses clicky winners.** The per-move median is blind to rare transients: a config can win the median while audibly clicking (measured — the datasheet-edge winner clicked ~2× per one-second move at ~65× the median). Every capture therefore also counts clicks over the whole move, with a hardware-calibrated threshold (15× the move median: real clicks measure 22–69×, threshold noise stays under ~13×), and one click per move costs as much as doubling the vibration.
 
+**It leaves out the edges unless you ask.** By default a register search does not try or recommend `TBL` 0 or effective hysteresis 16, the datasheet maximum. The effective hysteresis is (`HSTRT`+1)+(`HEND`−3). In the runs of two testers, the winner had both `TBL` 0 and hysteresis 16. At the resonance those winners vibrated least. But they were noisy at 5 and 10 mm/s. One tester prints overhangs at these speeds. The tool does not measure such low speeds. We do not know which of the two edges makes the noise, so the defaults leave out both. To let a run try an edge, widen the `TBL` range or raise `MAX_HYSTERESIS` (see the [command reference](#command-reference)).
+
 Also datasheet-driven:
 
 - search space constraints (effective `HSTRT`+`HEND` ≤ 16 per datasheet, raw sum ≤ 15 on TMC2660 where Klipper refuses a larger one at config load, `TOFF` = 0 forbidden, `TOFF` = 1 blank-time restrictions) — pruned before any motion;
@@ -214,20 +216,25 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 
 **CHOPPER_TUNE** — the whole pipeline; no parameters needed.
 
-Each motor's run ends with its winner, Klipper defaults and the motor's current registers measured in turns, 4 rounds of fresh moves, scored as the ranking scores them (the audible and click penalties included). Your registers stay unless the winner or Klipper defaults is quieter than them in each of the 4 rounds. The run claims a gain over Klipper defaults only when its recommendation is quieter than them in each round; otherwise it says it cannot tell the gain from noise. When a move of these rounds fails, or your registers are left out because `SKIP_AUDIBLE` skips them or the driver cannot take them, the run says so and recommends the winner unchecked against them. With `VALIDATE=0` there are no such rounds and no gain is claimed.
+Each motor's run ends with its winner, Klipper defaults and the motor's current registers measured in turns, 4 rounds of fresh moves, scored as the ranking scores them (the audible and click penalties included). Your registers stay unless the winner or Klipper defaults is quieter than them in each of the 4 rounds. The run claims a gain over Klipper defaults only when its recommendation is quieter than them in each round; otherwise it says it cannot tell the gain from noise. When a move of these rounds fails, the run says so and recommends the winner unchecked against your registers. It does the same when your registers are outside the ranges below, `SKIP_AUDIBLE` skips them or the driver cannot take them. With `VALIDATE=0` there are no such rounds and no gain is claimed.
+
+The run tries and recommends only registers inside the ranges of the table below. By default the ranges leave out `TBL` 0 and effective hysteresis 16 ([why](#datasheet-driven-scoring-not-just-measurement)). To let the run try `TBL` 0 or effective hysteresis 16, widen the `TBL` range or raise `MAX_HYSTERESIS`, for example `CHOPPER_TUNE MOTOR=A TBL=0:3 MAX_HYSTERESIS=16`. When your registers are outside the ranges, the register search starts from the nearest combination inside them. When Klipper defaults are outside the ranges, the run leaves them out of the rounds and claims no gain over them.
 
 When a run without `SAVE=1` has registers to write, its final message and `tune.log` name the command that saves them, for example `CHOPPER_SAVE MOTOR=AB`. When the speed scan finds no clear resonance peak on a motor, the run stops at that motor. The run names the command that tunes that motor at the speed where it vibrates most, for example `CHOPPER_TUNE MOTOR=A SPEED=64`. A run on both motors that stops at motor A also names the command that tunes motor B. A run on both motors that stops at motor B also names the command that saves motor A, when motor A has registers to write.
 
 | parameter | default | meaning |
 |---|---|---|
 | `MOTOR` | `AB` | `A`, `B`, or `AB` = both (A = `stepper_x`, B = `stepper_y`), the second seeded with the first one's winner; `x`/`y`/`xy` also accepted |
-| `SPEED` | auto | skip the resonance scan and tune at this speed (mm/s) |
+| `SPEED` | auto | skip the resonance scan and tune at this speed, mm/s. Needs `MOTOR=A` or `MOTOR=B`, since each motor has its own resonance speed |
 | `SAVE` | `0` | save this run's results as `CHOPPER_SAVE MOTOR=…` does (backup first) and restart Klipper |
 | `ITERATIONS` | `1` | repeats per candidate — raise on noisy mechanics |
+| `TBL` / `TOFF` / `HSTRT` / `HEND` | `1:3` / `1:8` / `0:7` / `0:15` | register ranges (`lo:hi` or a single value) |
+| `TPFD` | `0:15` | TPFD range, TMC2240/5160 only |
+| `MAX_HYSTERESIS` | `15` | the highest effective hysteresis the run tries; `16` is the datasheet maximum |
 | `AUDIBLE_KHZ` | `30` | estimated chopper frequency, kHz, below which a combo counts as audible; raise it if the winner still whines ([why](#datasheet-driven-scoring-not-just-measurement)) |
 | `AUDIBLE_WEIGHT` | `0.25` | score penalty for an audible combo |
 | `SKIP_AUDIBLE` | `0` | never try or recommend an audible combo, instead of just penalizing it |
-| `DRY_RUN` | `0` | print the plan and ETA, do not move anything |
+| `DRY_RUN` | `0` | print the plan, its ranges and the ETA, do not move anything |
 
 **CHOPPER_FIND_SPEED** — resonance speed scan on stock registers (the tuned ones are set aside for the sweep and restored afterwards).
 
@@ -252,9 +259,10 @@ Unless the run keeps your registers or klipper_tmc_autotune manages the motor, t
 | `SPEED` | required | resonance speed, mm/s (or a `lo:hi` range) |
 | `MOTOR` | `A` | motor to tune: `a`/`b` (a = `stepper_x`, b = `stepper_y`); `x`/`y` also accepted |
 | `SEARCH` | `grid` | `grid` = full sweep (hours), `descent` = multi-start coordinate descent (minutes) |
-| `TBL` / `TOFF` / `HSTRT` / `HEND` | `0:3` / `1:8` / `0:7` / `0:15` | register ranges (`lo:hi` or a single value) |
+| `TBL` / `TOFF` / `HSTRT` / `HEND` | `1:3` / `1:8` / `0:7` / `0:15` | register ranges (`lo:hi` or a single value), as in `CHOPPER_TUNE` |
 | `TPFD` | off | TPFD range, TMC2240/5160 only |
-| `SEED_FROM` | — | start the descent from another dataset's winner (fast second motor) |
+| `MAX_HYSTERESIS` | `15` | the highest effective hysteresis the run tries, as in `CHOPPER_TUNE` |
+| `SEED_FROM` | — | start the descent from another dataset's winner (fast second motor); when that winner is outside the ranges, the descent starts from the nearest combination inside them |
 | `AUDIBLE_KHZ` / `AUDIBLE_WEIGHT` / `SKIP_AUDIBLE` | `30` / `0.25` / `0` | the audible limit, its penalty, and skipping instead, as in `CHOPPER_TUNE` |
 | `ITERATIONS` | `1` | repeats per combination |
 | `VALIDATE` | `3` | re-measure the top N candidates with extra runs, round after round until the top N holds, recommend from them, then measure the winner, Klipper defaults and your registers in turns, as in `CHOPPER_TUNE` (`0` = off: the rank 1, with no claim of a gain) |
@@ -264,9 +272,9 @@ Unless the run keeps your registers or klipper_tmc_autotune manages the motor, t
 | `DATASET` | new | pass an existing directory to resume it |
 | `NO_RAW` | `0` | do not keep raw samples (saves space, disables `RECOMPUTE`) |
 | `CSV` | `0` | classic `ACCELEROMETER_MEASURE` CSV capture instead of streaming |
-| `DRY_RUN` | `0` | plan and ETA only |
+| `DRY_RUN` | `0` | plan, its ranges and ETA only |
 
-**CHOPPER_ANALYZE** — offline ranking of a dataset.
+**CHOPPER_ANALYZE** — offline ranking of a dataset. It ranks only the combinations inside the ranges of the dataset's run.
 
 | parameter | default | meaning |
 |---|---|---|
@@ -278,7 +286,7 @@ Unless the run keeps your registers or klipper_tmc_autotune manages the motor, t
 | `APPLY` | `0` | apply the winner live via `SET_TMC_FIELD` (until Klipper restarts; on a motor without an enable pin of its own, toff returns to the config value at the next motors off and on) |
 | `SAVE` | `0` | write the winner of one run into the config (backup first) and restart Klipper. The run is the latest one, whichever motor it tuned, or the one `DATASET` names |
 
-**CHOPPER_DEMO** — plays the driver defaults against the saved/tuned registers, alternating so you can *hear* the difference and announcing each on the display and console. `MOTOR` (a/b, or **ab** = the default: **both motors together** in coordinated moves, like printing — a whole-printer before/after), `SPEED`, `ROUNDS`, `REPEATS`. `REPORT=1` prints the measured numbers (how much less vibration, per motor, with bars) one motor at a time instead of the audible show; `DEFAULT=tbl,toff,hstrt,hend` replaces the driver's stock registers in the defaults round (the show and the report; a TMC2240/5160 keeps its stock TPFD, and values the driver cannot take are refused before anything moves); `ITERATIONS` applies to the report.
+**CHOPPER_DEMO** — plays the driver defaults against the saved/tuned registers, alternating so you can *hear* the difference and announcing each on the display and console. `MOTOR` (a/b, or **ab** = the default: **both motors together** in coordinated moves, like printing — a whole-printer before/after), `SPEED` (one speed in mm/s for all motors; without it each motor takes the speed of its last tune), `ROUNDS`, `REPEATS`. Without `SPEED`, a motor with no tune gets a resonance scan first. Only the show of both motors together refuses to start in that case. `REPORT=1` prints the measured numbers (how much less vibration, per motor, with bars) one motor at a time instead of the audible show; `DEFAULT=tbl,toff,hstrt,hend` replaces the driver's stock registers in the defaults round (the show and the report; a TMC2240/5160 keeps its stock TPFD, and values the driver cannot take are refused before anything moves); `ITERATIONS` applies to the report.
 
 **CHOPPER_SAVE** — write the latest result of each motor into the config (backup first) and restart Klipper once. `MOTOR=A` saves motor A only; `B`, `E` (the extruder) and combinations like `AB` work the same way. Without `MOTOR` the command saves A, B and E. Before the restart the console shows one line per motor: the registers and the run they come from, or why the motor is not saved. `DRY_RUN=1` shows the same lines, writes nothing and does not restart Klipper. A motor is not saved when:
 
@@ -301,7 +309,7 @@ A run stopped before its first measurement does not count: the command takes the
 
 **CHOPPER_BELTS SWEEP=1** — the **diagonal response comparison**, kept as a *structural-change diagnostic*, not a tension gauge: it excites each belt's diagonal with Klipper's swept-sine `TEST_RESONANCES` and reports the response frequencies, the gap, and the per-belt change since the previous run. **Measured caveat:** a persistent gap can be structural asymmetry — on the reference rig a heavy overtension moved the response by 0 Hz — so it never orders "tighten belt X", and if nothing moved since the last run it says so. Use it to notice mechanics drifting over time; use the pluck (default) for tension. Needs `[resonance_tester]`; CoreXY/H-bot only. Parameters: `MIN_FREQ`, `MAX_FREQ`, `HZ_PER_SEC`, `TOLERANCE`.
 
-**CHOPPER_EXTRUDER** — tune the **extruder's** chopper. On a direct-drive head the E motor sits right next to the accelerometer, and its chopper matters exactly where the A/B motors' does: at the mid-band resonance (measured: filament 5 mm/s rang 3× above the neighbours and separated register configs by 27 %; off-resonance the field is flat). **Heats the hotend first** (default `TEMP=200` — right for PLA and its composites, workable for PETG; ABS owners pass `TEMP=240`) so the loaded filament can move — no unloading. The motion is a net-zero oscillation of a few mm of filament (never chews one spot, never drags melt into the cold zone; `FORCE_MOVE` bypasses Klipper's cold-extrusion guard, so the tool enforces its own). Flow: resonance scan over filament speeds on stock registers → the same multi-start register descent the axis tune uses, at the peak → top-3 validation → `SAVE=1` writes `[tmcXXXX extruder]` (backup first); the winner is also remembered, so `SAVE_LAST=1` saves it later **without re-running the heated tune**. `SAVE_LAST=1` does the same as `CHOPPER_SAVE MOTOR=E`. The heater is switched off on every exit path. `DEMO=1` plays Klipper defaults against the saved registers at the E resonance so you can hear the difference (heats too). Parameters: `TEMP`, `SPEED`, `MIN_SPEED`, `MAX_SPEED`, `AUDIBLE_KHZ`, `AUDIBLE_WEIGHT`, `SKIP_AUDIBLE`, `SAVE`, `SAVE_LAST`, `DEMO`, `DRY_RUN`.
+**CHOPPER_EXTRUDER** — tune the **extruder's** chopper. On a direct-drive head the E motor sits right next to the accelerometer, and its chopper matters exactly where the A/B motors' does: at the mid-band resonance (measured: filament 5 mm/s rang 3× above the neighbours and separated register configs by 27 %; off-resonance the field is flat). **Heats the hotend first** (default `TEMP=200` — right for PLA and its composites, workable for PETG; ABS owners pass `TEMP=240`) so the loaded filament can move — no unloading. The motion is a net-zero oscillation of a few mm of filament (never chews one spot, never drags melt into the cold zone; `FORCE_MOVE` bypasses Klipper's cold-extrusion guard, so the tool enforces its own). Flow: resonance scan over filament speeds on stock registers → the same multi-start register descent the axis tune uses, at the peak, over the same ranges as `CHOPPER_TUNE` except `TPFD` → top-3 validation → `SAVE=1` writes `[tmcXXXX extruder]` (backup first); the winner is also remembered, so `SAVE_LAST=1` saves it later **without re-running the heated tune**. `SAVE_LAST=1` does the same as `CHOPPER_SAVE MOTOR=E`. The heater is switched off on every exit path. `DEMO=1` plays Klipper defaults against the saved registers at the E resonance so you can hear the difference (heats too). Parameters: `TEMP`, `SPEED`, `MIN_SPEED`, `MAX_SPEED`, `TBL`, `TOFF`, `HSTRT`, `HEND`, `MAX_HYSTERESIS`, `AUDIBLE_KHZ`, `AUDIBLE_WEIGHT`, `SKIP_AUDIBLE`, `SAVE`, `SAVE_LAST`, `DEMO`, `DRY_RUN`.
 
 **CHOPPER_STOP** — abort a running tuning/show job; the tool restores the registers, leaves spreadCycle and re-homes before it exits.
 

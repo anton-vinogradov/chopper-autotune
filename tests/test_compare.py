@@ -5,8 +5,9 @@ import pytest
 
 from chopper_autotune import tmc
 from chopper_autotune.analyze import run_compare, spearman
-from chopper_autotune.collect import Range, build_plan
+from chopper_autotune.collect import build_plan
 from chopper_autotune.dataset import Dataset
+from chopper_autotune.tmc import Range
 
 DRIVER = tmc.DRIVERS['2209']
 
@@ -62,9 +63,9 @@ def test_compare_anticorrelated(tmp_path, capsys):
 
 
 def test_build_plan_skip_audible():
-    ranges = (Range(0, 3), Range(1, 8), Range(4, 4), Range(4, 4))
-    full = build_plan(DRIVER, *ranges, None, [58])
-    quiet = build_plan(DRIVER, *ranges, None, [58], tmc.Hearing(skip=True))
+    space = tmc.Space(Range(0, 3), Range(1, 8), Range(4, 4), Range(4, 4))
+    full = build_plan(DRIVER, space, [58])
+    quiet = build_plan(DRIVER, space, [58], tmc.Hearing(skip=True))
     assert len(quiet) < len(full)
     assert all(not tmc.Hearing().audible(combo, DRIVER) for combo, _ in quiet)
     # tbl3/toff8 (18.8 kHz on the 2209 blank table) is in the full plan but not the quiet one

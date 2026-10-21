@@ -1,7 +1,8 @@
 import pytest
 
 from chopper_autotune import tmc
-from chopper_autotune.collect import Range, build_plan, measurement_id, steady_window, travel_for
+from chopper_autotune.collect import build_plan, measurement_id, steady_window, travel_for
+from chopper_autotune.tmc import Range
 
 
 def test_range_parse():
@@ -13,8 +14,8 @@ def test_range_parse():
 
 
 def test_build_plan_filters_constraints():
-    plan = build_plan(tmc.DRIVERS['2209'], Range(0, 3), Range(1, 2), Range(0, 7), Range(0, 15),
-                      None, [55])
+    plan = build_plan(tmc.DRIVERS['2209'], tmc.Space(Range(0, 3), Range(1, 2), Range(0, 7),
+                                                     Range(0, 15)), [55])
     assert all(tmc.validate(combo) is None for combo, _ in plan)
     assert all(combo.tpfd is None for combo, _ in plan)
     # 118 valid hstrt/hend pairs (raw sum <= 18); toff=1 allowed only for tbl 2..3
@@ -22,20 +23,20 @@ def test_build_plan_filters_constraints():
 
 
 def test_build_plan_keeps_tmc2660_within_its_config_limit():
-    plan = build_plan(tmc.DRIVERS['2660'], Range(2, 2), Range(4, 4), Range(0, 7), Range(0, 15),
-                      None, [55])
+    plan = build_plan(tmc.DRIVERS['2660'], tmc.Space(Range(2, 2), Range(4, 4), Range(0, 7),
+                                                     Range(0, 15)), [55])
     assert plan and max(c.hstrt + c.hend for c, _ in plan) == 15
 
 
 def test_build_plan_tpfd_only_when_supported():
-    args = (Range(0, 0), Range(3, 3), Range(0, 0), Range(0, 0), Range(0, 1), [55])
+    args = (tmc.Space(Range(0, 0), Range(3, 3), Range(0, 0), Range(0, 0), Range(0, 1)), [55])
     assert {c.tpfd for c, _ in build_plan(tmc.DRIVERS['5160'], *args)} == {0, 1}
     assert {c.tpfd for c, _ in build_plan(tmc.DRIVERS['2209'], *args)} == {None}
 
 
 def test_build_plan_multiplies_speeds():
-    plan = build_plan(tmc.DRIVERS['2209'], Range(0, 0), Range(3, 3), Range(0, 0), Range(0, 0),
-                      None, [40, 41, 42])
+    plan = build_plan(tmc.DRIVERS['2209'], tmc.Space(Range(0, 0), Range(3, 3), Range(0, 0),
+                                                     Range(0, 0)), [40, 41, 42])
     assert [speed for _, speed in plan] == [40, 41, 42]
 
 

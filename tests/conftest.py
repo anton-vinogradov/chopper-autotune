@@ -98,9 +98,12 @@ def stub_printer(tmp_path, monkeypatch):
     """A CoreXY with TMC2209s for the real tune, scan and collect: the hardware and the
     measurements are stubbed. `log` keeps the g-code sent and a 'MOVE' per measured
     move, `measured` the registers each register move ran, `roots` the datasets in the
-    order the runs made them; the quietest chopper is toff 5, hend 6, tbl 0."""
+    order the runs made them; `magnitude(combo, iteration)` is what a register move
+    measures, by default quietest at toff 5, hend 6, tbl 0."""
     printer = SimpleNamespace(log=[], measured=[], roots=[], settings={})
     printer.kl = lambda: StubKl(printer)
+    printer.magnitude = lambda combo, iteration: \
+        100.0 + abs(combo.toff - 5) * 10 + abs(combo.hend - 6) * 7 + combo.tbl * 3
 
     def dataset_root(stem):
         printer.roots.append(tmp_path / ('%02d_%s' % (len(printer.roots), stem)))
@@ -142,8 +145,7 @@ def stub_printer(tmp_path, monkeypatch):
         record = {'id': collect.measurement_id(combo, speed, iteration, direction), 'kind': 'move',
                   **combo.fields(), 'speed': speed, 'direction': direction,
                   'iteration': iteration, 'status': 'ok',
-                  'score': {'median_magnitude': 100.0 + abs(combo.toff - 5) * 10
-                            + abs(combo.hend - 6) * 7 + combo.tbl * 3}}
+                  'score': {'median_magnitude': printer.magnitude(combo, iteration)}}
         ds.append(record)
         return record
 

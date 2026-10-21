@@ -414,8 +414,9 @@ def test_a_current_that_stays_names_no_next_step(monkeypatch, capsys):
 
 @pytest.mark.parametrize('argv', [
     ['tune'],
-    ['tune', '--motor', 'b', '--speed', '40:70', '--save', '--iterations', '2', '--audible-khz',
-     '31.5', '--audible-weight', '0', '--no-skip-audible', '--accel', '2500', '--no-raw', '--csv'],
+    ['tune', '--motor', 'b', '--speed', '40', '--save', '--iterations', '2', '--tbl', '0:3',
+     '--hend', '4', '--max-hysteresis', '16', '--tpfd', '0:7', '--audible-khz', '31.5',
+     '--audible-weight', '0', '--no-skip-audible', '--accel', '2500', '--no-raw', '--csv'],
     ['current', '--motor', 'a', '--margin', '2.5', '--per-motor', '--save', '--dry-run'],
     ['save', '--motor', 'be', '--skip-audible', '--url', 'http://printer:7125'],
 ])

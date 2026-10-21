@@ -5,7 +5,7 @@ import pytest
 import chopper_autotune.demo as demo_module
 from chopper_autotune import tmc
 from chopper_autotune.cli import _chopper
-from chopper_autotune.collect import Hardware, Range
+from chopper_autotune.collect import Hardware
 from chopper_autotune.demo import bar, demo
 
 # objects/query of the live limits (live_limits)
@@ -50,7 +50,7 @@ def test_demo_rejects_when_not_yet_tuned(monkeypatch):
 def test_demo_dry_run_reports_plan(monkeypatch, capsys):
     monkeypatch.setattr(demo_module, 'detect_hardware',
                         lambda kl, axis: make_hw({'tbl': 2, 'toff': 1, 'hstrt': 4, 'hend': 14}))
-    assert demo(None, demo_args(speed=Range(58, 58))) == 0
+    assert demo(None, demo_args(speed=58)) == 0
     out = capsys.readouterr().out
     assert 'Demo on motor A' in out
     assert 'defaults tbl2_toff3_hstrt5_hend0 vs tuned tbl2_toff1_hstrt4_hend14' in out
@@ -59,9 +59,9 @@ def test_demo_dry_run_reports_plan(monkeypatch, capsys):
 def test_demo_defaults_to_showcase_report_switches_to_numbers(monkeypatch, capsys):
     monkeypatch.setattr(demo_module, 'detect_hardware',
                         lambda kl, axis: make_hw({'tbl': 2, 'toff': 1, 'hstrt': 4, 'hend': 14}))
-    demo(None, demo_args(speed=Range(58, 58)))                     # report=False → audible show
+    demo(None, demo_args(speed=58))                     # report=False → audible show
     assert 'live showcase' in capsys.readouterr().out
-    demo(None, demo_args(speed=Range(58, 58), report=True))        # REPORT=1 → measured numbers
+    demo(None, demo_args(speed=58, report=True))        # REPORT=1 → measured numbers
     assert 'measure' in capsys.readouterr().out
 
 
