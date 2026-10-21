@@ -214,7 +214,7 @@ def tune_at(axis: str, speed: int, args=None) -> str:
     """CHOPPER_TUNE of the motor on `axis` at `speed`, with the other parameters of `args`,
     a CHOPPER_TUNE run, kept."""
     from .cli import command_line
-    return command_line('tune', args, axis=axis, speed=tmc.Range(speed, speed))
+    return command_line('tune', args, axis=axis, speed=speed)
 
 
 def no_peak(motor: str, tune: str) -> str:

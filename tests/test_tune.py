@@ -1,10 +1,9 @@
-import argparse
 import time
 
 import pytest
 
 from chopper_autotune import tmc, tune
-from chopper_autotune.collect import Range
+from chopper_autotune.cli import build_parser
 from chopper_autotune.dataset import Dataset
 
 
@@ -15,12 +14,11 @@ def two_wheel_drive(monkeypatch):
 
 
 def tune_args(**overrides):
-    base = {'axis': 'xy', 'speed': None, 'save': False, 'iterations': 1,
-            'audible_khz': None, 'audible_weight': 0.25, 'skip_audible': False,
-            'accel': None, 'no_raw': False, 'csv': False,
-            'socket': None, 'url': 'http://x', 'dry_run': False}
-    base.update(overrides)
-    return argparse.Namespace(**base)
+    # through the real parser, so a new parameter of CHOPPER_TUNE reaches these runs
+    args = build_parser().parse_args(['tune', '--url', 'http://x'])
+    for name, value in overrides.items():
+        setattr(args, name, value)
+    return args
 
 
 def make_dataset(tmp_path, axis, toff, winner=True):
@@ -57,8 +55,8 @@ def test_tune_runs_both_axes_and_seeds_second(tmp_path, monkeypatch, capsys):
 
     assert tune.run_tune(tune_args()) == 0
     assert calls['scan'] == ['x', 'y']
-    assert calls['collect'] == [('x', Range(58, 58), None),
-                                ('y', Range(52, 52), roots['x'])]
+    assert calls['collect'] == [('x', tmc.Range(58, 58), None),
+                                ('y', tmc.Range(52, 52), roots['x'])]
     # the motors still have work after each stage: only the tune's own verdict pops up
     assert calls['popups'] == [False] * 4
     out = capsys.readouterr().out
@@ -76,7 +74,7 @@ def test_tune_single_axis_with_explicit_speed(tmp_path, monkeypatch):
     monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: pytest.fail('scan must be skipped'))
     monkeypatch.setattr(tune, 'collect', lambda kl, args, popup: (0, roots[args.axis]))
 
-    assert tune.run_tune(tune_args(axis='y', speed=Range(52, 52))) == 0
+    assert tune.run_tune(tune_args(axis='y', speed=52)) == 0
 
 
 def test_tune_save_saves_what_save_with_the_motors_of_the_run_saves(tmp_path, monkeypatch):
@@ -177,7 +175,7 @@ def test_tune_reports_the_outcome_on_screen(tmp_path, monkeypatch, capsys):
     assert tune.run_tune(tune_args()) == 0
     assert finals and finals[-1].startswith('Tune done: A 0/8/7/5 · B 0/2/7/5')
     assert finals[-1].endswith(' — to save: CHOPPER_SAVE MOTOR=AB')
-    assert tune.run_tune(tune_args(axis='y', speed=Range(52, 52))) == 0
+    assert tune.run_tune(tune_args(axis='y', speed=52)) == 0
     assert finals[-1].endswith(' — to save: CHOPPER_SAVE MOTOR=B')
     # a motor whose own registers held against the winner says so
     Dataset.open(roots['y']).update_manifest(kept=True, winner={'tbl': 0, 'toff': 2, 'hstrt': 7,

@@ -95,7 +95,7 @@ def showcase_together(kl, args) -> int:
     span = min(hw['x'].axis_span, hw['y'].axis_span)
     speed = {}
     for axis in MOTORS:
-        speed[axis] = args.speed.lo if args.speed is not None else known_speed(axis)
+        speed[axis] = args.speed if args.speed is not None else known_speed(axis)
         if speed[axis] is None:
             # a silent fallback speed would play the show off resonance and prove nothing
             raise SystemExit('no tuned speed recorded for motor %s — run CHOPPER_TUNE '
@@ -217,7 +217,7 @@ def demo(kl: Klippy, args) -> int:
                          '(tune and save the motor first)')
 
     if args.speed is not None:
-        speed = args.speed.lo
+        speed = args.speed
     else:
         speed = known_speed(args.axis)
         if speed is not None:

@@ -76,13 +76,16 @@ def aggregate(ds: Dataset, recompute: bool, trim_fraction: float) -> 'list[dict]
     } for key, values in groups.items()]
 
 
-def rank(aggregates: 'list[dict]', driver: tmc.Driver, hearing: tmc.Hearing) -> 'list[dict]':
+def rank(aggregates: 'list[dict]', driver: tmc.Driver, hearing: tmc.Hearing,
+         space: 'tmc.Space | None' = None) -> 'list[dict]':
     """Best first. Combos this driver's config cannot hold (a TMC2660 hysteresis sum
-    measured before the limit existed) and the audible ones the hearing skips are left
-    out: nothing may recommend them."""
+    measured before the limit existed), the audible ones the hearing skips and the ones
+    outside the run's ranges (a resumed dataset measured under others) are left out:
+    nothing may recommend them."""
     from .search import penalized_score
     aggregates = [a for a in aggregates if tmc.validate(a['chopper'], driver) is None
-                  and not hearing.skips(a['chopper'], driver)]
+                  and not hearing.skips(a['chopper'], driver)
+                  and not (space and space.outside(a['chopper']))]
     for a in aggregates:
         a['chopper_freq_hz'] = tmc.chopper_freq_hz(a['chopper'], driver)
         a['audible'] = hearing.audible(a['chopper'], driver)
@@ -679,10 +682,13 @@ def run_compare(args) -> int:
         if not aggregates:
             raise SystemExit('no successful measurements in %s' % path)
         hearing = tmc.Hearing.of(args, manifest)
-        ranked = rank(aggregates, driver, hearing)
+        space = tmc.Space.recorded(manifest)
+        ranked = rank(aggregates, driver, hearing, space)
         if not ranked:
-            raise SystemExit('no measured combination in %s fits the tmc%s limits%s'
-                             % (path, driver.name, ' and SKIP_AUDIBLE' if hearing.skip else ''))
+            raise SystemExit('no measured combination in %s fits the tmc%s limits%s%s'
+                             % (path, driver.name,
+                                ' and the ranges of the dataset\'s last run' if space else '',
+                                ' and SKIP_AUDIBLE' if hearing.skip else ''))
         winner = ranked[0]
         sides.append({'path': path, 'winner': winner, 'hearing': hearing,
                       'magnitudes': {a['chopper']: a['magnitude'] for a in aggregates}})
@@ -752,14 +758,9 @@ def run_status(args) -> int:
 
     total = args.total or manifest.get('total_moves')
     if not total and manifest.get('search') == 'grid' and 'ranges' in manifest:
-        from .collect import Range, VALIDATE_EXTRA_ITERATIONS, build_plan
-        ranges = manifest['ranges']
-        plan = build_plan(tmc.DRIVERS[manifest['driver']],
-                          Range(*ranges['tbl']), Range(*ranges['toff']),
-                          Range(*ranges['hstrt']), Range(*ranges['hend']),
-                          Range(*ranges['tpfd']) if ranges.get('tpfd') else None,
-                          manifest.get('speeds', [0]),
-                          tmc.Hearing.of(recorded=manifest))
+        from .collect import VALIDATE_EXTRA_ITERATIONS, build_plan
+        plan = build_plan(tmc.DRIVERS[manifest['driver']], tmc.Space.recorded(manifest),
+                          manifest.get('speeds', [0]), tmc.Hearing.of(recorded=manifest))
         total = (len(plan) * manifest.get('iterations', 1) * 2
                  + manifest.get('validate', 0) * VALIDATE_EXTRA_ITERATIONS
                  * len(manifest.get('speeds', [0])) * 2)
@@ -780,17 +781,25 @@ def run_analyze(args) -> int:
     if not aggregates:
         raise SystemExit('no successful measurements in %s' % dataset)
     hearing = tmc.Hearing.of(args, manifest)
-    ranked = rank(aggregates, driver, hearing)
+    space = tmc.Space.recorded(manifest)
+    ranked = rank(aggregates, driver, hearing, space)
     unloadable = sum(1 for a in aggregates if tmc.validate(a['chopper'], driver) is not None)
     if unloadable:
         print('%d measured combos are left out: Klipper would not load them on tmc%s'
               % (unloadable, driver.name))
-    if len(aggregates) - unloadable > len(ranked):
+    outside = sum(1 for a in aggregates if space and space.outside(a['chopper'])
+                  and tmc.validate(a['chopper'], driver) is None)
+    if outside:
+        print('%d measured combos are left out: they are outside the ranges of the last run '
+              'on this dataset, %s' % (outside, space.text()))
+    if len(aggregates) - unloadable - outside > len(ranked):
         print('%d measured combos are left out: their chopper runs below %g kHz (SKIP_AUDIBLE)'
-              % (len(aggregates) - unloadable - len(ranked), hearing.limit_hz / 1000))
+              % (len(aggregates) - unloadable - outside - len(ranked), hearing.limit_hz / 1000))
     if not ranked:
-        raise SystemExit('no measured combination in %s fits the tmc%s limits%s'
-                         % (dataset, driver.name, ' and SKIP_AUDIBLE' if hearing.skip else ''))
+        raise SystemExit('no measured combination in %s fits the tmc%s limits%s%s'
+                         % (dataset, driver.name,
+                            ' and the ranges of the dataset\'s last run' if outside else '',
+                            ' and SKIP_AUDIBLE' if hearing.skip else ''))
 
     print('%s: %d configurations, driver tmc%s on %s\n'
           % (dataset, len(ranked), driver.name, manifest['stepper']))

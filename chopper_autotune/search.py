@@ -7,25 +7,26 @@ from dataclasses import replace
 from itertools import product
 
 from . import tmc
-from .collect import Range
 from .dataset import Dataset
+from .tmc import Range
 
 
-def coordinate_descent(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range, hend: Range,
-                       tpfd: 'Range | None', start: tmc.Chopper, evaluate, rounds: int = 2) -> tmc.Chopper:
+def coordinate_descent(driver: tmc.Driver, space: tmc.Space, start: tmc.Chopper, evaluate,
+                       rounds: int = 2) -> tmc.Chopper:
     """Greedy descent in the AN-001 tuning order: TBL+TOFF jointly, then HSTRT, HEND, then TPFD.
 
     evaluate(combo) -> penalized score, lower is better; expected to cache, so
     re-visiting a combo is free. TBL and TOFF interact strongly (both set the
     chopper frequency), hence the joint sweep; the hysteresis pair is separable
-    enough for per-field passes, repeated while the optimum keeps moving.
+    enough for per-field passes, repeated while the optimum keeps moving. Every
+    candidate after `start` is one of the space.
     """
     best = start
     best_score = evaluate(best)
 
     def consider(candidate: tmc.Chopper):
         nonlocal best, best_score
-        if tmc.validate(candidate, driver) is not None:
+        if tmc.validate(candidate, driver) is not None or space.outside(candidate):
             return
         score = evaluate(candidate)
         if score < best_score:
@@ -33,63 +34,63 @@ def coordinate_descent(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range
 
     for _ in range(rounds):
         previous = best
-        for t, o in product(tbl.values(), toff.values()):
+        for t, o in product(space.tbl.values(), space.toff.values()):
             consider(replace(best, tbl=t, toff=o))
-        for value in hstrt.values():
+        for value in space.hstrt.values():
             consider(replace(best, hstrt=value))
-        for value in hend.values():
+        for value in space.hend.values():
             consider(replace(best, hend=value))
         if best == previous:
             break
 
-    if driver.has_tpfd and tpfd is not None:
-        for value in tpfd.values():
+    if driver.has_tpfd and space.tpfd is not None:
+        for value in space.tpfd.values():
             consider(replace(best, tpfd=value))
     return best
 
 
-def _spanning_starts(tbl: Range, toff: Range, hstrt: Range, hend: Range,
-                     driver: 'tmc.Driver | None' = None) -> 'list[tmc.Chopper]':
+def _spanning_starts(space: tmc.Space, driver: tmc.Driver) -> 'list[tmc.Chopper]':
     """Seeds spread across the (toff, hend) plane. Phase A of the descent sweeps
     (tbl, toff) at a *fixed* hend, so which toff looks best depends on the starting
     hend — a single low-hend start hides the low-toff/high-hend valley. Starting
-    from a few hend (and toff) levels lets some run see it."""
+    from a few hend (and toff) levels lets some run see it. A level the space or the
+    driver does not take is seeded at the nearest combo they do."""
     def levels(r: Range):
         return sorted({r.lo, (r.lo + r.hi) // 2, r.hi})
-    tbl0, hstrt0 = tbl.lo, (hstrt.lo + hstrt.hi) // 2
-    seeds = [tmc.Chopper(tbl0, o, hstrt0, e) for o in levels(toff) for e in levels(hend)]
-    return [c for c in seeds if tmc.validate(c, driver) is None]
+    tbl0, hstrt0 = space.tbl.lo, (space.hstrt.lo + space.hstrt.hi) // 2
+    seeds = (space.nearest(tmc.Chopper(tbl0, o, hstrt0, e), driver)
+             for o in levels(space.toff) for e in levels(space.hend))
+    return list(dict.fromkeys(c for c in seeds if c is not None))
 
 
-def multi_start_descent(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range, hend: Range,
-                        tpfd: 'Range | None', baseline: tmc.Chopper, evaluate,
+def multi_start_descent(driver: tmc.Driver, space: tmc.Space, baseline: tmc.Chopper, evaluate,
                         rounds: int = 2) -> tmc.Chopper:
     """Coordinate descent from several seeds; the best result wins. evaluate caches,
     so seeds that converge to the same region cost nothing extra."""
     # the seeds take the start's tpfd spelling: a None next to an explicit value would be
     # the same physical registers under two cache keys
-    seeds = [replace(c, tpfd=baseline.tpfd) for c in _spanning_starts(tbl, toff, hstrt, hend, driver)]
+    seeds = [replace(c, tpfd=baseline.tpfd) for c in _spanning_starts(space, driver)]
     starts = [baseline] + [c for c in seeds if c != baseline]
     best, best_score = None, float('inf')
     for start in starts:
-        candidate = coordinate_descent(driver, tbl, toff, hstrt, hend, tpfd, start, evaluate, rounds)
+        candidate = coordinate_descent(driver, space, start, evaluate, rounds)
         score = evaluate(candidate)
         if best is None or score < best_score:
             best, best_score = candidate, score
     return best
 
 
-def descent_budget(driver: tmc.Driver, tbl: Range, toff: Range, hstrt: Range, hend: Range,
-                   tpfd: 'Range | None', rounds: int = 2) -> int:
+def descent_budget(driver: tmc.Driver, space: tmc.Space, rounds: int = 2) -> int:
     """Rough upper bound of unique candidates the multi-start descent evaluates.
 
     Phase A's (tbl, toff) sweep is re-done once per distinct starting hend, so the
     cost scales with the number of hend seed levels; seeds sharing a hend converge
     into the same cached region and add little."""
-    pairs = sum(1 for t, o in product(tbl.values(), toff.values()) if not (o == 1 and t < 2))
-    per_round = pairs + len(hstrt.values()) + len(hend.values())
-    tpfd_count = len(tpfd.values()) if driver.has_tpfd and tpfd is not None else 0
-    hend_levels = len({hend.lo, (hend.lo + hend.hi) // 2, hend.hi})
+    pairs = sum(1 for t, o in product(space.tbl.values(), space.toff.values())
+                if not (o == 1 and t < 2))
+    per_round = pairs + len(space.hstrt.values()) + len(space.hend.values())
+    tpfd_count = len(space.tpfd.values()) if driver.has_tpfd and space.tpfd is not None else 0
+    hend_levels = len({space.hend.lo, (space.hend.lo + space.hend.hi) // 2, space.hend.hi})
     return hend_levels * rounds * per_round + tpfd_count
 
 
@@ -166,11 +167,11 @@ def run_simulate(args) -> int:
                          % args.dataset)
 
     combos = list(lookup)
-    ranges = {field: Range(min(getattr(c, field) for c in combos),
-                           max(getattr(c, field) for c in combos))
-              for field in ('tbl', 'toff', 'hstrt', 'hend')}
     tpfd_values = [c.tpfd for c in combos if c.tpfd is not None]
-    tpfd = Range(min(tpfd_values), max(tpfd_values)) if tpfd_values else None
+    space = tmc.Space(*(Range(min(getattr(c, field) for c in combos),
+                              max(getattr(c, field) for c in combos))
+                        for field in ('tbl', 'toff', 'hstrt', 'hend')),
+                      Range(min(tpfd_values), max(tpfd_values)) if tpfd_values else None)
 
     registers = manifest.get('baseline_registers') or manifest.get('registers') \
         or {'tbl': 2, 'toff': 3, 'hstrt': 5, 'hend': 0}
@@ -191,8 +192,7 @@ def run_simulate(args) -> int:
         lookups.append(combo)
         return lookup[combo]
 
-    best = multi_start_descent(driver, ranges['tbl'], ranges['toff'], ranges['hstrt'],
-                               ranges['hend'], tpfd, start, evaluate)
+    best = multi_start_descent(driver, space, start, evaluate)
     if best not in lookup:
         raise SystemExit('replay could not reach any measured combo from start %s' % start.label())
     global_best = min(lookup, key=lookup.get)

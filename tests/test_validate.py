@@ -1,6 +1,5 @@
-import argparse
-
 from chopper_autotune import tmc
+from chopper_autotune.cli import build_parser
 from chopper_autotune.collect import (Hardware, Screen, VALIDATE_EXTRA_ITERATIONS,
                                       measurement_id, validate_top)
 from chopper_autotune.dataset import Dataset
@@ -26,8 +25,11 @@ def make_hw(kl):
 
 
 def make_args(validate=2):
-    return argparse.Namespace(validate=validate, iterations=1, trim=0.1,
-                              audible_weight=0.25, source='stream')
+    # the datasets below hold TBL 0 and TOFF up to 15: the run's ranges take them in
+    args = build_parser().parse_args(['collect', '--speed', '58', '--tbl', '0:3', '--toff', '1:15',
+                                      '--validate', str(validate)])
+    args.trim, args.source = 0.1, 'stream'
+    return args
 
 
 def seed_dataset(tmp_path):
@@ -183,11 +185,11 @@ def test_descent_rechecks_until_its_recommendation_tops_the_table(tmp_path, monk
     monkeypatch.setattr(collect_module, 'run_measurement', lucky_first)
     ds = Dataset.create(tmp_path / 'ds', {})
     kl = FakeKl()
-    args = argparse.Namespace(tbl=tmc.Range(1, 2), toff=tmc.Range(2, 5), hstrt=tmc.Range(0, 3),
-                              hend=tmc.Range(0, 6), validate=3, iterations=1, trim=0.1,
-                              seed_from=None, audible_weight=0.25, source='stream')
-    collect_module.run_descent(kl, make_hw(kl), ds, args, None, [58], 70.0, 1000, set(),
-                               lambda d, t: None, Screen(kl, display=True))
+    args = build_parser().parse_args(['collect', '--speed', '58', '--tbl', '1:2', '--toff', '2:5',
+                                      '--hstrt', '0:3', '--hend', '0:6'])
+    args.trim, args.source = 0.1, 'stream'
+    collect_module.run_descent(kl, make_hw(kl), ds, args, tmc.Space.of(args), [58], 70.0, 1000,
+                               set(), lambda d, t: None, Screen(kl, display=True))
 
     from chopper_autotune.analyze import aggregate, rank
     ranked = rank(aggregate(ds, False, 0.1), tmc.DRIVERS['2209'], tmc.Hearing())
