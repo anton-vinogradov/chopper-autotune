@@ -195,15 +195,22 @@ def test_save_on_an_autotune_extruder_is_refused_before_the_heat_up(monkeypatch)
         extruder_mod.extruder_tune(kl, SimpleNamespace(save_last=False, save=True, temp=200.0))
     assert scripts == []                                 # no M104: nothing heated
     # SAVE_LAST=1 persists nothing either
+    from chopper_autotune import analyze
+    from chopper_autotune.cli import build_parser
+    from chopper_autotune.dataset import save_json
     state = {'driver': '2209', 'fields': {'tbl': 1, 'toff': 3, 'hstrt': 5, 'hend': 2}}
-    monkeypatch.setattr(extruder_mod, 'load_winner_state', lambda: state)
+    save_json(extruder_mod.STATE, state)
+    mk = SimpleNamespace(settings=kl.settings, accepted_commands=lambda: None, gcode=scripts.append)
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    save_last = build_parser().parse_args(['extruder', '--save-last'])
     with pytest.raises(SystemExit, match=r'not saving \[tmc2209 extruder\]'):
-        extruder_mod.extruder_tune(kl, SimpleNamespace(save_last=True, save=False, url='http://x'))
+        extruder_mod.extruder_tune(kl, save_last)
     # autotune gone since: a winner measured under it is still not saved
-    state['autotune'] = 'silent'
-    kl.settings = lambda: {'tmc2209 extruder': {}, 'extruder': {}}
+    save_json(extruder_mod.STATE, dict(state, autotune='silent'))
+    mk.settings = lambda: {'tmc2209 extruder': {}, 'extruder': {}}
     with pytest.raises(SystemExit, match='measured under autotune; the log says what to do'):
-        extruder_mod.extruder_tune(kl, SimpleNamespace(save_last=True, save=False, url='http://x'))
+        extruder_mod.extruder_tune(kl, save_last)
+    assert 'RESTART' not in scripts
 
 
 def test_autotunes_extruder_is_read_live_and_its_spreadcycle_kept():

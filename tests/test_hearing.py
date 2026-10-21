@@ -266,16 +266,21 @@ def test_analyze_names_registers_the_run_kept(tmp_path, capsys):
 
 
 def save_latest(monkeypatch, tmp_path, argv, extruder_state=None):
-    """CHOPPER_SAVE over the datasets in tmp_path; what it hands run_save, or None."""
+    """CHOPPER_SAVE over the datasets in tmp_path and the stored extruder winner; what it
+    hands run_save, or None."""
     from types import SimpleNamespace
 
-    from chopper_autotune import analyze
-    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: sorted(tmp_path.iterdir()))
-    monkeypatch.setattr('chopper_autotune.extruder.load_winner_state', lambda: extruder_state)
-    monkeypatch.setattr(analyze, 'Moonraker', lambda url: SimpleNamespace(settings=lambda: {}))
+    from chopper_autotune import analyze, extruder
+    from chopper_autotune.dataset import save_json
+    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: sorted(
+        path for path in tmp_path.iterdir() if (path / 'manifest.json').is_file()))
+    if extruder_state:
+        save_json(extruder.STATE, extruder_state)
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: SimpleNamespace(
+        settings=lambda: {}, accepted_commands=lambda: None, gcode=lambda script: None))
     saved = {}
-    monkeypatch.setattr(analyze, 'run_save', lambda mk, items, extruder_state=None: saved.update(
-        items=items, extruder=extruder_state))
+    monkeypatch.setattr(analyze, 'run_save', lambda mk, items, extruder_state=None, lines=():
+                        saved.update(items=items, extruder=extruder_state))
     analyze.run_save_latest(build_parser().parse_args(['save', *argv]))
     return saved
 
@@ -297,8 +302,7 @@ def test_save_never_falls_back_to_an_older_run_when_the_hearing_skips_the_newest
     with pytest.raises(SystemExit, match=r'^motor A: re-run CHOPPER_TUNE with AUDIBLE_KHZ=31: '
                                          r'SKIP_AUDIBLE skips all of 02_new$'):
         save_latest(monkeypatch, tmp_path, ['--audible-khz', '31', '--skip-audible'])
-    out = capsys.readouterr().out
-    assert 'NOT saving 02_new' in out and '01_old' not in out
+    assert '01_old' not in capsys.readouterr().out
 
 
 def test_save_and_save_last_keep_an_extruder_winner_the_hearing_skips(monkeypatch, tmp_path):
@@ -306,10 +310,11 @@ def test_save_and_save_last_keep_an_extruder_winner_the_hearing_skips(monkeypatc
     whining = {'driver': '2209', 'fields': {'tbl': 3, 'toff': 7, 'hstrt': 0, 'hend': 0},
                **tmc.Hearing().manifest_fields()}
     assert save_latest(monkeypatch, tmp_path, [], whining)['extruder'] == whining
-    with pytest.raises(SystemExit, match=r'runs below 30 kHz \(SKIP_AUDIBLE\)'):
+    with pytest.raises(SystemExit, match=r'^motor E: re-run CHOPPER_EXTRUDER with AUDIBLE_KHZ=30: '
+                                         r'SKIP_AUDIBLE skips its stored winner '
+                                         r'tbl3_toff7_hstrt0_hend0, which runs below 30 kHz$'):
         save_latest(monkeypatch, tmp_path, ['--skip-audible'], whining)
-    monkeypatch.setattr(extruder, 'load_winner_state', lambda: whining)
-    with pytest.raises(SystemExit, match=r'stored extruder winner .* runs below 30 kHz'):
+    with pytest.raises(SystemExit, match=r'stored winner .* runs below 30 kHz'):
         extruder.extruder_tune(None, build_parser().parse_args(['extruder', '--save-last',
                                                                 '--skip-audible']))
 
@@ -345,7 +350,7 @@ def test_an_extruder_winner_hears_as_its_tune_did(monkeypatch, tmp_path):
     before = {'driver': '2209', 'fields': fields}                        # heard at 20 kHz
     assert save_latest(monkeypatch, tmp_path, ['--skip-audible'], before)['extruder'] == before
     tuned = dict(before, **tmc.Hearing(31000).manifest_fields())
-    with pytest.raises(SystemExit, match=r'runs below 31 kHz \(SKIP_AUDIBLE\)'):
+    with pytest.raises(SystemExit, match=r'AUDIBLE_KHZ=31: .* runs below 31 kHz$'):
         save_latest(monkeypatch, tmp_path, ['--skip-audible'], tuned)
 
 
@@ -386,7 +391,9 @@ def test_the_extruder_tune_remembers_its_hearing_and_save_last_uses_it(monkeypat
         ['extruder', '--speed', '5', '--audible-khz', '31', '--yes']))
     assert tmc.Hearing.of(recorded=extruder.load_winner_state()) == tmc.Hearing(31000)
     # SAVE_LAST hears as the tune did, at 31 kHz, not at the default 30
+    monkeypatch.setattr('chopper_autotune.analyze.Moonraker', lambda url: SimpleNamespace(
+        settings=lambda: {}, accepted_commands=lambda: None, gcode=lambda script: None))
     monkeypatch.setattr('chopper_autotune.analyze._persist', lambda *args: pytest.fail('saved'))
-    with pytest.raises(SystemExit, match=r'runs below 31 kHz \(SKIP_AUDIBLE\)'):
+    with pytest.raises(SystemExit, match=r'AUDIBLE_KHZ=31: .* runs below 31 kHz$'):
         extruder.extruder_tune(kl, build_parser().parse_args(['extruder', '--save-last',
                                                               '--skip-audible']))

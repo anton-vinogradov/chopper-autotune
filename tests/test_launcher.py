@@ -113,6 +113,15 @@ def test_no_failure_report_through_klipper_in_a_foreground_run(monkeypatch):
     assert calls == [(None,)]
 
 
+def launched(tmp_path, script: str, args: 'list[str]') -> 'list[str]':
+    """What `script` hands run.sh for the macro's `args`."""
+    shutil.copy(os.path.join(REPO, script), str(tmp_path))
+    (tmp_path / 'run.sh').write_text('#!/bin/bash\necho "$@" > "$(dirname "$0")/called"\n')
+    os.chmod(str(tmp_path / 'run.sh'), 0o755)
+    subprocess.run(['bash', str(tmp_path / script)] + args, check=True)
+    return (tmp_path / 'called').read_text().split()
+
+
 @pytest.mark.parametrize('args, detached', [
     (['APPLY=1'], True), (['apply=On'], True), (['SAVE=yes'], True), (['--apply'], True),
     # APPLY=0 is no apply: the table stays in the console
@@ -120,20 +129,29 @@ def test_no_failure_report_through_klipper_in_a_foreground_run(monkeypatch):
 ])
 def test_analyze_detaches_only_an_apply_or_a_save(tmp_path, args, detached):
     # APPLY/SAVE send G-code back while RUN_SHELL_COMMAND holds Klipper's queue: detached
-    shutil.copy(os.path.join(REPO, 'analyze.sh'), str(tmp_path))
-    (tmp_path / 'run.sh').write_text('#!/bin/bash\necho "$@" > "$(dirname "$0")/called"\n')
-    os.chmod(str(tmp_path / 'run.sh'), 0o755)
-    subprocess.run(['bash', str(tmp_path / 'analyze.sh')] + args, check=True)
-    called = (tmp_path / 'called').read_text().split()
+    called = launched(tmp_path, 'analyze.sh', args)
     assert (called[0] != '--sync') is detached and called[called.index('analyze'):] == ['analyze'] + args
 
 
-def test_analyze_takes_the_yes_values_the_cli_takes():
+@pytest.mark.parametrize('args, detached', [
+    (['DRY_RUN=1'], False), (['MOTOR=A', 'dry_run=On'], False), (['--dry-run'], False),
+    (['DRY_RUN=0'], True), (['MOTOR=A'], True), ([], True),
+])
+def test_save_runs_only_a_dry_run_in_the_foreground(tmp_path, args, detached):
+    # a dry run's lines go straight to the console; a save restarts Klipper through
+    # Moonraker, which waits while RUN_SHELL_COMMAND holds Klipper's queue: detached
+    called = launched(tmp_path, 'save.sh', args)
+    assert (called[0] != '--sync') is detached and called[called.index('save'):] == ['save'] + args
+
+
+@pytest.mark.parametrize('script, first, keys', [('analyze.sh', '--apply|', ('APPLY', 'SAVE')),
+                                                 ('save.sh', '--dry-run|', ('DRY_RUN',))])
+def test_the_launchers_take_the_yes_values_the_cli_takes(script, first, keys):
     import re
 
     from chopper_autotune.cli import TRUE_VALUES
-    with open(os.path.join(REPO, 'analyze.sh')) as script:
-        pattern = next(line for line in script if line.strip().startswith('--apply|'))
-    patterns = re.findall(r'\b(APPLY|SAVE)=(\w+)', pattern)
-    assert sorted(patterns) == sorted((key, value) for key in ('APPLY', 'SAVE') for value in TRUE_VALUES)
+    with open(os.path.join(REPO, script)) as lines:
+        pattern = next(line for line in lines if line.strip().startswith(first))
+    patterns = re.findall(r'\b(%s)=(\w+)' % '|'.join(keys), pattern)
+    assert sorted(patterns) == sorted((key, value) for key in keys for value in TRUE_VALUES)
 

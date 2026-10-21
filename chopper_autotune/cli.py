@@ -32,6 +32,14 @@ def _motor(text: str) -> str:
     return {'a': 'x', 'b': 'y', 'ab': 'xy'}.get(text.lower(), text.lower())
 
 
+def _save_motors(text: str) -> str:
+    """MOTOR of CHOPPER_SAVE: A, B and E (the extruder) in any combination, as 'AB'."""
+    letters = set(text.upper())
+    if not letters or not letters <= set('ABE'):
+        raise argparse.ArgumentTypeError('expected motors A, B, E or several of them, e.g. AB')
+    return ''.join(motor for motor in 'ABE' if motor in letters)
+
+
 def _khz(text: str) -> float:
     value = float(text)
     if not 0 < value < float('inf'):
@@ -287,8 +295,13 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument('--url', default='http://127.0.0.1:7125')
 
     sv = sub.add_parser('save', help='save the latest tuning result for each motor into the config')
+    sv.add_argument('--motor', type=_save_motors, default='ABE',
+                    help='the motors to save: a, b, e (the extruder) or several, e.g. ab; '
+                         'default all three')
     add_hearing(sv, recorded=True)
     sv.add_argument('--url', default='http://127.0.0.1:7125')
+    sv.add_argument('--dry-run', action='store_true',
+                    help='print what would be saved, write nothing and do not restart Klipper')
 
     rs = sub.add_parser('restore', help="roll back the tool's config changes")
     rs.add_argument('--defaults', action='store_true',
@@ -335,7 +348,7 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument('--save', action='store_true',
                    help='write the winner into [tmcXXXX extruder] (backup first) and restart')
     e.add_argument('--save-last', action='store_true',
-                   help='persist the previously tuned winner immediately, without re-tuning')
+                   help='save the previously tuned winner without re-tuning, as save --motor e does')
     e.add_argument('--demo', action='store_true',
                    help='audible before/after: alternate Klipper defaults and the saved '
                         'registers at the E resonance (heats the hotend)')

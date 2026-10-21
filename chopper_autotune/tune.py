@@ -5,13 +5,14 @@ all winners are written into the Klipper config in one batch with a single resta
 """
 from __future__ import annotations
 
+from pathlib import Path
+
 from . import tmc
 from .collect import (Range, Screen, autotune_advice, autotune_goal, collect, driver_of,
                       motor_label, refuse_autotune_save, refuse_multi_motor, refuse_unhearable)
 from .dataset import Dataset
 from .find_speed import scan
 from .klippy import Klippy, find_socket
-from .moonraker import Moonraker
 
 DRY_RUN_SPEED = 60
 
@@ -46,11 +47,6 @@ def collect_args(args, axis: str, speed: Range, seed_from: 'str | None'):
     return sub_args(args, argv)
 
 
-class NothingInaudible(SystemExit):
-    """A dataset with measurements, every one of which the hearing skips: an older
-    dataset of the motor is no answer to it."""
-
-
 def winner_of(root: str, args=None) -> 'tuple[dict, tmc.Chopper]':
     """The motor's result in a dataset: the winner its run recorded, unless the hearing
     (the command line's, then the run's) skips it; else a re-rank with that hearing."""
@@ -75,11 +71,20 @@ def winner_of(root: str, args=None) -> 'tuple[dict, tmc.Chopper]':
     ranked = rank(aggregates, driver, hearing)
     if not ranked and aggregates and hearing.skip:
         # the action first: the display shows its first characters (failure_display)
-        raise NothingInaudible('re-run CHOPPER_TUNE with AUDIBLE_KHZ=%g: SKIP_AUDIBLE skips all of %s'
-                               % (hearing.limit_hz / 1000, ds.root.name))
+        raise SystemExit('re-run CHOPPER_TUNE with AUDIBLE_KHZ=%g: SKIP_AUDIBLE skips all of %s'
+                         % (hearing.limit_hz / 1000, ds.root.name))
     if not ranked:
         raise SystemExit('no successful measurements in %s' % root)
     return manifest, ranked[0]['chopper']
+
+
+def motors(winners: 'list[tuple[dict, tmc.Chopper]]') -> str:
+    return ''.join(motor_label(manifest['stepper'].rsplit('_', 1)[-1]) for manifest, _ in winners)
+
+
+def save_command(winners: 'list[tuple[dict, tmc.Chopper]]') -> str:
+    """What saves this run: SAVE=1 saves the same."""
+    return 'CHOPPER_SAVE MOTOR=%s' % motors(winners)
 
 
 def improvement_note(manifest: dict) -> str:
@@ -113,7 +118,7 @@ def run_tune(args) -> int:
             stepper = 'stepper_' + axis
             refuse_autotune_save(settings, driver_of(settings, stepper) or 'XXXX', stepper)
     screen = Screen(kl, True)
-    winners, roots = [], {}
+    winners, roots = [], []
     worst = 0
     try:
         seed_root = None
@@ -135,8 +140,10 @@ def run_tune(args) -> int:
             worst = max(worst, code)
             if root:
                 winners.append(winner_of(root, args))
-                roots[winners[-1][0]['stepper']] = root
+                roots.append(Path(root))
                 seed_root = root
+        free = [manifest for manifest, _ in winners if not managed(manifest)]
+        changed = [manifest for manifest in free if not manifest.get('kept')]
 
         # the run's outcome must reach the screen: the console summary below only lands
         # in the detached log, and SAVE=1 restarts Klipper, wiping the status line — so
@@ -149,19 +156,10 @@ def run_tune(args) -> int:
                                  improvement_note(manifest),
                                  ' (autotune)' if managed(manifest) else '')
                 for manifest, combo in winners)
-            free = [motor_label(manifest['stepper'].rsplit('_', 1)[-1])
-                    for manifest, _ in winners if not managed(manifest)]
-            # CHOPPER_SAVE takes every motor's latest result and the stored extruder
-            # winner: named only when that is exactly this run
-            from .extruder import load_winner_state
-            exact = len(free) == len(winners) == 2 and load_winner_state() is None
-            changed = [manifest for manifest, _ in winners
-                       if not managed(manifest) and not manifest.get('kept')]
             tail = (' — autotune resets these at start' if not free
                     else ' — your registers stay' if not changed
                     else ' — saving' if args.save
-                    else ' — CHOPPER_SAVE to persist' if exact
-                    else ' — to save: see tune.log')
+                    else ' — to save: ' + save_command(winners))
             screen.final('Tune done: %s%s' % (labels, tail), 'Done ' + ' '.join(
                 motor_label(manifest['stepper'].rsplit('_', 1)[-1]) + improvement_note(manifest).strip()
                 for manifest, _ in winners))
@@ -185,21 +183,9 @@ def run_tune(args) -> int:
             print('# %.1fx less vibration than Klipper defaults\n'
                   % manifest['improvement'])
         print()
-    # a motor that keeps its registers has nothing to write: no backup, no restart for it
-    changed = [(manifest, combo) for manifest, combo in winners if not manifest.get('kept')]
-    free = [manifest for manifest, _ in changed if not managed(manifest)]
     if args.save:
-        from .analyze import run_save
-        if changed:
-            run_save(Moonraker(args.url), changed)
-        else:
-            print('Nothing to save: every motor keeps its registers')
-    elif free:
-        # no second twenty-minute run: these datasets can be saved as they are
-        for manifest in free:
-            print('To save %s from this run alone: CHOPPER_ANALYZE DATASET=%s SAVE=1'
-                  % (manifest['stepper'], roots[manifest['stepper']]))
-        print('CHOPPER_SAVE writes the latest result of every motor, and the stored '
-              'CHOPPER_EXTRUDER winner, in one go (it skips the motors autotune manages). '
-              'Or paste the lines above manually.')
+        from .analyze import run_save_latest
+        run_save_latest(args, motors(winners), roots)
+    elif changed:
+        print('To save: %s' % save_command(winners))
     return worst

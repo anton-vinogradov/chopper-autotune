@@ -4,7 +4,7 @@
 # the accelerometer over that same connection (a synchronous run starves the reactor
 # and hangs; save/analyze additionally send gcode back through Moonraker).
 # Progress goes to the display (M117) and console; full output to the log.
-# `run.sh --sync CMD ...` runs in the foreground instead (status, plain analyze).
+# `run.sh --sync CMD ...` runs in the foreground instead (status, plain analyze, a dry-run save).
 # gcode_shell_command ignores exit codes: a failure only reaches the user as a
 # printed line, so every failure here prints one.
 sync=
