@@ -73,26 +73,26 @@ def test_extruder_descent_rides_the_shared_engine(monkeypatch):
     # per-field walk re-created the measured toff x hend blind spot
     from chopper_autotune import extruder as ex
     from chopper_autotune import tmc
+    from chopper_autotune.cli import build_parser
     captured = {}
 
-    def fake_engine(driver, tbl, toff, hstrt, hend, tpfd, start, evaluate, rounds=2):
-        captured.update(ranges=(tbl, toff, hstrt, hend), tpfd=tpfd, start=start, rounds=rounds)
-        return tmc.Chopper(0, 2, 2, 12)
+    def fake_engine(driver, space, start, evaluate, rounds=2):
+        captured.update(space=space, start=start, rounds=rounds)
+        return tmc.Chopper(1, 2, 2, 12)
 
     monkeypatch.setattr(ex, 'multi_start_descent', fake_engine)
-    winner, cache = ex.descent(None, None, tmc.DRIVERS['2209'], 5.0, tmc.Hearing(), None)
-    assert captured['ranges'] == ex.FIELD_RANGES
+    space = tmc.Space.of(build_parser().parse_args(['extruder']))
+    winner, cache = ex.descent(None, None, tmc.DRIVERS['2209'], 5.0, tmc.Hearing(), None, space)
+    assert captured['space'] == space and space.tpfd is None
     assert captured['start'] == tmc.KLIPPER_DEFAULT
-    assert captured['tpfd'] is None
-    assert winner == tmc.Chopper(0, 2, 2, 12)
+    assert winner == tmc.Chopper(1, 2, 2, 12)
 
 
 def test_extruder_descent_measures_live_and_caches(monkeypatch):
     from chopper_autotune import extruder as ex
-    from chopper_autotune.collect import Range
+    from chopper_autotune.tmc import Range
 
-    monkeypatch.setattr(ex, 'FIELD_RANGES',
-                        (Range(2, 2), Range(3, 3), Range(4, 5), Range(0, 1)))
+    forced = tmc.Space(Range(2, 2), Range(3, 3), Range(4, 5), Range(0, 1))
     measured = []
 
     def fake_measure(hw, speed):
@@ -109,7 +109,8 @@ def test_extruder_descent_measures_live_and_caches(monkeypatch):
         def update(self, text, force=False, short=None):
             pass
 
-    winner, cache = ex.descent(None, FakeKl(), ex.tmc.DRIVERS['2209'], 5.0, tmc.Hearing(), FakeScreen())
+    winner, cache = ex.descent(None, FakeKl(), ex.tmc.DRIVERS['2209'], 5.0, tmc.Hearing(), FakeScreen(),
+                               forced)
     assert winner in cache
     assert len(measured) == len(cache)          # every combo measured exactly once (cache)
     assert (winner.tbl, winner.toff) == (2, 3)  # stayed inside the forced ranges
@@ -130,7 +131,9 @@ def test_extruder_descent_never_measures_what_the_hearing_skips(monkeypatch):
 
     monkeypatch.setattr(ex, 'measure', fake_measure)
     winner, _ = ex.descent(None, SimpleNamespace(gcode=sent.append), driver, 5.0, hearing,
-                           SimpleNamespace(update=lambda text, force=False, short=None: None))
+                           SimpleNamespace(update=lambda text, force=False, short=None: None),
+                           tmc.Space(tmc.Range(0, 3), tmc.Range(1, 8), tmc.Range(0, 7),
+                                     tmc.Range(0, 15)))
     assert measured and not any(hearing.audible(combo, driver) for combo in measured)
     assert not hearing.audible(winner, driver)
 
@@ -195,15 +198,22 @@ def test_save_on_an_autotune_extruder_is_refused_before_the_heat_up(monkeypatch)
         extruder_mod.extruder_tune(kl, SimpleNamespace(save_last=False, save=True, temp=200.0))
     assert scripts == []                                 # no M104: nothing heated
     # SAVE_LAST=1 persists nothing either
+    from chopper_autotune import analyze
+    from chopper_autotune.cli import build_parser
+    from chopper_autotune.dataset import save_json
     state = {'driver': '2209', 'fields': {'tbl': 1, 'toff': 3, 'hstrt': 5, 'hend': 2}}
-    monkeypatch.setattr(extruder_mod, 'load_winner_state', lambda: state)
+    save_json(extruder_mod.STATE, state)
+    mk = SimpleNamespace(settings=kl.settings, accepted_commands=lambda: None, gcode=scripts.append)
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    save_last = build_parser().parse_args(['extruder', '--save-last'])
     with pytest.raises(SystemExit, match=r'not saving \[tmc2209 extruder\]'):
-        extruder_mod.extruder_tune(kl, SimpleNamespace(save_last=True, save=False, url='http://x'))
+        extruder_mod.extruder_tune(kl, save_last)
     # autotune gone since: a winner measured under it is still not saved
-    state['autotune'] = 'silent'
-    kl.settings = lambda: {'tmc2209 extruder': {}, 'extruder': {}}
+    save_json(extruder_mod.STATE, dict(state, autotune='silent'))
+    mk.settings = lambda: {'tmc2209 extruder': {}, 'extruder': {}}
     with pytest.raises(SystemExit, match='measured under autotune; the log says what to do'):
-        extruder_mod.extruder_tune(kl, SimpleNamespace(save_last=True, save=False, url='http://x'))
+        extruder_mod.extruder_tune(kl, save_last)
+    assert 'RESTART' not in scripts
 
 
 def test_autotunes_extruder_is_read_live_and_its_spreadcycle_kept():
@@ -246,8 +256,9 @@ def test_an_early_stop_enables_the_extruder_before_putting_registers_back(monkey
     monkeypatch.setattr(extruder_mod, 'refuse_if_printing', lambda kl: None)
     monkeypatch.setattr(extruder_mod, 'Screen', lambda kl, display: SimpleNamespace(
         update=lambda *a, **k: None, final=lambda *a: None))
-    args = SimpleNamespace(save_last=False, save=False, temp=260.0, demo=False, min_speed=3,
-                           max_speed=8, speed=None, dry_run=False, yes=True)
+    from chopper_autotune.cli import build_parser
+    args = build_parser().parse_args(['extruder', '--temp', '260', '--min-speed', '3',
+                                      '--max-speed', '8', '--yes'])
     with pytest.raises(KlippyError):
         extruder_mod.extruder_tune(kl, args)
     enable = sent.index('SET_STEPPER_ENABLE STEPPER=extruder ENABLE=1')

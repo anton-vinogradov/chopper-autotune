@@ -60,6 +60,20 @@ def test_motor_alias_maps_to_axis():
     assert parser.parse_args(_gcode_args(['collect', 'AXIS=Y', 'SPEED=55'], FLAGS)).axis == 'y'
 
 
+@pytest.mark.parametrize('value, motors', [('A', 'A'), ('ab', 'AB'), ('EA', 'AE'), ('bea', 'ABE')])
+def test_save_takes_motors_a_b_and_e_in_any_combination(value, motors):
+    parser = build_parser()
+    assert parser.parse_args(_gcode_args(['save', 'MOTOR=' + value], FLAGS)).motor == motors
+    assert parser.parse_args(['save']).motor == 'ABE'
+
+
+@pytest.mark.parametrize('value', ['X', 'AC', ''])
+def test_save_refuses_a_motor_it_does_not_know(value, capsys):
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(_gcode_args(['save', 'MOTOR=' + value], FLAGS))
+    assert 'expected motors A, B, E or several of them' in capsys.readouterr().err
+
+
 def test_motor_label():
     from chopper_autotune.collect import motor_label
     assert motor_label('x') == 'A'

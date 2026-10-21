@@ -10,8 +10,9 @@ from pathlib import Path
 from . import __version__
 from .collect import (OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, ForceMove, Screen,
                       default_dataset_root, detect_hardware, enter_spreadcycle, measure_baseline,
-                      measure_move, now, rail_of, refuse_if_printing, refuse_multi_motor,
-                      refuse_other_motion, set_rail_fields, travel_for)
+                      measure_move, motor_label, now, rail_of, refuse_if_printing,
+                      refuse_multi_motor, refuse_other_motion, set_rail_fields, tell_next,
+                      travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, find_socket
 from .rail import motion_for
@@ -198,13 +199,34 @@ def write_report(curve: 'list[tuple[int, float]]', peaks: 'list[int]', title: st
 def run_find_speed(args) -> int:
     kl = Klippy(find_socket(args.socket)).connect()
     try:
-        code, _ = scan(kl, args)
+        code, peak, loudest = scan(kl, args)
+        motor = motor_label(args.axis)
+        if peak is not None:
+            tell_next(kl, ['To tune motor %s at its resonance speed: %s'
+                           % (motor, tune_at(args.axis, peak))])
+        elif loudest is not None:
+            tell_next(kl, [no_peak(motor, tune_at(args.axis, loudest))])
         return code
     finally:
         kl.close()
 
 
-def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None]':
+def tune_at(axis: str, speed: int, args=None) -> str:
+    """CHOPPER_TUNE of the motor on `axis` at `speed`, with the other parameters of `args`,
+    a CHOPPER_TUNE run, kept."""
+    from .cli import command_line
+    return command_line('tune', args, axis=axis, speed=speed)
+
+
+def no_peak(motor: str, tune: str) -> str:
+    """The motor first: a 16-character LCD row shows 'FAIL A: no clear' (failure_display)."""
+    return '%s: no clear resonance peak. To tune motor %s at the speed it vibrates most: %s' % (
+        motor, motor, tune)
+
+
+def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None, int | None]':
+    """(exit code, the resonance speed to tune at, the speed that vibrates most): None
+    for a speed not found, both None for a dry run or an abort."""
     args.source = 'csv' if args.csv else 'stream'
     if args.trim is None:
         args.trim = 0.25 if args.csv else 0.1
@@ -231,10 +253,10 @@ def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None]':
           % (len(plan), plan[0][0], plan[-1][0], args.step, n_moves, args.source,
              eta // 60, eta % 60))
     if args.dry_run:
-        return 0, None
+        return 0, None, None
     if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):
         print('Aborted')
-        return 1, None
+        return 1, None, None
 
     refuse_if_printing(kl)
     if not args.csv:
@@ -316,15 +338,13 @@ def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None]':
     print('Done in %dm: report %s' % ((time.time() - started) // 60, path))
 
     recommended = None
+    top = max(curve, key=lambda point: point[1])
     if peaks:
         recommended = recommend(curve, peaks)
         print('Resonance peaks: %s'
               % ', '.join('%d mm/s (magnitude %.0f)' % curve[i] for i in peaks))
-        print('\nRecommended: CHOPPER_COLLECT MOTOR=%s SPEED=%d' % (hw.motor, recommended))
         screen.final('Chopper: resonance %d mm/s' % recommended,
                      '%s peak %d mm/s' % (hw.motor, recommended))
     else:
-        top = max(curve, key=lambda point: point[1])
-        print('No clear resonance peaks; highest magnitude %.0f at %d mm/s. '
-              'Consider widening the range or more --iterations.' % (top[1], top[0]))
-    return (0 if failed == 0 else 2), recommended
+        print('Highest magnitude %.0f at %d mm/s' % (top[1], top[0]))
+    return (0 if failed == 0 else 2), recommended, top[0]

@@ -271,7 +271,7 @@ def test_a_speed_scan_finds_the_resonance_with_the_stock_chopper(source, tmp_pat
     front = klipper_front.Front(source, printer_cfg().replace(*TUNED))
     chip = front.chips['tmc2209 stepper_x']
     tuned = chip.chopper()
-    status, speed = run_tool(front, scan, [
+    status, speed, _ = run_tool(front, scan, [
         'find-speed', '--axis', 'x', '--min-speed', '30', '--max-speed', '90', '--step', '10',
         '--yes', '--no-raw', '--dataset', str(tmp_path / 'scan')])
     assert (status, speed) == (0, 60)
@@ -592,3 +592,41 @@ def test_a_saved_winner_is_what_the_driver_holds_after_the_restart(source):
         == winner.fields()
     assert chips['tmc2209 stepper_y'].chopper() == stock
     assert_clean(mk.front)
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_the_lines_of_a_save_reach_the_console_whole(source):
+    # a save runs detached: before the restart these lines are all the person sees of it
+    from chopper_autotune.analyze import tell
+    from chopper_autotune.collect import console_text
+    require(source)
+    front = klipper_front.Front(source, printer_cfg())
+    lines = ['motor A: saving tbl0_toff8_hstrt7_hend5 from run 20261021_101500_x',
+             'motor B: not saving [tmc2209 stepper_y]: autotune resets its chopper at start; the '
+             'log says what to do. #1 "quoted" & <b>',
+             'motor E: not saving run 20261021_x. To save it: CHOPPER_ANALYZE '
+             'DATASET=/home/pi/printer_data/config/chopper-autotune/datasets/20261021_x SAVE=1']
+    tell(types.SimpleNamespace(accepted_commands=lambda: None, gcode=front.run), lines)
+    assert_clean(front)
+    assert [line for line in front.console if line.startswith('Chopper:')] \
+        == ['Chopper: ' + console_text(line) for line in lines]
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_the_command_to_run_next_reaches_the_console_whole(source, monkeypatch, tmp_path):
+    # a command run on its own ends with a command to paste: its '=' and ':' get through
+    from chopper_autotune import find_speed
+    from chopper_autotune.current import current_tune
+    require(source)
+    front = klipper_front.Front(source, printer_cfg().replace('run_current: 0.8', 'run_current: 1.2'))
+    kl = front.connect()
+    monkeypatch.setattr(find_speed, 'Klippy', lambda path: types.SimpleNamespace(connect=lambda: kl))
+    monkeypatch.setattr(find_speed, 'find_socket', lambda explicit=None: '<front>')
+    assert find_speed.run_find_speed(build_parser().parse_args([
+        'find-speed', '--axis', 'x', '--min-speed', '30', '--max-speed', '90', '--step', '10',
+        '--yes', '--no-raw', '--dataset', str(tmp_path / 'scan')])) == 0
+    assert run_tool(front, current_tune, ['current', '--motor', 'a', '--yes']) == 0
+    assert_clean(front)
+    assert 'Chopper: To tune motor A at its resonance speed: CHOPPER_TUNE MOTOR=A SPEED=60' in front.console
+    assert front.console[-1] == ('echo: Current: A skip 0.30A -> run 0.60A — to measure again '
+                                 'and save: CHOPPER_CURRENT MOTOR=A SAVE=1')

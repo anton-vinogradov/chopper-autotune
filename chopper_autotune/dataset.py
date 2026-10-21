@@ -95,6 +95,11 @@ class Dataset:
                     print('%s: skipping a corrupt line' % self.records_path)
         return result
 
+    def moves(self) -> 'list[dict]':
+        """The moves measured successfully: the records a ranking scores."""
+        return [record for record in self.records()
+                if record.get('kind') == 'move' and record.get('status') == 'ok']
+
     def done_ids(self) -> 'set[str]':
         return {r['id'] for r in self.records() if r.get('status') == 'ok'}
 

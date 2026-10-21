@@ -195,6 +195,14 @@ def test_a_dry_run_says_how_the_rail_moves_and_sends_no_gcode(source, printer, r
         assert said in out
     if run != 'collect':
         assert 'extends the scan up to' in out
+    # a rail tries and recommends only registers inside the ranges, as one motor does
+    ranges = [line for line in out.splitlines() if line.startswith('Registers the run tries: ')]
+    if run == 'collect':
+        assert ranges == ['Registers the run tries: TBL=1 TOFF=3:4 HSTRT=4 HEND=3 MAX_HYSTERESIS=15']
+    elif run == 'tune':
+        assert len(ranges) == 2 and all(
+            line.startswith('Registers the run tries: TBL=1:3 TOFF=1:8 HSTRT=0:7 HEND=0:15 ')
+            and line.endswith(' MAX_HYSTERESIS=15') for line in ranges)
 
 
 @pytest.mark.parametrize('source', SOURCES)
@@ -235,7 +243,7 @@ def test_a_cruise_shrunk_to_the_bed_rounds_down_inside_the_kept_edges(source, tm
 
 @pytest.mark.parametrize('source', SOURCES)
 @pytest.mark.parametrize('printer', ['meijjaa', 'voron-2209'])
-def test_a_whole_tune_finds_the_quietest_chopper_of_each_rail(source, printer, monkeypatch):
+def test_a_whole_tune_finds_the_quietest_chopper_of_each_rail(source, printer, monkeypatch, capsys):
     from chopper_autotune import tune
     require(source)
     front = klipper_front.Front(source, awd_cfg(printer))
@@ -253,14 +261,45 @@ def test_a_whole_tune_finds_the_quietest_chopper_of_each_rail(source, printer, m
             winner = manifest['winner']
             winners[tuple(manifest['steppers'])] = (winner['toff'], winner['hend'])
     assert winners == {('stepper_x', 'stepper_x1'): (4, 3), ('stepper_y', 'stepper_y1'): (4, 3)}
+    # the one way to keep both rails, each whole
+    assert capsys.readouterr().out.splitlines()[-1] == 'To save: CHOPPER_SAVE MOTOR=AB'
     assert front.moves == []
     assert front.homings and all(homing['chips'] == stock for homing in front.homings)
     assert {section: chip.chopper() for section, chip in front.chips.items()} == stock
 
 
+@pytest.mark.parametrize('source', SOURCES)
+def test_speed_names_one_motor_on_a_two_motor_axis_too(source, monkeypatch, capsys):
+    # each rail has its own resonance: SPEED= without MOTOR= is refused before any G-code,
+    # and with it the tune of that rail takes it, no speed scan first
+    from chopper_autotune import tune
+    require(source)
+    front = klipper_front.Front(source, awd_cfg('meijjaa'))
+    kl = front.connect()
+    monkeypatch.setattr(tune, 'Klippy', lambda path: types.SimpleNamespace(connect=lambda: kl))
+    monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<front>')
+    with pytest.raises(SystemExit, match=re.escape(
+            'add MOTOR=A or B: each motor has its own resonance speed. For example: '
+            'CHOPPER_TUNE MOTOR=A SPEED=60')):
+        tune.run_tune(build_parser().parse_args(['tune', '--speed', '60']))
+    assert tune.run_tune(build_parser().parse_args(['tune', '--motor', 'b', '--speed', '60',
+                                                    '--dry-run'])) == 0
+    assert front.scripts == []
+    out = capsys.readouterr().out
+    assert 'Motor B is a rail of 2 TMC5160 drivers' in out and 'head: F3600 for 60 mm/s' in out
+    assert 'extends the scan' not in out and 'Motor A is a rail' not in out
+
+
 def dual_y(printer: str) -> str:
     """The AWD printer with one motor on X: two on Y alone."""
     return re.sub(r'\[(tmc\d+ )?stepper_x1\]\n.*?\n\n', '', awd_cfg(printer), flags=re.S)
+
+
+def resonance_at(monkeypatch, speed: int = 60):
+    """CHOPPER_TUNE of both motors without the speed scans: each motor's scan finds `speed`.
+    SPEED= names the resonance of one motor alone."""
+    from chopper_autotune import tune
+    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup=True: (0, speed, speed))
 
 
 @pytest.mark.parametrize('source', SOURCES)
@@ -275,7 +314,8 @@ def test_a_tune_of_both_motors_runs_the_pair_before_the_motor_alone(source, sync
     kl = front.connect()
     monkeypatch.setattr(tune, 'Klippy', lambda path: types.SimpleNamespace(connect=lambda: kl))
     monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<front>')
-    assert tune.run_tune(build_parser().parse_args(['tune', '--speed', '60', '--no-raw'])) == 0
+    resonance_at(monkeypatch)
+    assert tune.run_tune(build_parser().parse_args(['tune', '--no-raw'])) == 0
     assert_clean(front)
     pair_off = min(index for index, script in enumerate(front.scripts)
                    if re.search(r'STEPPER="stepper_y1?" ENABLE=0', script))
@@ -288,6 +328,7 @@ def test_a_tune_of_both_motors_runs_the_pair_before_the_motor_alone(source, sync
     assert runs.index('=== Motor B ===') < runs.index('=== Motor A ===')
     assert summary.index('[tmc5160 stepper_x]') < summary.index('[tmc5160 stepper_y]') \
         < summary.index('[tmc5160 stepper_y1]')
+    assert summary.splitlines()[-1] == 'To save: CHOPPER_SAVE MOTOR=AB'
 
 
 @pytest.mark.parametrize('source', SOURCES)
@@ -646,8 +687,9 @@ def test_a_tune_stops_at_a_driver_not_put_back_before_the_next_motor_homes(sourc
     refusing(kl, tmc.set_fields_script('stepper_x1', OWN_X1), {1})
     monkeypatch.setattr(tune, 'Klippy', lambda path: types.SimpleNamespace(connect=lambda: kl))
     monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<front>')
+    resonance_at(monkeypatch)
     with pytest.raises(rail.RegistersStuck):
-        tune.run_tune(build_parser().parse_args(['tune', '--speed', '60', '--no-raw']))
+        tune.run_tune(build_parser().parse_args(['tune', '--no-raw']))
     assert len(front.homings) == 1 and front.homings[0]['chips'] == configured
     assert not [move for move in front.head_moves
                 if move['belts']['y'] and not from_homing(front, move)]
@@ -682,9 +724,10 @@ def test_a_tune_stops_at_a_failed_closing_homing_before_the_next_motor_homes(sou
     failing_closing_homing(front, kl)
     monkeypatch.setattr(tune, 'Klippy', lambda path: types.SimpleNamespace(connect=lambda: kl))
     monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<front>')
+    resonance_at(monkeypatch)
     with pytest.raises(rail.GantryUnhomed, match=r'home X and Y again: the final homing failed '
                                                  r'\(gcode/script failed: No trigger on x'):
-        tune.run_tune(build_parser().parse_args(['tune', '--speed', '60', '--no-raw']))
+        tune.run_tune(build_parser().parse_args(['tune', '--no-raw']))
     assert len(front.homings) == 1
     assert not [move for move in front.head_moves
                 if move['belts']['y'] and not from_homing(front, move)]
@@ -749,7 +792,7 @@ def test_a_scan_extends_no_faster_than_max_velocity_lets_g1_run(source, tmp_path
     root = tmp_path / 'scan'
     assert run_tool(front, find_speed.scan, [
         'find-speed', '--axis', 'x', '--min-speed', '30', '--max-speed', '50', '--step', '10',
-        '--yes', '--no-raw', '--dataset', str(root)]) == (0, 60)
+        '--yes', '--no-raw', '--dataset', str(root)]) == (0, 60, 60)
     assert_clean(front)
     assert 'extends the scan up to 70 mm/s' in capsys.readouterr().out
     assert max(record['speed'] for record, _ in measured(front, root)) == 70
@@ -880,12 +923,12 @@ def held(chip, fields: dict) -> dict:
 def tune_through(mk, monkeypatch, argv: 'list[str]'):
     """CHOPPER_TUNE on the printer behind `mk` (FrontMoonraker), saving through it; the
     printer it ran on."""
-    from chopper_autotune import tune
+    from chopper_autotune import analyze, tune
     front = mk.front
     kl = front.connect()
     monkeypatch.setattr(tune, 'Klippy', lambda path: types.SimpleNamespace(connect=lambda: kl))
     monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<front>')
-    monkeypatch.setattr(tune, 'Moonraker', lambda url: mk)
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
     assert tune.run_tune(build_parser().parse_args(['tune'] + argv)) == 0
     return front
 
@@ -898,7 +941,8 @@ def test_tune_save_writes_each_rails_winner_into_every_section_with_one_restart(
     # restart: each driver of a rail holds its rail's winner
     require(source)
     mk = klipper_front.FrontMoonraker(source, awd_cfg(printer))
-    assert_clean(tune_through(mk, monkeypatch, ['--speed', '60', '--no-raw', '--save']))
+    resonance_at(monkeypatch)
+    assert_clean(tune_through(mk, monkeypatch, ['--no-raw', '--save']))
     assert mk.restarts == 1 and mk.uploads == ['printer.chopper-backup.cfg', 'printer.cfg']
     winners = {}
     for root in (collect.RESULTS_HOME / 'datasets').iterdir():
@@ -991,7 +1035,8 @@ def test_a_dataset_of_one_motor_is_not_saved_on_an_axis_that_has_a_twin_now(sour
     assert mk.uploads == [] and mk.restarts == 0 and chips(mk.front) == stock
     monkeypatch.setattr(analyze, 'dataset_dirs', lambda: [single, pair])
     assert analyze.run_save_latest(build_parser().parse_args(['save'])) == 0
-    assert 'motor A: NOT saving single: tune motor A again' in capsys.readouterr().out
+    assert 'motor A: tune motor A again: its dataset measured stepper_x alone' \
+        in capsys.readouterr().out
     assert mk.restarts == 1
     for section in rail_sections('meijjaa', 'x'):
         assert mk.front.chips[section].chopper() == stock[section]
@@ -1024,7 +1069,7 @@ def test_a_rail_whose_twin_runs_another_driver_now_is_skipped_and_the_rest_saved
     assert mk.uploads == [] and mk.restarts == 1 and chips(mk.front) == stock
     monkeypatch.setattr(analyze, 'dataset_dirs', lambda: roots)
     assert analyze.run_save_latest(build_parser().parse_args(['save'])) == 0
-    assert 'motor A: NOT saving x: ' + refusal in capsys.readouterr().out
+    assert 'motor A: ' + refusal in capsys.readouterr().out
     assert mk.restarts == 2
     for section in ('tmc5160 stepper_x', 'tmc2209 stepper_x1'):
         assert mk.front.chips[section].chopper() == stock[section]
@@ -1091,6 +1136,26 @@ def test_tune_save_refuses_a_rail_autotune_manages_before_anything_moves(source,
 
 
 @pytest.mark.parametrize('source', SOURCES)
+def test_a_tune_of_a_rail_autotune_manages_names_each_section_and_its_threshold(source, monkeypatch,
+                                                                               capsys):
+    # the summary alone says how to switch autotune off, once, for each driver: a section
+    # left on one of them refuses the next rail run
+    require(source)
+    mk = klipper_front.FrontMoonraker(source, awd_cfg('voron-2209') + ''.join(
+        '\n[autotune_tmc %s]\nmotor: ldo-42sth48-2004ac\nsg4_thrs: %d\n' % pair
+        for pair in (('stepper_x', 80), ('stepper_x1', 90))))
+    resonance_at(monkeypatch)
+    assert_clean(tune_through(mk, monkeypatch, ['--motor', 'a', '--no-raw']))
+    out = capsys.readouterr().out
+    summary = out.split('=== Summary ===')[1]
+    advice = ('klipper_tmc_autotune ([autotune_tmc stepper_x] and [autotune_tmc stepper_x1]) '
+              'writes its own')
+    assert 'stepper_x, stepper_x1: ' + advice in summary and out.count(advice) == 1
+    assert 'in [tmc2209 stepper_x] set driver_SGTHRS: 80' in summary
+    assert 'in [tmc2209 stepper_x1] set driver_SGTHRS: 90' in summary
+
+
+@pytest.mark.parametrize('source', SOURCES)
 @pytest.mark.parametrize('run', RUNS)
 def test_a_dataset_of_one_motor_does_not_resume_as_a_rail(source, run, tmp_path):
     # its FORCE_MOVEs of stepper_x and the rail's G1s would mix under one combo or speed
@@ -1118,3 +1183,67 @@ def test_spreadcycle_forced_on_the_twin_alone_is_recorded(source, tmp_path):
     assert run_tool(front, collect.collect, RUNS['collect'][1] + [
         '--axis', 'x', '--dataset', str(root)])[0] == 0
     assert Dataset.open(root).manifest()['forced_spreadcycle'] is True
+
+
+EDGES = 'driver_TBL: 0\ndriver_TOFF: 3\ndriver_HSTRT: 3\ndriver_HEND: 15\n'   # both edges at once
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_a_rail_on_saved_edges_starts_inside_the_ranges_and_keeps_them_out_of_the_rounds(
+        source, tmp_path, capsys):
+    # both drivers of the pair hold TBL 0 and hysteresis 16: the descent would start on the
+    # edges, and the back-to-back rounds keep them as the rail's own registers
+    require(source)
+    cfg = awd_cfg('voron-2209')
+    for section in rail_sections('voron-2209', 'x'):
+        cfg = cfg.replace('[%s]\n' % section, '[%s]\n%s' % (section, EDGES))
+    front = klipper_front.Front(source, cfg)
+    root = tmp_path / 'descent'
+    assert run_tool(front, collect.collect, [
+        'collect', '--axis', 'x', '--speed', '60', '--search', 'descent', '--toff', '3:4',
+        '--hstrt', '2:3', '--hend', '14:15', '--yes', '--no-raw', '--dataset', str(root)])[0] == 0
+    assert_clean(front)
+    moves = [tmc.Chopper(record['tbl'], record['toff'], record['hstrt'], record['hend'])
+             for record in Dataset.open(root).records() if record.get('kind') == 'move']
+    # the nearest combo inside: TBL 1, and HSTRT one lower to keep HEND 15 at hysteresis 15
+    assert moves[0] == tmc.Chopper(1, 3, 2, 15)
+    assert not [combo for combo in moves if combo.tbl == 0 or tmc.effective_hysteresis(combo) > 15]
+    assert ('Your registers tbl0_toff3_hstrt3_hend15 are not measured back to back (TBL 0 is '
+            'outside TBL=1:3 and hysteresis 16 is above MAX_HYSTERESIS=15): the winner is not '
+            'checked against them') in capsys.readouterr().out.splitlines()
+    assert not Dataset.open(root).manifest()['kept']
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('autotune', [False, True])
+def test_a_rail_run_on_its_own_names_the_next_command_for_the_pair(source, autotune, monkeypatch,
+                                                                    tmp_path, capsys):
+    # the scan names the tune of the rail at its resonance; the register search how to hear
+    # and save the pair, or, under klipper_tmc_autotune, what that means for each driver
+    from chopper_autotune import find_speed
+    require(source)
+    front = klipper_front.Front(source, awd_cfg('meijjaa') + ''.join(
+        '\n[autotune_tmc %s]\nmotor: ldo-42sth48-2004ac\n' % name
+        for name in ('stepper_x', 'stepper_x1') if autotune))
+    for module in (find_speed, collect):
+        monkeypatch.setattr(module, 'Klippy', lambda path: types.SimpleNamespace(connect=front.connect))
+        monkeypatch.setattr(module, 'find_socket', lambda explicit=None: '<front>')
+    assert find_speed.run_find_speed(build_parser().parse_args([
+        'find-speed', '--axis', 'x', '--min-speed', '30', '--max-speed', '90', '--step', '10',
+        '--yes', '--no-raw', '--dataset', str(tmp_path / 'scan')])) == 0
+    assert collect.run_collect(build_parser().parse_args(RUNS['collect'][1] + [
+        '--axis', 'x', '--dataset', str(tmp_path / 'x')])) == 0
+    assert_clean(front)
+    told = [line for line in front.console if line.startswith('Chopper: To ')]
+    assert told[0] == 'Chopper: To tune motor A at its resonance speed: CHOPPER_TUNE MOTOR=A SPEED=60'
+    out = capsys.readouterr().out
+    if autotune:
+        assert told[1:] == []
+        advice = ('klipper_tmc_autotune ([autotune_tmc stepper_x] and [autotune_tmc stepper_x1]) '
+                  'writes its own')
+        assert 'stepper_x, stepper_x1: ' + advice in out and out.count(advice) == 1
+    else:
+        assert told[1:] == [
+            'Chopper: To hear the registers this run found, set them live: CHOPPER_ANALYZE APPLY=1',
+            'Chopper: To save the registers this run found: CHOPPER_SAVE MOTOR=A']
+        assert 'klipper_tmc_autotune' not in out

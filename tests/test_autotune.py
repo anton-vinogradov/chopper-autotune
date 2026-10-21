@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from chopper_autotune import tmc
+from chopper_autotune.cli import build_parser
 from chopper_autotune.collect import (check_resume, detect_hardware, live_chopper,
                                       resolve_autotune_baseline, resolve_stealth)
 
@@ -144,9 +145,10 @@ def test_a_run_stopped_before_the_read_leaves_autotunes_motor_alone():
 
 @pytest.mark.parametrize('driver, autotune, header', [
     ('2209', None, 'Recommended for printer.cfg:'),
-    ('2209', 'auto', 'Best measured (not for saving: klipper_tmc_autotune managed the motor'),
+    # what to do about it the command says at its end, once: not this stage of CHOPPER_TUNE
+    ('2209', 'auto', 'Best measured (klipper_tmc_autotune manages this motor):'),
     # a TMC2208 carries no CoolStep tag, yet autotune still writes its own chopper at start
-    ('2208', 'auto', 'Best measured (klipper_tmc_autotune ([autotune_tmc stepper_x]) writes'),
+    ('2208', 'auto', 'Best measured (klipper_tmc_autotune manages this motor):'),
 ])
 def test_the_recommendation_header_follows_autotune(tmp_path, monkeypatch, capsys, driver, autotune,
                                                      header):
@@ -161,6 +163,8 @@ def test_the_recommendation_header_follows_autotune(tmp_path, monkeypatch, capsy
                    'score': {'median_magnitude': 1000.0, 'clicks': 0}})
     hw = SimpleNamespace(driver=tmc.DRIVERS[driver], stepper='stepper_x', autotune=autotune, motor='A',
                          rail=[SimpleNamespace(stepper='stepper_x')])
-    report_winner(hw, ds, SimpleNamespace(trim=0.1, audible_weight=0.25),
-                  SimpleNamespace(final=lambda text, short=None: None), top=5)
-    assert header in capsys.readouterr().out
+    args = build_parser().parse_args(['collect', '--speed', '58', '--tbl', '0:3'])
+    args.trim = 0.1
+    report_winner(hw, ds, args, SimpleNamespace(final=lambda text, short=None: None), top=5)
+    out = capsys.readouterr().out
+    assert header in out and 'README: With klipper_tmc_autotune' not in out

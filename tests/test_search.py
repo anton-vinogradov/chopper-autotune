@@ -4,14 +4,15 @@ import itertools
 import pytest
 
 from chopper_autotune import tmc
-from chopper_autotune.collect import Range
 from chopper_autotune.dataset import Dataset
 from chopper_autotune.search import (_spanning_starts, coordinate_descent, dataset_history,
                                      descent_budget, multi_start_descent, penalized_score,
                                      run_simulate, seed_start)
+from chopper_autotune.tmc import Range
 
 DRIVER = tmc.DRIVERS['2209']
 RANGES = {'tbl': Range(0, 3), 'toff': Range(1, 8), 'hstrt': Range(0, 7), 'hend': Range(0, 15)}
+FULL = tmc.Space(**RANGES)
 
 
 def surface(combo):
@@ -26,8 +27,7 @@ def descend(evaluate, tpfd=None, driver=DRIVER, start=tmc.Chopper(2, 3, 5, 0)):
         if combo not in cache:
             cache[combo] = evaluate(combo)
         return cache[combo]
-    best = coordinate_descent(driver, RANGES['tbl'], RANGES['toff'], RANGES['hstrt'],
-                              RANGES['hend'], tpfd, start, cached)
+    best = coordinate_descent(driver, tmc.Space(**RANGES, tpfd=tpfd), start, cached)
     return best, cache
 
 
@@ -38,7 +38,7 @@ def test_descent_finds_separable_optimum():
         RANGES['tbl'].values(), RANGES['toff'].values(),
         RANGES['hstrt'].values(), RANGES['hend'].values())
         if tmc.validate(tmc.Chopper(t, o, hs, he)) is None)
-    assert len(cache) <= descent_budget(DRIVER, *RANGES.values(), None)
+    assert len(cache) <= descent_budget(DRIVER, FULL)
     assert len(cache) < grid_size / 20
 
 
@@ -56,9 +56,8 @@ def test_descent_respects_audible_penalty():
         magnitude = 3000.0 - 100 * combo.toff
         return penalized_score(combo, [magnitude], DRIVER, tmc.Hearing(weight=1.0))
 
-    ranges = dict(RANGES, toff=Range(1, 15))
-    best = coordinate_descent(DRIVER, ranges['tbl'], ranges['toff'], ranges['hstrt'],
-                              ranges['hend'], None, tmc.Chopper(2, 3, 5, 0), audible_trap)
+    best = coordinate_descent(DRIVER, tmc.Space(**dict(RANGES, toff=Range(1, 15))),
+                              tmc.Chopper(2, 3, 5, 0), audible_trap)
     assert not tmc.Hearing().audible(best, DRIVER)
 
 
@@ -129,7 +128,7 @@ def nonseparable(combo):
 
 
 def test_multi_start_escapes_the_toff_hend_blind_spot():
-    ranges = {'tbl': Range(0, 0), 'toff': Range(1, 8), 'hstrt': Range(0, 7), 'hend': Range(0, 15)}
+    space = tmc.Space(Range(0, 0), Range(1, 8), Range(0, 7), Range(0, 15))
     baseline = tmc.Chopper(0, 3, 4, 0)
     cache = {}
     def cached(combo):
@@ -137,10 +136,8 @@ def test_multi_start_escapes_the_toff_hend_blind_spot():
             cache[combo] = nonseparable(combo)
         return cache[combo]
 
-    single = coordinate_descent(DRIVER, ranges['tbl'], ranges['toff'], ranges['hstrt'],
-                                ranges['hend'], None, baseline, cached)
-    multi = multi_start_descent(DRIVER, ranges['tbl'], ranges['toff'], ranges['hstrt'],
-                                ranges['hend'], None, baseline, cached)
+    single = coordinate_descent(DRIVER, space, baseline, cached)
+    multi = multi_start_descent(DRIVER, space, baseline, cached)
 
     assert single.toff == 8 and single.hend == 0        # stuck in the shallow valley
     assert multi == tmc.Chopper(0, 2, 4, 14)            # deep global one (hend 15 breaks 18-limit)
@@ -149,7 +146,8 @@ def test_multi_start_escapes_the_toff_hend_blind_spot():
 
 def test_spanning_starts_valid_and_spread():
     # tbl 2:3 keeps toff=1 valid so all three toff levels survive
-    starts = _spanning_starts(Range(2, 3), Range(1, 8), Range(0, 7), Range(0, 15))
+    starts = _spanning_starts(tmc.Space(Range(2, 3), Range(1, 8), Range(0, 7), Range(0, 15)),
+                              DRIVER)
     assert all(tmc.validate(c) is None for c in starts)
     assert {c.toff for c in starts} == {1, 4, 8}
     assert {c.hend for c in starts} == {0, 7, 15}
@@ -219,7 +217,7 @@ def test_edge_tiebreaker_never_overrides_a_real_vibration_win():
 
 def test_every_candidate_shares_the_start_tpfd_spelling():
     from chopper_autotune import tmc
-    from chopper_autotune.collect import Range
+    from chopper_autotune.tmc import Range
     from chopper_autotune.search import multi_start_descent
 
     def run(driver, tpfd_range, start):
@@ -228,8 +226,8 @@ def test_every_candidate_shares_the_start_tpfd_spelling():
         def evaluate(combo):
             seen.add(combo)
             return float(combo.toff + combo.hend)
-        multi_start_descent(driver, Range(0, 3), Range(1, 8), Range(0, 7), Range(0, 15),
-                            tpfd_range, start, evaluate, rounds=1)
+        multi_start_descent(driver, tmc.Space(**RANGES, tpfd=tpfd_range), start, evaluate,
+                            rounds=1)
         return seen
 
     # no sweep: the spanning seeds must not reintroduce an explicit tpfd next to None

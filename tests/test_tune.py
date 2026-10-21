@@ -1,9 +1,9 @@
-import argparse
+import time
 
 import pytest
 
 from chopper_autotune import tmc, tune
-from chopper_autotune.collect import Range
+from chopper_autotune.cli import build_parser
 from chopper_autotune.dataset import Dataset
 
 
@@ -14,18 +14,18 @@ def two_wheel_drive(monkeypatch):
 
 
 def tune_args(**overrides):
-    base = {'axis': 'xy', 'speed': None, 'save': False, 'iterations': 1,
-            'audible_khz': None, 'audible_weight': 0.25, 'skip_audible': False,
-            'accel': None, 'no_raw': False, 'csv': False,
-            'socket': None, 'url': 'http://x', 'dry_run': False}
-    base.update(overrides)
-    return argparse.Namespace(**base)
+    # through the real parser, so a new parameter of CHOPPER_TUNE reaches these runs
+    args = build_parser().parse_args(['tune', '--url', 'http://x'])
+    for name, value in overrides.items():
+        setattr(args, name, value)
+    return args
 
 
-def make_dataset(tmp_path, axis, toff):
-    ds = Dataset.create(tmp_path / axis, {
-        'driver': '2209', 'stepper': 'stepper_' + axis, 'trim': 0.1})
+def make_dataset(tmp_path, axis, toff, winner=True):
     combo = tmc.Chopper(0, toff, 7, 5)
+    ds = Dataset.create(tmp_path / axis, {
+        'axis': axis, 'search': 'descent', 'driver': '2209', 'stepper': 'stepper_' + axis,
+        'trim': 0.1, **({'winner': combo.fields()} if winner else {})})
     ds.append({'id': 'a', 'kind': 'move', 'status': 'ok', **combo.fields(),
                'score': {'median_magnitude': 1000.0}})
     return str(ds.root)
@@ -42,7 +42,8 @@ def test_tune_runs_both_axes_and_seeds_second(tmp_path, monkeypatch, capsys):
     def fake_scan(kl, args, popup):
         calls['scan'].append(args.axis)
         calls['popups'].append(popup)
-        return 0, {'x': 58, 'y': 52}[args.axis]
+        speed = {'x': 58, 'y': 52}[args.axis]
+        return 0, speed, speed
 
     def fake_collect(kl, args, popup):
         calls['collect'].append((args.axis, args.speed, args.seed_from))
@@ -54,16 +55,15 @@ def test_tune_runs_both_axes_and_seeds_second(tmp_path, monkeypatch, capsys):
 
     assert tune.run_tune(tune_args()) == 0
     assert calls['scan'] == ['x', 'y']
-    assert calls['collect'] == [('x', Range(58, 58), None),
-                                ('y', Range(52, 52), roots['x'])]
+    assert calls['collect'] == [('x', tmc.Range(58, 58), None),
+                                ('y', tmc.Range(52, 52), roots['x'])]
     # the motors still have work after each stage: only the tune's own verdict pops up
     assert calls['popups'] == [False] * 4
     out = capsys.readouterr().out
     assert '[tmc2209 stepper_x]' in out and 'driver_TOFF: 8' in out
     assert '[tmc2209 stepper_y]' in out and 'driver_TOFF: 6' in out
-    # the exact command for this run alone, and what CHOPPER_SAVE takes along
-    assert 'To save stepper_x from this run alone: CHOPPER_ANALYZE DATASET=%s SAVE=1' % roots['x'] in out
-    assert 'CHOPPER_SAVE writes the latest result of every motor, and the stored' in out
+    # one way to save this run: the command for its motors
+    assert 'To save: CHOPPER_SAVE MOTOR=AB\n' in out and 'CHOPPER_ANALYZE' not in out
 
 
 def test_tune_single_axis_with_explicit_speed(tmp_path, monkeypatch):
@@ -74,33 +74,57 @@ def test_tune_single_axis_with_explicit_speed(tmp_path, monkeypatch):
     monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: pytest.fail('scan must be skipped'))
     monkeypatch.setattr(tune, 'collect', lambda kl, args, popup: (0, roots[args.axis]))
 
-    assert tune.run_tune(tune_args(axis='y', speed=Range(52, 52))) == 0
+    assert tune.run_tune(tune_args(axis='y', speed=52)) == 0
 
 
-def test_tune_save_batches_all_winners(tmp_path, monkeypatch):
+def test_tune_save_saves_what_save_with_the_motors_of_the_run_saves(tmp_path, monkeypatch):
+    # one way to save a run: SAVE=1 now is CHOPPER_SAVE MOTOR=<its motors> later
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from chopper_autotune import analyze, extruder
+    from chopper_autotune.cli import build_parser
+    from chopper_autotune.dataset import save_json
     roots = {'x': make_dataset(tmp_path, 'x', 8), 'y': make_dataset(tmp_path, 'y', 6)}
+    extruder.save_winner_state('2209', tmc.Chopper(3, 7, 6, 0))    # not a motor of these runs
+    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: [Path(roots[axis]) for axis in 'xy'])
+    # the config holds what the runs measured as the motors' own registers
+    settings = {'tmc2209 stepper_' + axis: {'driver_tbl': 0, 'driver_toff': toff, 'driver_hstrt': 7,
+                                            'driver_hend': 5} for axis, toff in (('x', 8), ('y', 6))}
+    told = []
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: SimpleNamespace(
+        settings=lambda: settings, accepted_commands=lambda: None, gcode=told.append))
     saved = []
+    monkeypatch.setattr(analyze, 'run_save', lambda mk, items, extruder_state=None, lines=():
+                        saved.append(([manifest['stepper'] for manifest, _ in items], extruder_state,
+                                      lines)))
     monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
     monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
     monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
-    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58))
+    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58, 58))
     monkeypatch.setattr(tune, 'collect', lambda kl, args, popup: (0, roots[args.axis]))
-    monkeypatch.setattr(tune, 'Moonraker', lambda url: '<mk>')
-    monkeypatch.setattr('chopper_autotune.analyze.run_save',
-                        lambda mk, items: saved.extend(items))
 
+    # a run of motor A alone leaves B's newer result unsaved
+    for axis, motor, steppers in (('xy', 'AB', ['stepper_x', 'stepper_y']), ('x', 'A', ['stepper_x'])):
+        tune.run_tune(tune_args(axis=axis, save=True))
+        analyze.run_save_latest(build_parser().parse_args(['save', '--motor', motor]))
+        assert len(saved) == 2 and saved[0] == saved[1] and saved[0][:2] == (steppers, None)
+        assert saved[0][2][0].startswith('motor A: saving')
+        saved.clear()
+    # a clock set back since the last CHOPPER_RESTORE (a board without RTC or network):
+    # the run just made is newer than it all the same
+    save_json(analyze.RESULTS_HOME / analyze.RESTORED, {'time': time.time() + 3600})
     tune.run_tune(tune_args(save=True))
-    assert [manifest['stepper'] for manifest, _ in saved] == ['stepper_x', 'stepper_y']
-    assert saved[0][1] == tmc.Chopper(0, 8, 7, 5)
-    # a motor that keeps its own registers has nothing to write: no backup, no restart
+    assert [steppers for steppers, _, _ in saved] == [['stepper_x', 'stepper_y']]
     saved.clear()
+    # a motor that keeps its own registers has nothing to write: no backup, no restart
     Dataset.open(roots['y']).update_manifest(kept=True)
     tune.run_tune(tune_args(save=True))
-    assert [manifest['stepper'] for manifest, _ in saved] == ['stepper_x']
+    assert [steppers for steppers, _, _ in saved] == [['stepper_x']]
     Dataset.open(roots['x']).update_manifest(kept=True)
     saved.clear()
     tune.run_tune(tune_args(save=True))
-    assert saved == []
+    assert saved == [] and told and 'Nothing to save' in told[-1]
 
 
 def test_winner_of_prefers_the_recorded_winner(tmp_path):
@@ -113,7 +137,7 @@ def test_winner_of_prefers_the_recorded_winner(tmp_path):
 
 
 def test_winner_of_falls_back_to_ranking(tmp_path):
-    root = make_dataset(tmp_path, 'x', 8)          # pre-winner dataset
+    root = make_dataset(tmp_path, 'x', 8, winner=False)
     _, combo = tune.winner_of(root, 0.25)
     assert combo == tmc.Chopper(0, 8, 7, 5)
 
@@ -122,13 +146,13 @@ def test_tune_aborts_without_resonance_peak(monkeypatch):
     monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
     monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
     monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
-    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, None))
+    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, None, 64))
 
     with pytest.raises(SystemExit, match='no clear resonance peak'):
         tune.run_tune(tune_args())
 
 
-def test_tune_reports_the_outcome_on_screen(tmp_path, monkeypatch):
+def test_tune_reports_the_outcome_on_screen(tmp_path, monkeypatch, capsys):
     """The run's outcome must reach the display: the console summary only lands in the
     detached log, and SAVE=1 restarts Klipper, wiping the status line (field-reported:
     "tune ended and nothing said how")."""
@@ -136,7 +160,7 @@ def test_tune_reports_the_outcome_on_screen(tmp_path, monkeypatch):
     monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
     monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
     monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
-    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58))
+    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58, 58))
     monkeypatch.setattr(tune, 'collect', lambda kl, args, popup: (0, roots[args.axis]))
     finals = []
 
@@ -150,19 +174,23 @@ def test_tune_reports_the_outcome_on_screen(tmp_path, monkeypatch):
     monkeypatch.setattr(tune, 'Screen', FakeScreen)
     assert tune.run_tune(tune_args()) == 0
     assert finals and finals[-1].startswith('Tune done: A 0/8/7/5 · B 0/2/7/5')
-    assert 'CHOPPER_SAVE to persist' in finals[-1]
+    assert finals[-1].endswith(' — to save: CHOPPER_SAVE MOTOR=AB')
+    assert tune.run_tune(tune_args(axis='y', speed=52)) == 0
+    assert finals[-1].endswith(' — to save: CHOPPER_SAVE MOTOR=B')
     # a motor whose own registers held against the winner says so
     Dataset.open(roots['y']).update_manifest(kept=True, winner={'tbl': 0, 'toff': 2, 'hstrt': 7,
                                                                 'hend': 5})
     assert tune.run_tune(tune_args()) == 0
     assert finals[-1].startswith('Tune done: A 0/8/7/5 · B keep 0/2/7/5')
     Dataset.open(roots['x']).update_manifest(kept=True)
+    capsys.readouterr()
     assert tune.run_tune(tune_args()) == 0
     assert finals[-1].endswith(' — your registers stay')
+    assert 'To save' not in capsys.readouterr().out          # nor does the log offer a save
 
     # a failure must speak too — via the global CLI announcer now (any tool, any error)
     finals.clear()
-    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, None))
+    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, None, 64))
     with pytest.raises(SystemExit, match='no clear resonance peak'):
         tune.run_tune(tune_args())
 
@@ -230,7 +258,7 @@ def test_a_run_under_autotune_advises_instead_of_offering_to_paste(tmp_path, mon
     monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
     monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
     monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
-    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58))
+    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58, 58))
     monkeypatch.setattr(tune, 'collect', lambda kl, args, popup: (0, str(ds.root)))
     assert tune.run_tune(tune_args(axis='x')) == 0
     out = capsys.readouterr().out
@@ -252,7 +280,7 @@ def test_autotune_on_one_motor_marks_only_that_one(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
     monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
     monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
-    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58))
+    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58, 58))
     monkeypatch.setattr(tune, 'collect', lambda kl, args, popup: (0, roots[args.axis]))
     finals = []
     monkeypatch.setattr(tune.Screen, 'final', lambda self, text, short=None: finals.append(text))
@@ -260,10 +288,10 @@ def test_autotune_on_one_motor_marks_only_that_one(tmp_path, monkeypatch, capsys
     out = capsys.readouterr().out
     assert 'stepper_x: klipper_tmc_autotune' in out and 'driver_SGTHRS: 80' in out
     assert 'stepper_y: klipper_tmc_autotune' not in out
-    assert 'To save stepper_y from this run alone' in out and 'To save stepper_x' not in out
+    assert 'To save: CHOPPER_SAVE MOTOR=AB' in out
     assert out.count('driver_TOFF: 8') == 1          # a snippet for B only, advice for A
     assert '(autotune)' in finals[-1] and finals[-1].count('(autotune)') == 1
-    assert finals[-1].endswith('to save: see tune.log')
+    assert finals[-1].endswith('to save: CHOPPER_SAVE MOTOR=AB')
 
 
 def test_a_tmc2208_under_autotune_gets_the_advice_not_a_paste(tmp_path, monkeypatch, capsys):
@@ -277,9 +305,9 @@ def test_a_tmc2208_under_autotune_gets_the_advice_not_a_paste(tmp_path, monkeypa
     monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
     monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
     monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
-    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58))
+    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58, 58))
     monkeypatch.setattr(tune, 'collect', lambda kl, args, popup: (0, str(ds.root)))
     assert tune.run_tune(tune_args(axis='x')) == 0
     out = capsys.readouterr().out
     assert 'tune it again with SAVE=1, or save a result already measured' in out
-    assert 'To save stepper_x' not in out and 'driver_TOFF' not in out
+    assert 'To save' not in out and 'driver_TOFF' not in out

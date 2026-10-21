@@ -3,6 +3,7 @@ import time
 
 import pytest
 
+from chopper_autotune.cli import build_parser
 from chopper_autotune.collect import (check_resume, failure_display, refuse_if_printing,
                                       run_restore)
 from chopper_autotune.klippy import KlippyError
@@ -242,7 +243,8 @@ def test_report_winner_reports_improvement_vs_defaults(tmp_path, monkeypatch, ca
     finals = []
     hw = SimpleNamespace(driver=tmc.DRIVERS['2209'], stepper='stepper_x', autotune=None, motor='A',
                          rail=[SimpleNamespace(stepper='stepper_x')])
-    args = SimpleNamespace(trim=0.1, audible_weight=0.25)
+    args = build_parser().parse_args(['collect', '--speed', '58', '--tbl', '0:3'])
+    args.trim = 0.1
     screen = SimpleNamespace(final=lambda text, short=None: finals.append(text))
     rounds = {tmc.KLIPPER_DEFAULT: [{'magnitude': 2000.0, 'score': 2000.0}] * 4,
               tmc.Chopper(0, 2, 4, 7): [{'magnitude': 1000.0, 'score': 1000.0}] * 4}
@@ -397,7 +399,8 @@ def test_report_winner_finds_the_stock_reference_when_tpfd_is_not_swept(tmp_path
                        'score': {'median_magnitude': magnitude, 'clicks': 0}})
     hw = SimpleNamespace(driver=tmc.DRIVERS['2240'], stepper='stepper_x', baseline={}, autotune=None,
                          motor='A', rail=[SimpleNamespace(stepper='stepper_x')])
-    args = SimpleNamespace(trim=0.1, audible_weight=0.25, tpfd=None)
+    args = build_parser().parse_args(['collect', '--speed', '58', '--tbl', '0:3'])
+    args.trim = 0.1
     rounds = {tmc.Chopper(2, 3, 5, 2): [{'magnitude': 2000.0, 'score': 2000.0}] * 4,
               tmc.Chopper(0, 2, 4, 7): [{'magnitude': 1000.0, 'score': 1000.0}] * 4}
     report_winner(hw, ds, args, SimpleNamespace(final=lambda text, short=None: None), 5,

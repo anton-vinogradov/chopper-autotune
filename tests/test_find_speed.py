@@ -55,8 +55,8 @@ def test_scan_sweeps_on_stock_registers_and_restores(tmp_path, monkeypatch):
     args = build_parser().parse_args(
         ['find-speed', '--axis', 'x', '--yes', '--min-speed', '58', '--max-speed', '58',
          '--dataset', str(tmp_path / 'ds'), '--no-raw'])
-    code, recommended = fs.scan(kl, args)
-    assert code == 0 and recommended is None          # single flat point: no peaks
+    code, recommended, loudest = fs.scan(kl, args)
+    assert (code, recommended, loudest) == (0, None, 58)      # single flat point: no peaks
 
     sweep_set = next(s for s in kl.scripts if 'FIELD=hend' in s and 'VALUE=0' in s)
     restore_set = next(s for s in reversed(kl.scripts) if 'FIELD=hend' in s)
@@ -179,7 +179,7 @@ def test_a_scan_that_mostly_failed_names_its_first_error(stub_printer, monkeypat
 
 
 def test_a_few_failed_scan_moves_still_give_a_verdict(stub_printer, monkeypatch, capsys):
-    code, recommended = scan_failing(stub_printer, monkeypatch, failing_every=10)
+    code, recommended, _ = scan_failing(stub_printer, monkeypatch, failing_every=10)
     assert code == 2 and recommended == 60
     assert 'scan moves failed; the first error: drv_err=1' in capsys.readouterr().out
 

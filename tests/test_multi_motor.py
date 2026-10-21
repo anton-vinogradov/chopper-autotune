@@ -383,12 +383,28 @@ def test_a_rail_whose_drivers_run_different_registers_has_none_to_keep():
     one = SimpleNamespace(baseline={'tbl': 1, 'toff': 4, 'hstrt': 2, 'hend': 3})
     hw = SimpleNamespace(driver=driver, baseline=one.baseline,
                          rail=[one, SimpleNamespace(baseline=dict(one.baseline, toff=5))])
+    search = build_parser().parse_args(['collect', '--speed', '58'])
     assert current_registers(hw, stock) is None
-    assert block_rivals(hw, SimpleNamespace()) == (
-        [stock], 'the drivers of the rail run different registers')
+    assert block_rivals(hw, search) == ([stock], 'the drivers of the rail run different registers')
     hw.rail = [one, SimpleNamespace(baseline=dict(one.baseline))]
     assert current_registers(hw, stock) == tmc.Chopper(1, 4, 2, 3)
-    assert block_rivals(hw, SimpleNamespace()) == ([stock, tmc.Chopper(1, 4, 2, 3)], '')
+    assert block_rivals(hw, search) == ([stock, tmc.Chopper(1, 4, 2, 3)], '')
+
+
+def test_the_registers_a_rail_shares_outside_the_ranges_stay_out_of_the_rounds():
+    # a pair that saved TBL 0 into both drivers: by default the rounds would keep the edge
+    from types import SimpleNamespace
+
+    from chopper_autotune.collect import block_rivals
+    driver = tmc.DRIVERS['2209']
+    edge = {'tbl': 0, 'toff': 3, 'hstrt': 3, 'hend': 15}
+    hw = SimpleNamespace(driver=driver, baseline=edge,
+                         rail=[SimpleNamespace(baseline=edge), SimpleNamespace(baseline=dict(edge))])
+    assert block_rivals(hw, build_parser().parse_args(['collect', '--speed', '58'])) == (
+        [driver.default], 'TBL 0 is outside TBL=1:3 and hysteresis 16 is above MAX_HYSTERESIS=15')
+    assert block_rivals(hw, build_parser().parse_args(
+        ['collect', '--speed', '58', '--tbl', '0:3', '--max-hysteresis', '16'])) == (
+        [driver.default, tmc.Chopper(0, 3, 3, 15)], '')
 
 
 def test_the_plan_warns_when_the_drivers_of_a_rail_home_at_different_currents(capsys):

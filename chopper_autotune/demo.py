@@ -94,10 +94,12 @@ def rail_registers(hw: Hardware) -> tmc.Chopper:
                          '%s. The demo plays one set against the defaults'
                          % (' and '.join(stepper for stepper, _ in sets),
                             ', '.join('%s runs %s' % pair for pair in sets)))
+    from .cli import command_line
     raise SystemExit('give every driver of motor %s the same registers, then retry: the config '
-                     'gives %s. The demo plays one set against the defaults. CHOPPER_SAVE writes '
+                     'gives %s. The demo plays one set against the defaults. %s writes '
                      'the same set into each driver. Nothing was moved'
-                     % (hw.motor, ', '.join('%s %s' % pair for pair in sets)))
+                     % (hw.motor, ', '.join('%s %s' % pair for pair in sets),
+                        command_line('save', motor=hw.motor)))
 
 
 def showcase_together(kl, args) -> int:
@@ -115,7 +117,7 @@ def showcase_together(kl, args) -> int:
 
     speed = {}
     for axis in MOTORS:
-        speed[axis] = args.speed.lo if args.speed is not None else known_speed(axis)
+        speed[axis] = args.speed if args.speed is not None else known_speed(axis)
         if speed[axis] is None:
             # a silent fallback speed would play the show off resonance and prove nothing
             raise SystemExit('no tuned speed recorded for motor %s — run CHOPPER_TUNE '
@@ -310,7 +312,7 @@ def demo(kl: Klippy, args) -> int:
                          '(tune and save the motor first)')
 
     if args.speed is not None:
-        speed = args.speed.lo
+        speed = args.speed
     else:
         speed = known_speed(args.axis)
         if speed is not None:
@@ -323,7 +325,7 @@ def demo(kl: Klippy, args) -> int:
         else:
             print('No previous run to reuse a speed from; scanning for resonance first')
             from .find_speed import scan
-            _, speed = scan(kl, _scan_args(args))
+            _, speed, _ = scan(kl, _scan_args(args))
             if speed is None:
                 raise SystemExit('no clear resonance speed found; pass SPEED=')
 

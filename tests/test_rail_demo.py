@@ -356,6 +356,8 @@ def test_what_would_spoil_a_rail_demo_is_refused_before_any_gcode(source, case, 
     assert display.startswith('FAIL ' + shown) and display == collect.display_text(display)
     if case == 'max_velocity, show':
         assert 'it caps the head at 100 of the 113 mm/s' in message
+    if case.startswith('registers apart'):
+        assert 'CHOPPER_SAVE MOTOR=A writes the same set into each driver' in message
 
 
 @pytest.mark.parametrize('source', SOURCES)

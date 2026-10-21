@@ -44,8 +44,9 @@ RUNS = {
                                          '--repeats', '1']),
     'map': (resonance_map.resonance_map, ['map', '--axis', 'x', '--min-speed', '40', '--max-speed',
                                           '60', '--step', '10', '--yes', '--no-raw']),
-    # both motors, the second seeded with the first's winner: on one printer, a descent is long
-    'tune': (tune.run_tune, ['tune', '--speed', '60', '--no-raw']),
+    # both motors, B seeded by A's winner, each scan finding 60 mm/s (run); on one printer:
+    # a descent is long
+    'tune': (tune.run_tune, ['tune', '--no-raw']),
 }
 PARK_INTERVAL = {'collect-rehome': 3}
 HOT_AFTER = {'collect-hot': 3}
@@ -105,6 +106,7 @@ def run(source: str, printer: str, case: str, tmp_path, monkeypatch, capsys) -> 
         kl = front.connect()
         monkeypatch.setattr(tune, 'Klippy', lambda path: types.SimpleNamespace(connect=lambda: kl))
         monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<front>')
+        monkeypatch.setattr(tune, 'scan', lambda kl, args, popup=True: (0, 60, 60))
         tool(build_parser().parse_args(argv))
     else:
         if tool not in (demo.demo, demo.showcase_together):

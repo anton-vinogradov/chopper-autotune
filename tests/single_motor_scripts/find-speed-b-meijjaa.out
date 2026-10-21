@@ -9,7 +9,7 @@ Scanning with Klipper default registers tbl2_toff3_hstrt5_hend2_tpfd4 — the cu
 [3/3] 50 mm/s: median 298.7
 Restoring registers, homing
 Done in 0m: report <tmp>/dataset/report.html
-No clear resonance peaks; highest magnitude 299 at 50 mm/s. Consider widening the range or more --iterations.
+Highest magnitude 299 at 50 mm/s
 === manifest.json ===
 {
   "version": "0.3.0",

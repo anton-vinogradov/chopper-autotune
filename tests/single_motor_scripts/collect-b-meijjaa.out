@@ -1,32 +1,26 @@
 Driver tmc5160 on stepper_y (motor B), accelerometer adxl345, kinematics cartesian, baseline {'tbl': 1, 'toff': 4, 'hstrt': 2, 'hend': 3, 'tpfd': 4}
-Plan: 2 combinations x 1 speeds -> 40 moves of 82.0mm, capture stream, ETA 0:02
+Plan: 2 combinations x 1 speeds -> 24 moves of 82.0mm, capture stream, ETA 0:01
+Registers the run tries: TBL=1 TOFF=3:4 HSTRT=4 HEND=3 MAX_HYSTERESIS=15
 Preparing: home XY, park at center, switch the gantry and head motors off
 Baseline noise: median magnitude 5.0
 [1/2] tbl1_toff3_hstrt4_hend3 v40: median 56.0
 [2/2] tbl1_toff4_hstrt4_hend3 v40: median 50.9
 Validating 2 candidate(s) with 2 extra iterations each
-Measuring tbl1_toff4_hstrt4_hend3 / tbl2_toff3_hstrt5_hend2 / tbl1_toff4_hstrt2_hend3 back to back, 4 rounds: the gain is counted on these moves
+Your registers tbl1_toff4_hstrt2_hend3 are not measured back to back (HSTRT 2 is outside HSTRT=4): the winner is not checked against them
 
 rank  tbl  toff  hstrt  hend  tpfd  magnitude   spread   n clicks   f_chop 
-1       1     4      2     3     -       50.9      0.0   8      0  34.1kHz 
-2       1     4      4     3     -       50.9      0.0  14      0  34.1kHz 
-3       1     3      4     3     -       56.0      0.0   6      0  41.7kHz 
-4       2     3      5     2     -       58.6      0.0   8      0  38.5kHz 
-
-Keep your registers tbl1_toff4_hstrt2_hend3: the best found, tbl1_toff4_hstrt4_hend3, was not quieter than them in each of 4 back-to-back rounds (51 -> 51)
-
-vs Klipper defaults tbl2_toff3_hstrt5_hend2, back to back: 1.2x less vibration, quieter in each of 4 rounds (59 -> 51)
+1       1     4      4     3     -       50.9      0.0   6      0  34.1kHz 
+2       1     3      4     3     -       56.0      0.0   6      0  41.7kHz 
 
 Recommended for printer.cfg:
 
 [tmc5160 stepper_y]
 driver_TBL: 1
 driver_TOFF: 4
-driver_HSTRT: 2
+driver_HSTRT: 4
 driver_HEND: 3
 Restoring baseline registers, homing
-Done in 1m: 36 ok, 0 failed -> <tmp>/dataset
-Next: chopper-autotune analyze <tmp>/dataset
+Done in 0m: 12 ok, 0 failed -> <tmp>/dataset
 === manifest.json ===
 {
   "version": "0.3.0",
@@ -71,6 +65,7 @@ Next: chopper-autotune analyze <tmp>/dataset
     ],
     "tpfd": null
   },
+  "max_hysteresis": 15,
   "search": "grid",
   "accel": 50.0,
   "measure_time": 1.25,
@@ -81,15 +76,15 @@ Next: chopper-autotune analyze <tmp>/dataset
   "speeds": [
     40
   ],
-  "total_moves": 40,
+  "total_moves": 24,
   "winner": {
     "tbl": 1,
     "toff": 4,
-    "hstrt": 2,
+    "hstrt": 4,
     "hend": 3
   },
-  "kept": true,
-  "improvement": 1.15
+  "kept": false,
+  "improvement": null
 }
 === measurements.jsonl ===
 {"id": "baseline", "kind": "baseline", "source": "stream", "ts": "<time>", "score": {"samples": 500, "sample_rate_hz": 400.8, "median_magnitude": 4.993783758672311, "p95_magnitude": 6.802536590685764, "rms": 5.001701292104634}, "status": "ok"}
@@ -105,27 +100,3 @@ Next: chopper-autotune analyze <tmp>/dataset
 {"id": "tbl1_toff3_hstrt4_hend3_v40_i1_rev", "kind": "move", "source": "stream", "tbl": 1, "toff": 3, "hstrt": 4, "hend": 3, "speed": 40, "direction": -1, "iteration": 1, "ts": "<time>", "steady": [31.106983, 32.106983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 56.006081500462045, "p95_magnitude": 76.47444205152988, "rms": 56.1296998795615, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
 {"id": "tbl1_toff3_hstrt4_hend3_v40_i2_fwd", "kind": "move", "source": "stream", "tbl": 1, "toff": 3, "hstrt": 4, "hend": 3, "speed": 40, "direction": 1, "iteration": 2, "ts": "<time>", "steady": [33.956983, 34.956983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 56.006081500462045, "p95_magnitude": 76.47444205152988, "rms": 56.1296998795615, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
 {"id": "tbl1_toff3_hstrt4_hend3_v40_i2_rev", "kind": "move", "source": "stream", "tbl": 1, "toff": 3, "hstrt": 4, "hend": 3, "speed": 40, "direction": -1, "iteration": 2, "ts": "<time>", "steady": [36.806983, 37.806983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 56.006081500462045, "p95_magnitude": 76.47444205152988, "rms": 56.1296998795615, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl1_toff4_hstrt4_hend3_v40_i3_fwd", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 4, "hend": 3, "speed": 40, "direction": 1, "iteration": 3, "ts": "<time>", "steady": [39.656983, 40.656983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 50.91461954587457, "p95_magnitude": 69.52222004684535, "rms": 51.02699989051045, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl1_toff4_hstrt4_hend3_v40_i3_rev", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 4, "hend": 3, "speed": 40, "direction": -1, "iteration": 3, "ts": "<time>", "steady": [42.506983, 43.506983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 50.91461954587457, "p95_magnitude": 69.52222004684535, "rms": 51.02699989051045, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl2_toff3_hstrt5_hend2_v40_i3_fwd", "kind": "move", "source": "stream", "tbl": 2, "toff": 3, "hstrt": 5, "hend": 2, "speed": 40, "direction": 1, "iteration": 3, "ts": "<time>", "steady": [45.356983, 46.356983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 58.551812477755774, "p95_magnitude": 79.95055305387214, "rms": 58.68104987408703, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl2_toff3_hstrt5_hend2_v40_i3_rev", "kind": "move", "source": "stream", "tbl": 2, "toff": 3, "hstrt": 5, "hend": 2, "speed": 40, "direction": -1, "iteration": 3, "ts": "<time>", "steady": [48.206983, 49.206983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 58.551812477755774, "p95_magnitude": 79.95055305387214, "rms": 58.68104987408703, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl1_toff4_hstrt2_hend3_v40_i3_fwd", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 2, "hend": 3, "speed": 40, "direction": 1, "iteration": 3, "ts": "<time>", "steady": [51.056983, 52.056983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 50.91461954587457, "p95_magnitude": 69.52222004684535, "rms": 51.02699989051045, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl1_toff4_hstrt2_hend3_v40_i3_rev", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 2, "hend": 3, "speed": 40, "direction": -1, "iteration": 3, "ts": "<time>", "steady": [53.906983, 54.906983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 50.91461954587457, "p95_magnitude": 69.52222004684535, "rms": 51.02699989051045, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl1_toff4_hstrt2_hend3_v40_i4_fwd", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 2, "hend": 3, "speed": 40, "direction": 1, "iteration": 4, "ts": "<time>", "steady": [56.756983, 57.756983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 50.91461954587457, "p95_magnitude": 69.52222004684535, "rms": 51.02699989051045, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl1_toff4_hstrt2_hend3_v40_i4_rev", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 2, "hend": 3, "speed": 40, "direction": -1, "iteration": 4, "ts": "<time>", "steady": [59.606983, 60.606983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 50.91461954587457, "p95_magnitude": 69.52222004684535, "rms": 51.02699989051045, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl2_toff3_hstrt5_hend2_v40_i4_fwd", "kind": "move", "source": "stream", "tbl": 2, "toff": 3, "hstrt": 5, "hend": 2, "speed": 40, "direction": 1, "iteration": 4, "ts": "<time>", "steady": [62.456983, 63.456983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 58.551812477755774, "p95_magnitude": 79.95055305387214, "rms": 58.68104987408703, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl2_toff3_hstrt5_hend2_v40_i4_rev", "kind": "move", "source": "stream", "tbl": 2, "toff": 3, "hstrt": 5, "hend": 2, "speed": 40, "direction": -1, "iteration": 4, "ts": "<time>", "steady": [65.306983, 66.306983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 58.551812477755774, "p95_magnitude": 79.95055305387214, "rms": 58.68104987408703, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl1_toff4_hstrt4_hend3_v40_i4_fwd", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 4, "hend": 3, "speed": 40, "direction": 1, "iteration": 4, "ts": "<time>", "steady": [68.156983, 69.156983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 50.91461954587457, "p95_magnitude": 69.52222004684535, "rms": 51.02699989051045, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl1_toff4_hstrt4_hend3_v40_i4_rev", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 4, "hend": 3, "speed": 40, "direction": -1, "iteration": 4, "ts": "<time>", "steady": [71.006983, 72.006983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 50.91461954587457, "p95_magnitude": 69.52222004684535, "rms": 51.02699989051045, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl1_toff4_hstrt4_hend3_v40_i5_fwd", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 4, "hend": 3, "speed": 40, "direction": 1, "iteration": 5, "ts": "<time>", "steady": [73.856983, 74.856983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 50.91461954587457, "p95_magnitude": 69.52222004684535, "rms": 51.02699989051045, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl1_toff4_hstrt4_hend3_v40_i5_rev", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 4, "hend": 3, "speed": 40, "direction": -1, "iteration": 5, "ts": "<time>", "steady": [76.706983, 77.706983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 50.91461954587457, "p95_magnitude": 69.52222004684535, "rms": 51.02699989051045, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl2_toff3_hstrt5_hend2_v40_i5_fwd", "kind": "move", "source": "stream", "tbl": 2, "toff": 3, "hstrt": 5, "hend": 2, "speed": 40, "direction": 1, "iteration": 5, "ts": "<time>", "steady": [79.556983, 80.556983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 58.551812477755774, "p95_magnitude": 79.95055305387214, "rms": 58.68104987408703, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl2_toff3_hstrt5_hend2_v40_i5_rev", "kind": "move", "source": "stream", "tbl": 2, "toff": 3, "hstrt": 5, "hend": 2, "speed": 40, "direction": -1, "iteration": 5, "ts": "<time>", "steady": [82.406983, 83.406983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 58.551812477755774, "p95_magnitude": 79.95055305387214, "rms": 58.68104987408703, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl1_toff4_hstrt2_hend3_v40_i5_fwd", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 2, "hend": 3, "speed": 40, "direction": 1, "iteration": 5, "ts": "<time>", "steady": [85.256983, 86.256983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 50.91461954587457, "p95_magnitude": 69.52222004684535, "rms": 51.02699989051045, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl1_toff4_hstrt2_hend3_v40_i5_rev", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 2, "hend": 3, "speed": 40, "direction": -1, "iteration": 5, "ts": "<time>", "steady": [88.106983, 89.106983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 50.91461954587457, "p95_magnitude": 69.52222004684535, "rms": 51.02699989051045, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl1_toff4_hstrt2_hend3_v40_i6_fwd", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 2, "hend": 3, "speed": 40, "direction": 1, "iteration": 6, "ts": "<time>", "steady": [90.956983, 91.956983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 50.91461954587457, "p95_magnitude": 69.52222004684535, "rms": 51.02699989051045, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl1_toff4_hstrt2_hend3_v40_i6_rev", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 2, "hend": 3, "speed": 40, "direction": -1, "iteration": 6, "ts": "<time>", "steady": [93.806983, 94.806983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 50.91461954587457, "p95_magnitude": 69.52222004684535, "rms": 51.02699989051045, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl2_toff3_hstrt5_hend2_v40_i6_fwd", "kind": "move", "source": "stream", "tbl": 2, "toff": 3, "hstrt": 5, "hend": 2, "speed": 40, "direction": 1, "iteration": 6, "ts": "<time>", "steady": [96.656983, 97.656983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 58.551812477755774, "p95_magnitude": 79.95055305387214, "rms": 58.68104987408703, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl2_toff3_hstrt5_hend2_v40_i6_rev", "kind": "move", "source": "stream", "tbl": 2, "toff": 3, "hstrt": 5, "hend": 2, "speed": 40, "direction": -1, "iteration": 6, "ts": "<time>", "steady": [99.506983, 100.506983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 58.551812477755774, "p95_magnitude": 79.95055305387214, "rms": 58.68104987408703, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl1_toff4_hstrt4_hend3_v40_i6_fwd", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 4, "hend": 3, "speed": 40, "direction": 1, "iteration": 6, "ts": "<time>", "steady": [102.356983, 103.356983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 50.91461954587457, "p95_magnitude": 69.52222004684535, "rms": 51.02699989051045, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
-{"id": "tbl1_toff4_hstrt4_hend3_v40_i6_rev", "kind": "move", "source": "stream", "tbl": 1, "toff": 4, "hstrt": 4, "hend": 3, "speed": 40, "direction": -1, "iteration": 6, "ts": "<time>", "steady": [105.206983, 106.206983], "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 50.91461954587457, "p95_magnitude": 69.52222004684535, "rms": 51.02699989051045, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}

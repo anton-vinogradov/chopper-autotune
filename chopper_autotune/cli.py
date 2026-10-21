@@ -32,6 +32,52 @@ def _motor(text: str) -> str:
     return {'a': 'x', 'b': 'y', 'ab': 'xy'}.get(text.lower(), text.lower())
 
 
+def _save_motors(text: str) -> str:
+    """MOTOR of CHOPPER_SAVE: A, B and E (the extruder) in any combination, as 'AB'."""
+    letters = set(text.upper())
+    if not letters or not letters <= set('ABE'):
+        raise argparse.ArgumentTypeError('expected motors A, B, E or several of them, e.g. AB')
+    return ''.join(motor for motor in 'ABE' if motor in letters)
+
+
+def _speed(text: str) -> int:
+    """SPEED of TUNE and DEMO: one motor's resonance speed, whole mm/s as a scan finds it."""
+    try:
+        value = int(text)
+    except ValueError:
+        value = 0
+    if value <= 0:
+        raise argparse.ArgumentTypeError('expected one speed as a whole number of mm/s above 0, '
+                                         'e.g. 40, got %r' % text)
+    return value
+
+
+def _tpfd(text: str) -> Range:
+    """A TPFD range: SET_TMC_FIELD keeps only the register's bits of a larger value, so
+    TPFD 16 would run as 0."""
+    try:
+        span = Range.parse(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError('expected one value or a lo:hi range, e.g. 0:15, '
+                                         'got %r' % text)
+    if span.lo < tmc.TPFD_VALUES.lo or span.hi > tmc.TPFD_VALUES.hi:
+        raise argparse.ArgumentTypeError('expected values from %d to %d, got %r'
+                                         % (tmc.TPFD_VALUES.lo, tmc.TPFD_VALUES.hi, text))
+    return span
+
+
+def _max_hysteresis(text: str) -> int:
+    try:
+        value = int(text)
+    except ValueError:
+        raise argparse.ArgumentTypeError('expected a whole number, %d at most, got %r'
+                                         % (tmc.HYST_CAP, text))
+    if value > tmc.HYST_CAP:
+        raise argparse.ArgumentTypeError('expected %d at most, the datasheet maximum'
+                                         % tmc.HYST_CAP)
+    return value
+
+
 def _khz(text: str) -> float:
     value = float(text)
     if not 0 < value < float('inf'):
@@ -61,6 +107,20 @@ def add_hearing(parser: argparse.ArgumentParser, recorded: bool = False):
     parser.add_argument('--skip-audible', action=argparse.BooleanOptionalAction, default=None,
                         help='never try or recommend an audible combo, instead of just penalizing it '
                              '(%s)' % (default % 'off'))
+
+
+def add_ranges(parser: argparse.ArgumentParser):
+    """The register ranges and the hysteresis cap on every command that searches registers,
+    their defaults tmc.SEARCH_SPACE."""
+    space = tmc.SEARCH_SPACE
+    for name, register in (('tbl', 'blank time'), ('toff', 'slow decay'),
+                           ('hstrt', 'hysteresis start'), ('hend', 'hysteresis end')):
+        parser.add_argument('--' + name, type=Range.parse, default=getattr(space, name),
+                            help='%s range, default %s' % (register, getattr(space, name).text()))
+    parser.add_argument('--max-hysteresis', type=_max_hysteresis, default=space.max_hysteresis,
+                        help='the highest effective hysteresis, (HSTRT+1)+(HEND-3), to try, '
+                             'default %d; %d is the datasheet maximum'
+                        % (space.max_hysteresis, tmc.HYST_CAP))
 
 
 def _gcode_args(argv: 'list[str]', boolean_flags: 'frozenset[str]') -> 'list[str]':
@@ -101,6 +161,30 @@ def boolean_flags(parser: argparse.ArgumentParser) -> 'frozenset[str]':
     return frozenset(flags)
 
 
+def command_line(command: str, args=None, **changes) -> str:
+    """The console line of a run of `command`: the parameters of `args` that differ from
+    their defaults, with `changes` (by dest) applied, so it can be pasted as is."""
+    from .collect import motor_label
+    values = dict(vars(args) if args else {}, **changes)
+    subparsers = next(action for action in build_parser()._actions
+                      if isinstance(action, argparse._SubParsersAction))
+    params = []
+    for action in subparsers.choices[command]._actions:
+        value = values.get(action.dest, action.default)
+        # the launchers add --yes themselves
+        if not action.option_strings or action.dest == 'yes' or value == action.default:
+            continue
+        if isinstance(value, bool):
+            value = int(value)
+        elif isinstance(value, Range):
+            value = value.text()
+        elif action.dest == 'axis':
+            value = ''.join(motor_label(axis) for axis in value)
+        params.append('%s=%s' % (action.option_strings[0][2:].replace('-', '_').upper(),
+                                 '%g' % value if isinstance(value, float) else value))
+    return ' '.join(['CHOPPER_' + command.upper().replace('-', '_')] + params)
+
+
 def install_sigterm_handler():
     """gcode_shell_command timeouts and service restarts send SIGTERM: turn it into
     SystemExit so the finally blocks restore registers, spreadCycle and homing."""
@@ -119,11 +203,14 @@ def build_parser() -> argparse.ArgumentParser:
     u.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y', 'xy'), default='xy',
                    help='motor a/b/ab (a=stepper_x, b=stepper_y); default ab: both motors, '
                         'the second seeded with the first winner (x/y/xy also accepted)')
-    u.add_argument('--speed', type=Range.parse, default=None,
-                   help='skip the resonance scan and use this speed (mm/s)')
+    u.add_argument('--speed', type=_speed, default=None,
+                   help='skip the resonance scan and tune at this speed (mm/s); needs --motor a or b')
     u.add_argument('--save', action='store_true',
                    help='write the winners into the Klipper config (with backups) and restart')
     u.add_argument('--iterations', type=int, default=1)
+    add_ranges(u)
+    u.add_argument('--tpfd', type=_tpfd, default=tmc.SEARCH_SPACE.tpfd,
+                   help='TPFD range (TMC2240/5160 only), default %s' % tmc.SEARCH_SPACE.tpfd.text())
     add_hearing(u)
     u.add_argument('--accel', type=float, default=None)
     u.add_argument('--no-raw', action='store_true')
@@ -141,11 +228,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help='motor a or b (a=stepper_x, b=stepper_y); x/y also accepted')
     c.add_argument('--speed', type=Range.parse, required=True,
                    help='speed or range in mm/s, e.g. 55 or 40:70 (resonance speed of the axis)')
-    c.add_argument('--tbl', type=Range.parse, default=Range(0, 3), help='blank time range, default 0:3')
-    c.add_argument('--toff', type=Range.parse, default=Range(1, 8), help='slow decay range, default 1:8')
-    c.add_argument('--hstrt', type=Range.parse, default=Range(0, 7), help='hysteresis start range, default 0:7')
-    c.add_argument('--hend', type=Range.parse, default=Range(0, 15), help='hysteresis end range, default 0:15')
-    c.add_argument('--tpfd', type=Range.parse, default=None, help='TPFD range (TMC2240/5160 only)')
+    add_ranges(c)
+    c.add_argument('--tpfd', type=_tpfd, default=None,
+                   help='TPFD range (TMC2240/5160 only), default: TPFD stays as it is')
     c.add_argument('--search', choices=('grid', 'descent'), default='grid',
                    help='grid = full sweep; descent = coordinate descent per AN-001, minutes instead of hours')
     add_hearing(c)
@@ -239,7 +324,8 @@ def build_parser() -> argparse.ArgumentParser:
     d = sub.add_parser('demo', help='play the driver defaults against the tuned registers so you can hear the gain')
     d.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y', 'xy'), default='xy',
                    help='motor a/b/ab (a=stepper_x, b=stepper_y); default ab = both; x/y/xy also accepted')
-    d.add_argument('--speed', type=Range.parse, default=None, help='resonance speed; auto-detected if omitted')
+    d.add_argument('--speed', type=_speed, default=None,
+                   help='resonance speed (mm/s); auto-detected if omitted')
     d.add_argument('--default', type=_chopper, default=None,
                    help='the "before" config as tbl,toff,hstrt,hend (default: the driver\'s Klipper stock registers)')
     d.add_argument('--report', action='store_true',
@@ -283,12 +369,18 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument('--no-html', action='store_true')
     a.add_argument('--apply', action='store_true', help='apply the best config via SET_TMC_FIELD')
     a.add_argument('--save', action='store_true',
-                   help='persist the best config into the Klipper config file and restart Klipper')
+                   help='write the best config of this dataset only into the Klipper config and '
+                        'restart Klipper. The save command writes the latest run of each motor')
     a.add_argument('--url', default='http://127.0.0.1:7125')
 
     sv = sub.add_parser('save', help='save the latest tuning result for each motor into the config')
+    sv.add_argument('--motor', type=_save_motors, default='ABE',
+                    help='the motors to save: a, b, e (the extruder) or several, e.g. ab; '
+                         'default all three')
     add_hearing(sv, recorded=True)
     sv.add_argument('--url', default='http://127.0.0.1:7125')
+    sv.add_argument('--dry-run', action='store_true',
+                    help='print what would be saved, write nothing and do not restart Klipper')
 
     rs = sub.add_parser('restore', help="roll back the tool's config changes")
     rs.add_argument('--defaults', action='store_true',
@@ -331,11 +423,12 @@ def build_parser() -> argparse.ArgumentParser:
                    help='skip the resonance scan and descend at this filament speed (mm/s)')
     e.add_argument('--min-speed', type=int, default=1, help='scan start, filament mm/s')
     e.add_argument('--max-speed', type=int, default=12, help='scan end, filament mm/s')
+    add_ranges(e)
     add_hearing(e)
     e.add_argument('--save', action='store_true',
                    help='write the winner into [tmcXXXX extruder] (backup first) and restart')
     e.add_argument('--save-last', action='store_true',
-                   help='persist the previously tuned winner immediately, without re-tuning')
+                   help='save the previously tuned winner without re-tuning, as save --motor e does')
     e.add_argument('--demo', action='store_true',
                    help='audible before/after: alternate Klipper defaults and the saved '
                         'registers at the E resonance (heats the hotend)')

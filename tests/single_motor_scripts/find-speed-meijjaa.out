@@ -12,8 +12,6 @@ Scanning with Klipper default registers tbl2_toff3_hstrt5_hend2_tpfd4 — the cu
 Restoring registers, homing
 Done in 0m: report <tmp>/dataset/report.html
 Resonance peaks: 60 mm/s (magnitude 733)
-
-Recommended: CHOPPER_COLLECT MOTOR=A SPEED=60
 === manifest.json ===
 {
   "version": "0.3.0",

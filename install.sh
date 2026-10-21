@@ -124,7 +124,7 @@ if [ -n "$restart_moonraker" ]; then
 fi
 sudo service klipper restart || echo "WARNING: could not restart klipper, restart it yourself"
 if [ -f "$printer_cfg" ] && grep -q "^\[include $cfg_name\]$" "$printer_cfg"; then
-    echo "Done. Try: CHOPPER_COLLECT SPEED=55 DRY_RUN=1 from the web console"
+    echo "Done. Try CHOPPER_TUNE DRY_RUN=1 in the web console: it moves nothing and writes the plan and its time to tune.log"
 else
     echo "WARNING: $printer_cfg not found. If your main Klipper config is another file in $config_dir,"
     echo "add [include $cfg_name] to its first line, then restart Klipper."
