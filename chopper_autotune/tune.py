@@ -9,9 +9,10 @@ from pathlib import Path
 
 from . import tmc
 from .collect import (Range, Screen, autotune_advice, autotune_goal, collect, driver_of,
-                      motor_label, refuse_autotune_save, refuse_multi_motor, refuse_unhearable)
+                      motor_label, refuse_autotune_save, refuse_multi_motor, refuse_unhearable,
+                      run_motors, save_command, tell_next, worth_saving)
 from .dataset import Dataset
-from .find_speed import scan
+from .find_speed import no_peak, scan, tune_at
 from .klippy import Klippy, find_socket
 
 DRY_RUN_SPEED = 60
@@ -78,21 +79,30 @@ def winner_of(root: str, args=None) -> 'tuple[dict, tmc.Chopper]':
     return manifest, ranked[0]['chopper']
 
 
-def motors(winners: 'list[tuple[dict, tmc.Chopper]]') -> str:
-    return ''.join(motor_label(manifest['stepper'].rsplit('_', 1)[-1]) for manifest, _ in winners)
-
-
-def save_command(winners: 'list[tuple[dict, tmc.Chopper]]') -> str:
-    """What saves this run: SAVE=1 saves the same."""
-    return 'CHOPPER_SAVE MOTOR=%s' % motors(winners)
-
-
 def improvement_note(manifest: dict) -> str:
     """' -46%' when the run measured the winner quieter than Klipper defaults; ''
     when the reference was not measured or did not lose."""
     quieter = manifest.get('improvement') or 0
     pct = round((1 - 1 / quieter) * 100) if quieter > 1 else 0
     return ' -%d%%' % pct if pct >= 1 else ''
+
+
+def left_undone(args, settings: dict, axes: 'list[str]', axis: str,
+                winners: 'list[tuple[dict, tmc.Chopper]]') -> 'list[str]':
+    """What a run that stops at the motor on `axis` leaves to do: save the motors it tuned
+    before, tune the ones after."""
+    from .cli import command_line
+    lines = []
+    tuned = worth_saving(settings, [manifest for manifest, _ in winners])
+    if tuned:
+        done = run_motors(tuned)
+        lines.append('The run tuned motor %s. To save it: %s' % (done, save_command(tuned)))
+    rest = ''.join(axes[axes.index(axis) + 1:])
+    if rest:
+        later = motor_label(rest)
+        lines.append('The run did not reach motor %s. To tune it: %s'
+                     % (later, command_line('tune', args, axis=rest)))
+    return lines
 
 
 def run_tune(args) -> int:
@@ -126,15 +136,15 @@ def run_tune(args) -> int:
             print('=== Motor %s ===' % motor_label(axis))
             speed = args.speed
             if speed is None:
-                code, recommended = scan(kl, scan_args(args, axis), popup=False)
+                code, recommended, loudest = scan(kl, scan_args(args, axis), popup=False)
                 worst = max(worst, code)
                 if args.dry_run:
                     print('(descent plan below assumes SPEED=%d until the scan runs)'
                           % DRY_RUN_SPEED)
                     recommended = DRY_RUN_SPEED
                 elif recommended is None:
-                    raise SystemExit('no clear resonance peak on motor %s; tune it manually '
-                                     'via CHOPPER_FIND_SPEED + CHOPPER_COLLECT' % motor_label(axis))
+                    tell_next(kl, left_undone(args, settings, axes, axis, winners))
+                    raise SystemExit(no_peak(motor_label(axis), tune_at(axis, loudest, args)))
                 speed = Range(recommended, recommended)
             code, root = collect(kl, collect_args(args, axis, speed, seed_root), popup=False)
             worst = max(worst, code)
@@ -142,8 +152,9 @@ def run_tune(args) -> int:
                 winners.append(winner_of(root, args))
                 roots.append(Path(root))
                 seed_root = root
-        free = [manifest for manifest, _ in winners if not managed(manifest)]
-        changed = [manifest for manifest in free if not manifest.get('kept')]
+        runs = [manifest for manifest, _ in winners]
+        free = [manifest for manifest in runs if not managed(manifest)]
+        changed = worth_saving(settings, runs)
 
         # the run's outcome must reach the screen: the console summary below only lands
         # in the detached log, and SAVE=1 restarts Klipper, wiping the status line — so
@@ -159,7 +170,7 @@ def run_tune(args) -> int:
             tail = (' — autotune resets these at start' if not free
                     else ' — your registers stay' if not changed
                     else ' — saving' if args.save
-                    else ' — to save: ' + save_command(winners))
+                    else ' — to save: ' + save_command(runs))
             screen.final('Tune done: %s%s' % (labels, tail), 'Done ' + ' '.join(
                 motor_label(manifest['stepper'].rsplit('_', 1)[-1]) + improvement_note(manifest).strip()
                 for manifest, _ in winners))
@@ -185,7 +196,7 @@ def run_tune(args) -> int:
         print()
     if args.save:
         from .analyze import run_save_latest
-        run_save_latest(args, motors(winners), roots)
+        run_save_latest(args, run_motors(runs), roots)
     elif changed:
-        print('To save: %s' % save_command(winners))
+        print('To save: %s' % save_command(runs))
     return worst

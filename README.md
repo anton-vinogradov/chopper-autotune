@@ -193,18 +193,18 @@ Every action confirms before it moves (or heats) the printer. While a job runs t
 ### The manual way — step by step
 
 ```
-CHOPPER_FIND_SPEED                   ; 1. locate the resonance speeds of the motor
-CHOPPER_COLLECT SPEED=55 DRY_RUN=1   ; check the plan and ETA without moving anything
-CHOPPER_COLLECT SPEED=55             ; 2. sweep the full grid at the resonance speed (hours)
-CHOPPER_COLLECT SPEED=55 SEARCH=descent  ; ...or multi-start descent (minutes)
-CHOPPER_COLLECT MOTOR=B SPEED=52 SEARCH=descent SEED_FROM=<A dataset>  ; fast second motor
-CHOPPER_STATUS                       ; progress and ETA of the running collection
-CHOPPER_ANALYZE                      ; 3. rank the latest dataset, write the report
-CHOPPER_ANALYZE APPLY=1              ; apply the winner live via SET_TMC_FIELD
-CHOPPER_ANALYZE SAVE=1               ; persist it into the config and restart Klipper
-CHOPPER_DEMO                         ; play defaults vs the tuned registers so you can hear it
-CHOPPER_CURRENT SAVE=1               ; 4. measured run-current: skip threshold x 2.0 margin
+CHOPPER_FIND_SPEED MOTOR=A               ; 1. find motor A's resonance speed, for example 58 mm/s
+CHOPPER_TUNE MOTOR=A SPEED=58 DRY_RUN=1  ; check the plan and ETA without moving anything
+CHOPPER_TUNE MOTOR=A SPEED=58            ; 2. search motor A's registers at that speed (minutes)
+CHOPPER_STATUS                           ; progress and ETA of the running search
+CHOPPER_ANALYZE                          ; 3. rank the latest run, write the report
+CHOPPER_ANALYZE APPLY=1                  ; set the latest run's winner live via SET_TMC_FIELD, to hear it
+CHOPPER_SAVE MOTOR=A                     ; write motor A's result into the config, restart Klipper
+CHOPPER_DEMO                             ; play defaults vs the tuned registers so you can hear it
+CHOPPER_CURRENT SAVE=1                   ; 4. measured run-current: skip threshold x 2.0 margin
 ```
+
+For motor B, repeat steps 1 and 2 and the `CHOPPER_SAVE` line with `MOTOR=B`. `CHOPPER_FIND_SPEED`, `CHOPPER_TUNE` and `CHOPPER_CURRENT` end by naming the command to run next, when there is one.
 
 The same over SSH: `chopper-autotune tune|collect|analyze|…`. Every macro parameter maps 1:1 to a CLI flag (`MEASURE_TIME=1.5` → `--measure-time 1.5`); boolean flags take `1`/`0`. Progress is reported two ways: `M117` sets `display_status.message` (the Mainsail/Fluidd header, LCDs, and the KlipperScreen status line) to a short form that fits a 16-character LCD row, the main part first and in ASCII (`A 42% ETA 1:05`, `A 0/2/4/7 -42%`; a 12864 shows 16 characters, a 2004 shows 20), and a prefixed `RESPOND` echoes each update in full to the console (Mainsail/Fluidd/KlipperScreen console) — with a `Chopper:` prefix rather than `echo:`, so KlipperScreen does not raise a dismissable notification for every line and swallow taps on the panel. Each channel is used only where Klipper has its command (`[respond]` for the console, `[display_status]` for the display): an unknown command is no error in Klipper, only an `Unknown command` line. The verdict of a run stays in the display message and reaches the console once, as `echo:`: one KlipperScreen notification, at the end of the run. The stages inside `CHOPPER_TUNE` report to the console without one, since the motors still have work.
 
@@ -216,7 +216,7 @@ Datasets and HTML reports land in `~/printer_data/config/chopper-autotune/datase
 
 Each motor's run ends with its winner, Klipper defaults and the motor's current registers measured in turns, 4 rounds of fresh moves, scored as the ranking scores them (the audible and click penalties included). Your registers stay unless the winner or Klipper defaults is quieter than them in each of the 4 rounds. The run claims a gain over Klipper defaults only when its recommendation is quieter than them in each round; otherwise it says it cannot tell the gain from noise. When a move of these rounds fails, or your registers are left out because `SKIP_AUDIBLE` skips them or the driver cannot take them, the run says so and recommends the winner unchecked against them. With `VALIDATE=0` there are no such rounds and no gain is claimed.
 
-When a run without `SAVE=1` has registers to write, its final message and `tune.log` name the command that saves them, for example `CHOPPER_SAVE MOTOR=AB`.
+When a run without `SAVE=1` has registers to write, its final message and `tune.log` name the command that saves them, for example `CHOPPER_SAVE MOTOR=AB`. When the speed scan finds no clear resonance peak on a motor, the run stops at that motor. The run names the command that tunes that motor at the speed where it vibrates most, for example `CHOPPER_TUNE MOTOR=A SPEED=64`. A run on both motors that stops at motor A also names the command that tunes motor B. A run on both motors that stops at motor B also names the command that saves motor A, when motor A has registers to write.
 
 | parameter | default | meaning |
 |---|---|---|
@@ -231,6 +231,8 @@ When a run without `SAVE=1` has registers to write, its final message and `tune.
 
 **CHOPPER_FIND_SPEED** — resonance speed scan on stock registers (the tuned ones are set aside for the sweep and restored afterwards).
 
+The console and `find-speed.log` end with the command that tunes the motor at the speed found, for example `CHOPPER_TUNE MOTOR=A SPEED=58`. Without a clear resonance peak, that speed is the one where the motor vibrates most.
+
 | parameter | default | meaning |
 |---|---|---|
 | `MOTOR` | `A` | motor to scan: `a`/`b` (a = `stepper_x`, b = `stepper_y`); `x`/`y` also accepted |
@@ -242,6 +244,8 @@ When a run without `SAVE=1` has registers to write, its final message and `tune.
 | `DRY_RUN` | `0` | plan and ETA only |
 
 **CHOPPER_COLLECT** — register search at a given speed.
+
+Unless the run keeps your registers or klipper_tmc_autotune manages the motor, the console and `collect.log` end with two commands. `CHOPPER_ANALYZE APPLY=1` sets the registers this run found, so you can hear them. `CHOPPER_SAVE MOTOR=A`, or `MOTOR=B` after a run on motor B, saves them. When klipper_tmc_autotune manages the motor, `collect.log` ends instead with the steps to switch autotune off for this motor.
 
 | parameter | default | meaning |
 |---|---|---|
@@ -272,7 +276,7 @@ When a run without `SAVE=1` has registers to write, its final message and `tune.
 | `RECOMPUTE` | `0` | recompute metrics from raw samples instead of stored scores |
 | `HTML` / `NO_HTML` | `<dataset>/report.html` | report path / skip the report |
 | `APPLY` | `0` | apply the winner live via `SET_TMC_FIELD` (until Klipper restarts; on a motor without an enable pin of its own, toff returns to the config value at the next motors off and on) |
-| `SAVE` | `0` | rewrite the `driver_*` lines in the config (backup first) and restart |
+| `SAVE` | `0` | write the winner of one run into the config (backup first) and restart Klipper. The run is the latest one, whichever motor it tuned, or the one `DATASET` names |
 
 **CHOPPER_DEMO** — plays the driver defaults against the saved/tuned registers, alternating so you can *hear* the difference and announcing each on the display and console. `MOTOR` (a/b, or **ab** = the default: **both motors together** in coordinated moves, like printing — a whole-printer before/after), `SPEED`, `ROUNDS`, `REPEATS`. `REPORT=1` prints the measured numbers (how much less vibration, per motor, with bars) one motor at a time instead of the audible show; `DEFAULT=tbl,toff,hstrt,hend` replaces the driver's stock registers in the defaults round (the show and the report; a TMC2240/5160 keeps its stock TPFD, and values the driver cannot take are refused before anything moves); `ITERATIONS` applies to the report.
 
@@ -287,7 +291,7 @@ A run stopped before its first measurement does not count: the command takes the
 
 **CHOPPER_RESTORE** — the undo. `DEFAULTS=1` writes each driver's own stock chopper registers (`2/3/5/0` on TMC2208/2209, `2/3/5/2` + TPFD 4 on TMC2240/5160, `1/4/0/7` on TMC2130, `2/4/3/3` on TMC2660) into every tuned TMC section — tuning off, `run_current` untouched (it is a measured safety setting). `BACKUP=1` puts back the `*.chopper-backup.cfg` snapshots taken before the last save — registers AND currents. One restart either way; refuses while printing.
 
-**CHOPPER_CURRENT** — find the minimal safe `run_current` per motor: a worst-case single-motor stress pattern (the printer's own accel: `max_accel`, on Kalico's `limited_*` kinematics what the per-axis limits give the stroke; belt speeds through 200 mm/s) with an **endstop referee** — skipped steps land as a position offset that an endstop creep measures deterministically, because a stall can be nearly silent (measured; see [docs/SCIENCE.md](docs/SCIENCE.md)). The strokes run as in `CHOPPER_ENVELOPE`; when they cannot reach 200 mm/s at that accel or under the velocity limits in force, the run refuses before anything moves and names the `ACCEL=` or the velocity limit it needs. Bisects to the skip threshold and recommends `threshold × MARGIN` (default `2.0`); `SAVE=1` writes `run_current` (backup first) and restarts. Re-run `CHOPPER_TUNE` afterwards — the chopper optimum depends on the current. On coupled-XY both motors are written the **max** of the two recommendations, though never above each motor's own configured `run_current` (the config is each motor's rating boundary — A/B are not guaranteed identical parts): they share one kinematics and the threshold gap is mechanical drag that drifts (measured: a per-motor 0.60 A hit a speed ceiling its 0.95 A twin did not). `PER_MOTOR=1` keeps the measured split. Parameters: `MOTOR`, `MARGIN`, `MIN_CURRENT`, `RESOLUTION`, `ACCEL`, `SAVE`, `DRY_RUN`.
+**CHOPPER_CURRENT** — find the minimal safe `run_current` per motor: a worst-case single-motor stress pattern (the printer's own accel: `max_accel`, on Kalico's `limited_*` kinematics what the per-axis limits give the stroke; belt speeds through 200 mm/s) with an **endstop referee** — skipped steps land as a position offset that an endstop creep measures deterministically, because a stall can be nearly silent (measured; see [docs/SCIENCE.md](docs/SCIENCE.md)). The strokes run as in `CHOPPER_ENVELOPE`; when they cannot reach 200 mm/s at that accel or under the velocity limits in force, the run refuses before anything moves and names the `ACCEL=` or the velocity limit it needs. Bisects to the skip threshold and recommends `threshold × MARGIN` (default `2.0`); `SAVE=1` writes `run_current` (backup first) and restarts. Re-run `CHOPPER_TUNE` afterwards — the chopper optimum depends on the current. When the recommendation differs from the configured current, the run names the next command. Without `SAVE=1`, the final message names the command that repeats this measurement and saves, for example `CHOPPER_CURRENT SAVE=1`. With `SAVE=1`, before Klipper restarts, the console names the command that tunes again at the new current, for example `CHOPPER_TUNE SAVE=1`. A motor that klipper_tmc_autotune manages gets no second tune: autotune writes its own chopper registers at every Klipper start. On coupled-XY both motors are written the **max** of the two recommendations, though never above each motor's own configured `run_current` (the config is each motor's rating boundary — A/B are not guaranteed identical parts): they share one kinematics and the threshold gap is mechanical drag that drifts (measured: a per-motor 0.60 A hit a speed ceiling its 0.95 A twin did not). `PER_MOTOR=1` keeps the measured split. Parameters: `MOTOR`, `MARGIN`, `MIN_CURRENT`, `RESOLUTION`, `ACCEL`, `SAVE`, `DRY_RUN`.
 
 **CHOPPER_ENVELOPE** — the motor's **torque ceiling** at the configured current: how fast and how hard each motor can be pushed before it skips a step. Climbs a speed ladder (default `150→350` mm/s at full accel) and an acceleration ladder (`1–4×` `max_accel` at a moderate speed), same single-motor stress and **endstop referee** as `CHOPPER_CURRENT`; the safe ceiling is the last rung before the first skip, reported with a `1.3×` margin. Each stroke runs ±25 mm around the center on each axis it moves (a diagonal on CoreXY; less on a small printer), from standstill to standstill. For the strokes the tools set Klipper's `minimum_cruise_ratio` to 0, so a stroke brakes as hard as it accelerates, undo an `M220` speed factor left from a print, and switch input shaping off (it smooths what the motors get below the planned move; unshaped is the harder load); afterwards all three go back to what they were, and so does the acceleration in force (an `M204` left from a print). The rungs are belt speeds. A rung a stroke still cannot reach at that acceleration, or past what the velocity limits in force let the belt run (√2 times `max_velocity` on CoreXY, where the head runs a diagonal; once on Kalico's `limited_corexy`), is dropped with a note naming what would reach it: a rung never reached would pass as held, and a speed ceiling the test stopped short of is reported as untested, not as a limit. This is the *motor* limit only — which speeds are quiet vs ringy is `CHOPPER_MAP`, and the real top-speed limit is usually hotend flow, not the motor. **Why the ladder tops out at 350:** at 256 microsteps that is already ~450k steps/s on one motor — near the step-generation budget of common 32-bit boards; past it the failure mode is a Klipper "step rate" shutdown mid-test (which aborts and proves nothing about the motor), and printing never cruises there anyway. Raise `MAX_SPEED=` if your microstepping/MCU allows. Read-only (nothing to save). Parameters: `MOTOR`, `MIN_SPEED`, `MAX_SPEED`, `STEP`, `ACCEL_PROBE_SPEED`, `ACCEL`, `DRY_RUN`.
 

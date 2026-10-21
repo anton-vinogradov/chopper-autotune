@@ -230,7 +230,7 @@ def demo(kl: Klippy, args) -> int:
         else:
             print('No previous run to reuse a speed from; scanning for resonance first')
             from .find_speed import scan
-            _, speed = scan(kl, _scan_args(args))
+            _, speed, _ = scan(kl, _scan_args(args))
             if speed is None:
                 raise SystemExit('no clear resonance speed found; pass SPEED=')
 
