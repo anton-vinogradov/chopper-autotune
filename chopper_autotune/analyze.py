@@ -406,12 +406,13 @@ def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]', extruder_state: 'dict 
     _persist(mk, edits, 'the new registers', lines)
 
 
-def run_save_currents(mk, items: 'list[tuple[str, str, float]]'):
-    """Persist (driver, stepper, amps) run currents, one restart for the batch."""
+def run_save_currents(mk, items: 'list[tuple[str, str, float]]', lines: 'list[str]' = ()):
+    """Persist (driver, stepper, amps) run currents, one restart for the batch. lines:
+    what the console gets before the write (see _persist)."""
     _persist(mk, [('tmc%s %s' % (driver, stepper),
                    lambda text, section, amps=amps: updated_scalars(text, section,
                                                                     {'run_current': '%.2f' % amps}))
-                  for driver, stepper, amps in items], 'the new run currents')
+                  for driver, stepper, amps in items], 'the new run currents', lines)
 
 
 TUNED_FIELD_RE = re.compile(r'^\s*driver_(tbl|toff|hstrt|hend|tpfd)\s*[:=]',

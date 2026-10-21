@@ -144,9 +144,10 @@ def test_a_run_stopped_before_the_read_leaves_autotunes_motor_alone():
 
 @pytest.mark.parametrize('driver, autotune, header', [
     ('2209', None, 'Recommended for printer.cfg:'),
-    ('2209', 'auto', 'Best measured (not for saving: klipper_tmc_autotune managed the motor'),
+    # what to do about it the command says at its end, once: not this stage of CHOPPER_TUNE
+    ('2209', 'auto', 'Best measured (klipper_tmc_autotune manages this motor):'),
     # a TMC2208 carries no CoolStep tag, yet autotune still writes its own chopper at start
-    ('2208', 'auto', 'Best measured (klipper_tmc_autotune ([autotune_tmc stepper_x]) writes'),
+    ('2208', 'auto', 'Best measured (klipper_tmc_autotune manages this motor):'),
 ])
 def test_the_recommendation_header_follows_autotune(tmp_path, monkeypatch, capsys, driver, autotune,
                                                      header):
@@ -162,4 +163,5 @@ def test_the_recommendation_header_follows_autotune(tmp_path, monkeypatch, capsy
     hw = SimpleNamespace(driver=tmc.DRIVERS[driver], stepper='stepper_x', autotune=autotune, motor='A')
     report_winner(hw, ds, SimpleNamespace(trim=0.1, audible_weight=0.25),
                   SimpleNamespace(final=lambda text, short=None: None), top=5)
-    assert header in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert header in out and 'README: With klipper_tmc_autotune' not in out

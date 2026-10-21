@@ -44,7 +44,8 @@ def test_tune_runs_both_axes_and_seeds_second(tmp_path, monkeypatch, capsys):
     def fake_scan(kl, args, popup):
         calls['scan'].append(args.axis)
         calls['popups'].append(popup)
-        return 0, {'x': 58, 'y': 52}[args.axis]
+        speed = {'x': 58, 'y': 52}[args.axis]
+        return 0, speed, speed
 
     def fake_collect(kl, args, popup):
         calls['collect'].append((args.axis, args.speed, args.seed_from))
@@ -102,7 +103,7 @@ def test_tune_save_saves_what_save_with_the_motors_of_the_run_saves(tmp_path, mo
     monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
     monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
     monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
-    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58))
+    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58, 58))
     monkeypatch.setattr(tune, 'collect', lambda kl, args, popup: (0, roots[args.axis]))
 
     # a run of motor A alone leaves B's newer result unsaved
@@ -147,7 +148,7 @@ def test_tune_aborts_without_resonance_peak(monkeypatch):
     monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
     monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
     monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
-    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, None))
+    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, None, 64))
 
     with pytest.raises(SystemExit, match='no clear resonance peak'):
         tune.run_tune(tune_args())
@@ -161,7 +162,7 @@ def test_tune_reports_the_outcome_on_screen(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
     monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
     monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
-    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58))
+    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58, 58))
     monkeypatch.setattr(tune, 'collect', lambda kl, args, popup: (0, roots[args.axis]))
     finals = []
 
@@ -191,7 +192,7 @@ def test_tune_reports_the_outcome_on_screen(tmp_path, monkeypatch, capsys):
 
     # a failure must speak too — via the global CLI announcer now (any tool, any error)
     finals.clear()
-    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, None))
+    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, None, 64))
     with pytest.raises(SystemExit, match='no clear resonance peak'):
         tune.run_tune(tune_args())
 
@@ -259,7 +260,7 @@ def test_a_run_under_autotune_advises_instead_of_offering_to_paste(tmp_path, mon
     monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
     monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
     monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
-    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58))
+    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58, 58))
     monkeypatch.setattr(tune, 'collect', lambda kl, args, popup: (0, str(ds.root)))
     assert tune.run_tune(tune_args(axis='x')) == 0
     out = capsys.readouterr().out
@@ -281,7 +282,7 @@ def test_autotune_on_one_motor_marks_only_that_one(tmp_path, monkeypatch, capsys
     monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
     monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
     monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
-    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58))
+    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58, 58))
     monkeypatch.setattr(tune, 'collect', lambda kl, args, popup: (0, roots[args.axis]))
     finals = []
     monkeypatch.setattr(tune.Screen, 'final', lambda self, text, short=None: finals.append(text))
@@ -306,7 +307,7 @@ def test_a_tmc2208_under_autotune_gets_the_advice_not_a_paste(tmp_path, monkeypa
     monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
     monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
     monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
-    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58))
+    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58, 58))
     monkeypatch.setattr(tune, 'collect', lambda kl, args, popup: (0, str(ds.root)))
     assert tune.run_tune(tune_args(axis='x')) == 0
     out = capsys.readouterr().out

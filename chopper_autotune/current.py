@@ -14,9 +14,9 @@ import os
 import re
 import sys
 
-from .collect import (Screen, ThermalGuard, coupled_xy, detect_hardware, home_xy,
-                      refuse_blind_z_hop, refuse_if_printing, refuse_multi_motor, rehome_unless_hot,
-                      run_restore)
+from .collect import (Screen, ThermalGuard, autotune_goal, coupled_xy, detect_hardware, home_xy,
+                      motor_label, refuse_blind_z_hop, refuse_if_printing, refuse_multi_motor,
+                      rehome_unless_hot, run_restore)
 from .dataset import save_json
 from .klippy import Klippy, find_socket
 
@@ -337,7 +337,6 @@ def run_current_tune(args) -> int:
 
 
 def current_tune(kl: Klippy, args) -> int:
-    from .collect import motor_label
     motors = ['x', 'y'] if args.axis == 'xy' else [args.axis]
     settings = kl.settings()
     refuse_multi_motor(settings, ''.join(motors))
@@ -453,22 +452,30 @@ def current_tune(kl: Klippy, args) -> int:
     save_json(STATE, {motor_label(m): {'threshold': thresholds[m], 'recommended': recommended[m],
                                        'margin': args.margin} for m in motors},
               merge=True)                              # the panel's Results shows these
+    from .cli import command_line
+    changed = [m for m in motors if recommended[m] != configured[m]]
+    remeasure = command_line('current', args, save=True)
+    # the tune to run next reaches the console with the write (_persist), not before it
+    tail = ('' if not changed else ' \u2014 saving' if args.save
+            else ' \u2014 to measure again and save: ' + remeasure)
     screen.final('Current: ' + ' \u00b7 '.join(
         '%s skip %.2fA -> run %.2fA' % (motor_label(m), thresholds[m], recommended[m])
-        for m in motors), ' '.join('%s %.2fA' % (motor_label(m), recommended[m]) for m in motors))
+        for m in motors) + tail,
+        ' '.join('%s %.2fA' % (motor_label(m), recommended[m]) for m in motors))
     print('\n=== Summary ===')
     for m in motors:
         print('[tmc%s stepper_%s]\nrun_current: %.2f' % (hw[m].driver.name, m, recommended[m]))
-    if args.save:
+    if not changed:
+        print('Nothing to save: recommended current equals the configured one')
+    elif args.save:
         from .analyze import run_save_currents
         from .moonraker import Moonraker
-        items = [(hw[m].driver.name, 'stepper_' + m, recommended[m]) for m in motors
-                 if recommended[m] != configured[m]]
-        if items:
-            run_save_currents(Moonraker(args.url), items)
-            print('Re-run CHOPPER_TUNE now: the chopper optimum depends on the run current')
-        else:
-            print('Nothing to save: recommended current equals the configured one')
+        # klipper_tmc_autotune writes its own chopper at start: nothing to tune again there
+        retune = ''.join(m for m in changed if autotune_goal(settings, 'stepper_' + m) is None)
+        run_save_currents(Moonraker(args.url), [(hw[m].driver.name, 'stepper_' + m, recommended[m])
+                                                for m in changed],
+                          ['The chopper optimum depends on the run current, so tune again: '
+                           + command_line('tune', axis=retune, save=True)] if retune else [])
     else:
-        print('Re-run with SAVE=1 to persist, then CHOPPER_TUNE at the new current')
+        print('To save, measure again: ' + remeasure)
     return 0

@@ -109,6 +109,30 @@ def boolean_flags(parser: argparse.ArgumentParser) -> 'frozenset[str]':
     return frozenset(flags)
 
 
+def command_line(command: str, args=None, **changes) -> str:
+    """The console line of a run of `command`: the parameters of `args` that differ from
+    their defaults, with `changes` (by dest) applied, so it can be pasted as is."""
+    from .collect import motor_label
+    values = dict(vars(args) if args else {}, **changes)
+    subparsers = next(action for action in build_parser()._actions
+                      if isinstance(action, argparse._SubParsersAction))
+    params = []
+    for action in subparsers.choices[command]._actions:
+        value = values.get(action.dest, action.default)
+        # the launchers add --yes themselves
+        if not action.option_strings or action.dest == 'yes' or value == action.default:
+            continue
+        if isinstance(value, bool):
+            value = int(value)
+        elif isinstance(value, Range):
+            value = value.lo if value.lo == value.hi else '%d:%d' % (value.lo, value.hi)
+        elif action.dest == 'axis':
+            value = ''.join(motor_label(axis) for axis in value)
+        params.append('%s=%s' % (action.option_strings[0][2:].replace('-', '_').upper(),
+                                 '%g' % value if isinstance(value, float) else value))
+    return ' '.join(['CHOPPER_' + command.upper().replace('-', '_')] + params)
+
+
 def install_sigterm_handler():
     """gcode_shell_command timeouts and service restarts send SIGTERM: turn it into
     SystemExit so the finally blocks restore registers, spreadCycle and homing."""
@@ -291,7 +315,8 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument('--no-html', action='store_true')
     a.add_argument('--apply', action='store_true', help='apply the best config via SET_TMC_FIELD')
     a.add_argument('--save', action='store_true',
-                   help='persist the best config into the Klipper config file and restart Klipper')
+                   help='write the best config of this dataset only into the Klipper config and '
+                        'restart Klipper. The save command writes the latest run of each motor')
     a.add_argument('--url', default='http://127.0.0.1:7125')
 
     sv = sub.add_parser('save', help='save the latest tuning result for each motor into the config')

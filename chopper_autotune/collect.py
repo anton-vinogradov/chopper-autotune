@@ -948,9 +948,7 @@ class Screen:
         self.last = time.monotonic()
         if self.display:
             self.display = self._send('M117 %s' % display_text(short or text))
-        if self.console:
-            self.console = self._send('RESPOND PREFIX="%s" MSG="%s"' % (
-                self.CONSOLE_PREFIX, console_text(text)))
+        self.tell(text)
 
     def final(self, text: str, short: 'str | None' = None):
         """End-of-run verdict: the display line PLUS a KlipperScreen popup (M118's `echo:`
@@ -960,7 +958,12 @@ class Screen:
             self.display = self._send('M117 %s' % display_text(short or text))
         if self.popup:
             self._send('M118 %s' % console_safe(text))
-        elif self.console:
+        else:
+            self.tell(text)
+
+    def tell(self, text: str):
+        """A console line alone: the display keeps what it shows."""
+        if self.console:
             self.console = self._send('RESPOND PREFIX="%s" MSG="%s"' % (
                 self.CONSOLE_PREFIX, console_text(text)))
 
@@ -971,6 +974,17 @@ class Screen:
             return True
         except Exception:
             return False
+
+
+def tell_next(kl: Klippy, lines: 'list[str]'):
+    """The commands to run next, ready to paste, each at the end of its own line: to the
+    log, and to the console under the verdict the display keeps."""
+    if not lines:
+        return
+    print('\n' + '\n'.join(lines))
+    screen = Screen(kl, False)
+    for line in lines:
+        screen.tell(line)
 
 
 LCD_WIDTH = 16
@@ -1383,11 +1397,9 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
     # unvalidated one floats to the top of a later full re-rank
     ds.update_manifest(winner=chosen.fields(), kept=kept,
                        improvement=round(improvement, 2) if improvement else None)
-    if autotune_tag(hw.driver.name, hw.autotune):
-        print('\nBest measured (not for saving: %s):\n' % AUTOTUNE_MEASURED)
-    elif hw.autotune is not None:
-        # a TMC2208: no CoolStep tag, yet autotune writes its own chopper at every start
-        print('\nBest measured (%s):\n' % autotune_advice({}, hw.driver.name, hw.stepper))
+    if hw.autotune is not None:
+        # what to do about it the command says once, at its end (what_next, the tune's summary)
+        print('\nBest measured (klipper_tmc_autotune manages this motor):\n')
     else:
         print('\nRecommended for printer.cfg:\n')
     print(tmc.cfg_snippet(hw.driver, hw.stepper, chosen))
@@ -1577,10 +1589,50 @@ def check_resume(manifest: dict, speeds: 'list[int]', accel: float, measure_time
 def run_collect(args) -> int:
     kl = Klippy(find_socket(args.socket)).connect()
     try:
-        code, _ = collect(kl, args)
+        code, root = collect(kl, args)
+        if root:
+            what_next(kl, Dataset.open(root))
         return code
     finally:
         kl.close()
+
+
+def what_next(kl: Klippy, ds: Dataset):
+    """After a register search run on its own: what klipper_tmc_autotune means for its
+    result, to the log as CHOPPER_TUNE's summary says it, or how to hear and keep it."""
+    settings = kl.settings()
+    manifest = ds.manifest()
+    if ds.moves() and autotune_goal(settings, manifest['stepper']) is not None:
+        print('\n%s: %s' % (manifest['stepper'], autotune_advice(settings, manifest['driver'],
+                                                                  manifest['stepper'])))
+    tell_next(kl, hear_and_save(settings, ds))
+
+
+def hear_and_save(settings: dict, ds: Dataset) -> 'list[str]':
+    """How to hear and keep what a run found; none when it measured nothing or has nothing
+    to save (worth_saving)."""
+    manifest = ds.manifest()
+    if not ds.moves() or not worth_saving(settings, [manifest]):
+        return []
+    return ['To hear the registers this run found, set them live: CHOPPER_ANALYZE APPLY=1',
+            'To save the registers this run found: ' + save_command([manifest])]
+
+
+def worth_saving(settings: dict, manifests: 'list[dict]') -> 'list[dict]':
+    """The runs whose registers a save would write and the driver would keep: not the
+    motor's own registers kept, not on a motor klipper_tmc_autotune rewrites at start."""
+    return [manifest for manifest in manifests
+            if not manifest.get('kept') and autotune_goal(settings, manifest['stepper']) is None]
+
+
+def run_motors(manifests: 'list[dict]') -> str:
+    """The motors of these runs as MOTOR= takes them: 'AB'."""
+    return ''.join(motor_label(manifest['stepper'].rsplit('_', 1)[-1]) for manifest in manifests)
+
+
+def save_command(manifests: 'list[dict]') -> str:
+    from .cli import command_line
+    return command_line('save', motor=run_motors(manifests))
 
 
 def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
@@ -1726,5 +1778,4 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
             ds.flush_raw)
 
     print('Done in %dm: %d ok, %d failed -> %s' % ((time.time() - started) // 60, ok, failed, root))
-    print('Next: chopper-autotune analyze %s' % root)
     return (0 if failed == 0 else 2), str(root)
