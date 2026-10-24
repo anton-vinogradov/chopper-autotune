@@ -64,8 +64,10 @@ class Moonraker:
         return result['status'].get('print_stats', {}).get('state') == 'printing'
 
     def list_config_files(self) -> 'list[str]':
+        """Every file under the config root, whatever its name ends in: an [include] takes
+        any file, and the tool's copies do not end in .cfg."""
         result = self._request('GET', '/server/files/list', {'root': 'config'})
-        return [item['path'] for item in result if item['path'].endswith('.cfg')]
+        return [item['path'] for item in result]
 
     def download_config(self, name: str, missing_ok: bool = False) -> 'str | None':
         """A file under the config root; with missing_ok, None when there is no such file."""
@@ -98,3 +100,12 @@ class Moonraker:
                 resp.read()
         except (urllib.error.HTTPError, OSError) as e:
             raise MoonrakerError('cannot upload %s: %s' % (name, e)) from e
+
+    def delete_config(self, name: str):
+        req = urllib.request.Request('%s/server/files/config/%s' % (self.url, urllib.parse.quote(name)),
+                                     method='DELETE')
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+                resp.read()
+        except OSError as e:
+            raise MoonrakerError('cannot delete %s: %s' % (name, e)) from e

@@ -4,9 +4,13 @@ Works offline on a collected dataset; the printer is only needed for --apply.
 """
 from __future__ import annotations
 
+import configparser
+import fnmatch
+import functools
 import hashlib
 import json
 import os
+import posixpath
 import re
 import statistics
 import time
@@ -262,38 +266,146 @@ def updated_options(text: str, section: str, entries: 'dict[str, str]') -> str:
                                             for name, value in entries.items()})
 
 
-BACKUP_SUFFIX = '.chopper-backup.cfg'
-INCLUDE_RE = re.compile(r'^\[include\s+(.+?)\]\s*$', re.MULTILINE)
+# a save copies each file it changes here. Klipper reads every file an [include] takes,
+# and the options of a section met again win: a copy that [include config/*.cfg] takes
+# puts its old values over the saved ones. No pattern ending in .cfg takes these names,
+# in any folder, Kalico's recursive ** included
+BACKUPS = 'chopper-autotune/backups/'
+# where older versions kept the copy of x.cfg: beside it, as x.chopper-backup.cfg
+OLD_BACKUP_SUFFIX = '.chopper-backup.cfg'
 
 
-def active_config_files(mk, root: str = 'printer.cfg') -> 'dict[str, str]':
-    """Only the configs Klipper actually loads: root plus its transitive [include]s.
+def backup_name(name: str) -> str:
+    return BACKUPS + name + '.bak'
 
-    Dated backups (printer-YYYYMMDD.cfg) and SAVE_CONFIG leftovers sit in the same
-    directory and carry the same sections, but are not included anywhere — resolving
-    the include closure keeps the search on the live config only.
-    """
-    import posixpath
-    from fnmatch import fnmatch
-    all_files = mk.list_config_files()
-    active, stack = {}, [root]
-    while stack:
-        name = stack.pop()
-        if name in active or name not in all_files:
+
+def backed_up(copy: str) -> str:
+    """The file a copy in BACKUPS is of."""
+    return copy[len(BACKUPS):-len('.bak')]
+
+
+def is_backup(name: str) -> bool:
+    return name.startswith(BACKUPS) and name.endswith('.bak')
+
+
+def glob_takes(pattern: str, path: str) -> bool:
+    """Whether glob, as Klipper and Kalico call it on an [include] pattern, takes the file
+    at path; both are relative to the config folder. A wildcard stays inside one folder
+    and skips names that start with a dot unless it starts with one too. A ** of its own
+    takes any number of folders, as in Kalico; Klipper reads it as *, which takes less."""
+    def takes(parts, names):
+        if not parts:
+            return not names
+        if parts[0] == '**':
+            return takes(parts[1:], names) or (bool(names) and not names[0].startswith('.')
+                                               and takes(parts, names[1:]))
+        return bool(names) and fnmatch.fnmatchcase(names[0], parts[0]) \
+            and (parts[0].startswith('.') or not names[0].startswith('.')) \
+            and takes(parts[1:], names[1:])
+    return takes(pattern.split('/'), path.split('/'))
+
+
+def config_chunks(listing: 'list[str]', read, name: str = 'printer.cfg',
+                  stack: tuple = ()) -> 'list[tuple[str, str]]':
+    """The config as Klipper reads it (configfile.py): (file, text) in its order. Each
+    [include] line ends a piece of its file, the files its pattern takes follow in
+    sorted order, then the rest of the file. read: the text of a file of the listing."""
+    if name not in listing or name in stack:
+        return []
+    chunks, text = [], []
+    for line in read(name).replace('\r\n', '\n').split('\n'):
+        header = configparser.RawConfigParser.SECTCRE.match(line.split('#', 1)[0])
+        if header and header.group('header').startswith('include '):
+            chunks.append((name, '\n'.join(text)))
+            text = []
+            pattern = posixpath.normpath(posixpath.join(posixpath.dirname(name),
+                                                        header.group('header')[8:].strip()))
+            for taken in sorted(path for path in listing if glob_takes(pattern, path)):
+                chunks += config_chunks(listing, read, taken, stack + (name,))
+        else:
+            text.append(line)
+    return chunks + [(name, '\n'.join(text))]
+
+
+def klipper_reads(chunks: 'list[tuple[str, str]]') -> 'dict[str, tuple[str, dict]]':
+    """Each section as Klipper reads it from the pieces of config_chunks: the file it first
+    meets the section in, and the options as (value, the file Klipper takes it from). A
+    section met again adds its options, and they win over the earlier ones."""
+    reads = {}
+    for name, text in chunks:
+        parser = configparser.RawConfigParser(strict=False, inline_comment_prefixes=(';', '#'))
+        parser.read_string('\n'.join(line.split('#', 1)[0] for line in text.split('\n')), name)
+        for section in parser.sections():
+            reads.setdefault(section, (name, {}))[1].update(
+                (option, (value, name)) for option, value in parser.items(section))
+    return reads
+
+
+def active_config_files(mk) -> 'dict[str, str]':
+    """Only the configs Klipper actually loads: printer.cfg and the files its [include]s
+    take, in the order Klipper reads them. Dated backups (printer-YYYYMMDD.cfg) and
+    SAVE_CONFIG leftovers sit in the same folder and carry the same sections, but no
+    include takes them."""
+    read = functools.lru_cache(maxsize=None)(mk.download_config)
+    return {name: read(name) for name, _ in config_chunks(mk.list_config_files(), read)}
+
+
+def old_copies(mk, dry_run: bool = False) -> 'tuple[dict[str, tuple[str, str]], list[str], dict]':
+    """The copies older versions left beside their files, each with its place in BACKUPS
+    and its text; the console line about them; and how Klipper reads its sections once
+    they are gone: {section: None when it goes, else {option: the value then, None for
+    none}}, for the sections that change. dry_run: the line says the copies would move."""
+    listing = mk.list_config_files()
+    old = [name for name in listing if name.endswith(OLD_BACKUP_SUFFIX)]
+    if not old:
+        return {}, [], {}
+    read = functools.lru_cache(maxsize=None)(mk.download_config)
+    chunks = config_chunks(listing, read)
+    now = klipper_reads(chunks)
+    without = klipper_reads(config_chunks([name for name in listing if name not in old], read))
+    stale, sources = {}, set()
+    for section, (first, options) in now.items():
+        if section not in without:
+            stale[section] = None
+            sources |= {first} | {name for _, name in options.values()}
             continue
-        content = mk.download_config(name)
-        active[name] = content
-        base = posixpath.dirname(name)
-        for pattern in INCLUDE_RE.findall(content):
-            full = posixpath.normpath(posixpath.join(base, pattern.strip()))
-            stack += [f for f in all_files if fnmatch(f, full)]
-    return active
+        after = without[section][1]
+        changed = [option for option, (value, _) in options.items()
+                   if after.get(option, (None,))[0] != value]
+        if changed:
+            stale[section] = {option: after[option][0] if option in after else None
+                              for option in changed}
+            sources |= {options[option][1] for option in changed}
+    users = [name for name in dict(chunks) if name in sources]
+    taken = [name for name in dict(chunks) if name in old]
+    line = ('This command %s the backup copies that older versions of the tool left next to your '
+            'files into %s: %s. Their new names end in .bak, so Klipper does not read them through '
+            'an [include] of .cfg files'
+            % ('would move' if dry_run else 'moves', BACKUPS[:-1], ', '.join(old)))
+    if users:
+        line = ('Klipper reads %s through an [include]. In %s, Klipper uses old values from %s '
+                'instead of the values in your config. %s%s'
+                % (', '.join(users), ', '.join('[%s]' % section for section in stale),
+                   'it' if len(users) == 1 else 'them', line,
+                   '' if dry_run else '. Klipper stops using the old values when it restarts'))
+    elif taken:
+        line = ('Klipper reads %s through an [include], but this changes none of the values Klipper '
+                'uses. %s' % (', '.join(taken), line))
+    return {name: (backup_name(name[:-len(OLD_BACKUP_SUFFIX)] + '.cfg'), read(name))
+            for name in old}, [line], stale
 
 
-def live_config_files(mk) -> 'dict[str, str]':
-    """The config files Klipper loads, without the tool's copies a glob include may take."""
-    return {name: content for name, content in active_config_files(mk).items()
-            if not name.endswith(BACKUP_SUFFIX)}
+def settings_without(settings: dict, stale: dict) -> dict:
+    """Klipper's settings as Klipper reads the config once the old copies are gone; stale:
+    the sections that change (old_copies)."""
+    settings = dict(settings)
+    for section, options in stale.items():
+        if options is None:
+            settings.pop(section.lower(), None)
+        else:
+            settings[section.lower()] = {option: value for option, value in dict(
+                settings.get(section.lower(), {}), **options).items() if value is not None}
+    return settings
 
 
 def section_file(files: 'dict[str, str]', section: str) -> 'str | None':
@@ -311,25 +423,61 @@ def section_file(files: 'dict[str, str]', section: str) -> 'str | None':
 LAST_SAVE = 'chopper-autotune/last-save.json'
 
 
-def copies_digest(mk) -> str:
-    """One digest of all the copies the saves left. A save of an older version rewrites a
-    copy and leaves the record alone: a record with another digest is not of the last save."""
+def backup_copies(mk) -> 'dict[str, str]':
+    """The copies in BACKUPS, each with its text."""
+    return {name: mk.download_config(name) for name in mk.list_config_files() if is_backup(name)}
+
+
+def copies_digest(copies: 'dict[str, str]') -> str:
+    """One digest of copies (name: text). The record of a save holds it for the copies in
+    BACKUPS: a save that writes copies and no record changes it, and a record with another
+    digest is not of the last save."""
     digest = hashlib.sha256()
-    for name in sorted(name for name in mk.list_config_files() if name.endswith(BACKUP_SUFFIX)):
-        digest.update(('%s\0%s\0' % (name, mk.download_config(name))).encode())
+    for name in sorted(copies):
+        digest.update(('%s\0%s\0' % (name, copies[name])).encode())
     return digest.hexdigest()
+
+
+def move_old_copies(mk, dry_run: bool = False) -> dict:
+    """Move the copies older versions left beside their files into BACKUPS, after the
+    console line about them (old_copies); dry_run: the line alone. Returns the sections
+    Klipper reads otherwise once the copies are gone (old_copies)."""
+    moves, line, stale = old_copies(mk, dry_run)
+    if moves and not dry_run and mk.is_printing():
+        raise SystemExit('printer is busy printing, not touching the config')
+    tell(mk, line)
+    if dry_run or not moves:
+        return stale
+    record = json.loads(mk.download_config(LAST_SAVE, missing_ok=True) or 'null')
+    # an older version that writes a record takes its digest over these copies in their
+    # old place. Each save and restore of this version moves them: a record with another
+    # digest is older than the copies, so not of the last save
+    current = record and record['copies'] == copies_digest({name: text for name, (_, text)
+                                                            in moves.items()})
+    if record and not current:
+        mk.delete_config(LAST_SAVE)
+    for name, (new, text) in moves.items():
+        # the upload first: a failed delete leaves a copy in both places, never in none
+        mk.upload_config(new, text)
+        mk.delete_config(name)
+    if current:
+        record['copies'] = copies_digest(backup_copies(mk))
+        mk.upload_config(LAST_SAVE, json.dumps(record, indent=1))
+    return stale
 
 
 def _persist(mk, writes: 'list[tuple[str, dict[str, str]]]', what: str, lines: 'list[str]' = ()):
     """Write options (driver_*, run_current) into config sections through the Moonraker
-    files API: all edits in memory first, then every touched file is backed up and the
-    record of the save (LAST_SAVE) written, then the edits are uploaded and Klipper
-    restarted once. A failure mid-upload can leave files from different items out of
-    sync, but the originals and the record are already written by that point. lines:
-    what the console gets once every edit applies, before the first upload."""
+    files API: the old copies are moved first (move_old_copies), then all edits are made in
+    memory, every touched file is backed up and the record of the save (LAST_SAVE)
+    written, then the edits are uploaded and Klipper restarted once. A failure mid-upload
+    can leave files from different items out of sync, but the originals and the record are
+    already written by that point. lines: what the console gets once every edit applies,
+    before the first upload of the save."""
     if mk.is_printing():
         raise SystemExit('printer is busy printing, not touching the config')
-    files = live_config_files(mk)
+    move_old_copies(mk)
+    files = active_config_files(mk)
     if not files:
         raise SystemExit('could not read printer.cfg via Moonraker')
     originals = dict(files)
@@ -347,14 +495,15 @@ def _persist(mk, writes: 'list[tuple[str, dict[str, str]]]', what: str, lines: '
 
     tell(mk, lines)
     for name in edited:
-        mk.upload_config(name.rsplit('.', 1)[0] + BACKUP_SUFFIX, originals[name])
-    mk.upload_config(LAST_SAVE, json.dumps({'time': time.time(), 'copies': copies_digest(mk),
+        mk.upload_config(backup_name(name), originals[name])
+    mk.upload_config(LAST_SAVE, json.dumps({'time': time.time(),
+                                            'copies': copies_digest(backup_copies(mk)),
                                             'sections': record}, indent=1))
     for name in edited:
         mk.upload_config(name, files[name])
     mk.gcode('RESTART')
-    print('\nSaved %s to %s (backups: *%s), Klipper is restarting'
-          % (what, ', '.join(edited), BACKUP_SUFFIX))
+    print('\nSaved %s to %s. Copies of these files from before the save are in %s. '
+          'Klipper is restarting' % (what, ', '.join(edited), BACKUPS[:-1]))
 
 
 def twin_refusal(settings: dict, stepper: str) -> 'str | None':
@@ -519,7 +668,7 @@ def restore_last_save(mk, record: dict) -> int:
     """BACKUP=1 by the record of the last save: the lines it wrote go back to what they
     were before it, everything else stays. A line changed since the save goes back too,
     and the console says so."""
-    files = live_config_files(mk)
+    files = active_config_files(mk)
     when = datetime.fromtimestamp(record['time']).strftime('%Y-%m-%d %H:%M')
     lines, edited, gone = [], [], []
     for section, options in record['sections'].items():
@@ -565,19 +714,18 @@ def restore_last_save(mk, record: dict) -> int:
 
 
 def restore_whole_files(mk) -> int:
-    """BACKUP=1 without a record of the last save (a save of an older version keeps none):
-    the copies go back over their files whole."""
-    backups = [name for name in mk.list_config_files() if name.endswith(BACKUP_SUFFIX)]
-    if not backups:
-        raise SystemExit('no %s copies found: this tool has not saved anything yet, or someone '
-                         'deleted the copies' % BACKUP_SUFFIX)
-    originals = {name: name[:-len(BACKUP_SUFFIX)] + '.cfg' for name in backups}
+    """BACKUP=1 without a record of the last save (some older versions keep none): the
+    copies go back over their files whole."""
+    copies = backup_copies(mk)
+    if not copies:
+        raise SystemExit('no copies in %s: this tool has not saved anything yet, or someone '
+                         'deleted the copies' % BACKUPS[:-1])
     tell(mk, ['The last save left no record of the lines it changed, so whole files go back: '
-              + ', '.join('%s from %s' % (original, name) for name, original in originals.items()),
+              + ', '.join('%s from %s' % (backed_up(copy), copy) for copy in copies),
               'This also undoes anything written to these files after the tool copied them, such '
               'as the input shaper, bed mesh and Z offset from SAVE_CONFIG. Klipper restarts now'])
-    for name, original in originals.items():
-        mk.upload_config(original, mk.download_config(name))
+    for copy, text in copies.items():
+        mk.upload_config(backed_up(copy), text)
     _record_restore()
     mk.gcode('RESTART')
     return 0
@@ -591,15 +739,16 @@ def run_restore_config(args) -> int:
     if args.defaults == args.backup:
         raise SystemExit('pick one: DEFAULTS=1 (stock chopper registers) or BACKUP=1 (the old '
                          'values of the registers and currents that the last save changed)')
+    if mk.is_printing():
+        raise SystemExit('printer is busy printing, not touching the config')
+    move_old_copies(mk)
     if args.backup:
-        if mk.is_printing():
-            raise SystemExit('printer is busy printing, not touching the config')
         record = json.loads(mk.download_config(LAST_SAVE, missing_ok=True) or 'null')
-        if record and record['copies'] == copies_digest(mk):
+        if record and record['copies'] == copies_digest(backup_copies(mk)):
             return restore_last_save(mk, record)
         return restore_whole_files(mk)
 
-    files = live_config_files(mk)
+    files = active_config_files(mk)
     sections = tuned_tmc_sections(files)
     if not sections:
         raise SystemExit('no tuned TMC sections found — the config already runs stock registers')
@@ -715,7 +864,9 @@ def run_save_latest(args, motors: 'str | None' = None, runs: 'list[Path] | None'
     runs: the datasets to take the motors' runs from instead of all; CHOPPER_TUNE SAVE=1
     passes its own, newer than any CHOPPER_RESTORE whatever the clock says."""
     mk = Moonraker(args.url)
-    settings = mk.settings()
+    # Klipper read the old copies at its last start: each motor is weighed against the
+    # config as Klipper reads it once they are gone
+    settings = settings_without(mk.settings(), move_old_copies(mk, args.dry_run))
     since = 0.0 if runs else last_restore()
     lines, refusals, items, extruder_state = [], [], [], None
     for motor in motors or args.motor:

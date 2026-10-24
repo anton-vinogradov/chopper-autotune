@@ -135,7 +135,7 @@ class Panel(ScreenPanel):
                 ("refresh", _("Klipper defaults"), "color1", "CHOPPER_RESTORE DEFAULTS=1",
                  _("Write each driver's stock chopper registers into every tuned motor and restart Klipper? run_current stays as saved.")),
                 ("complete", _("Backup"), "color3", "CHOPPER_RESTORE BACKUP=1",
-                 _("Undo the last save and restart Klipper? The registers and currents that the last save changed get their old values back. The rest of the config stays, including what SAVE_CONFIG wrote after the save. If an older version of the tool made the last save, whole files go back. This also undoes what SAVE_CONFIG wrote after that save.")),
+                 _("Undo the last save and restart Klipper? The registers and currents that the last save changed get their old values back. The rest of the config stays, including what SAVE_CONFIG wrote after the save. Some older versions of the tool keep no record of the lines they save. If one of them made the last save, whole files go back from the copies in chopper-autotune/backups. This also undoes what SAVE_CONFIG wrote after that save.")),
                 ("stop", _("Cancel"), "color4", None, None))):
             button = self._gtk.Button(icon, label, style)
             button.connect("clicked", self.pick_restore, command, confirm)

@@ -93,7 +93,8 @@ def test_tune_save_saves_what_save_with_the_motors_of_the_run_saves(tmp_path, mo
                                             'driver_hend': 5} for axis, toff in (('x', 8), ('y', 6))}
     told = []
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: SimpleNamespace(
-        settings=lambda: settings, accepted_commands=lambda: None, gcode=told.append))
+        settings=lambda: settings, accepted_commands=lambda: None, gcode=told.append,
+        list_config_files=lambda: []))
     saved = []
     monkeypatch.setattr(analyze, 'run_save', lambda mk, items, extruder_state=None, lines=():
                         saved.append(([manifest['stepper'] for manifest, _ in items], extruder_state,
