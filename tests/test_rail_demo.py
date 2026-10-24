@@ -361,7 +361,8 @@ def test_what_would_spoil_a_rail_demo_is_refused_before_any_gcode(source, case, 
         assert message.endswith('Copy the driver_* lines of one section into the others and '
                                 'restart Klipper. Or run CHOPPER_SAVE MOTOR=A: it writes the '
                                 'latest tuning result of motor A into the section of each '
-                                'driver. Nothing was moved')
+                                'driver. It does not save a result older than the last '
+                                'CHOPPER_RESTORE. Nothing was moved')
 
 
 @pytest.mark.parametrize('source', SOURCES)
@@ -637,7 +638,7 @@ def test_a_demo_of_drivers_set_live_unlike_the_config_is_refused_before_anything
         'save or drop the registers set live, then retry: %s %s %s, but the config that Klipper loaded '
         'gives %s %s. The demo plays the registers of that config. At its end it puts them back, '
         'which would undo the ones set live. To keep them, repeat the CHOPPER_ANALYZE that set '
-        'them, with SAVE=1 in place of APPLY=1. Or write them into printer.cfg and restart Klipper '
+        'them, with SAVE=1 in place of APPLY=1. Or write them into the config and restart Klipper '
         '(RESTART). To drop them, restart Klipper. Nothing was moved'
         % (drivers, 'run' if len(steppers) > 1 else 'runs', LIVE.label(),
            'them' if len(steppers) > 1 else 'it', config.label()))
@@ -661,7 +662,7 @@ def test_a_demo_of_a_rail_on_the_defaults_names_where_they_come_from(source, dry
     stock = tmc.DRIVERS['5160'].default.label()
     assert refused.value.code == (
         'tune and save %s first: the config that Klipper loaded gives %s. Both rounds would play the '
-        'same registers. If you edited printer.cfg after Klipper started, restart it (RESTART). '
+        'same registers. If you edited the config after Klipper started, restart it (RESTART). '
         'Nothing was moved'
         % ('motor B' if motors == 'y' else 'motors A and B', ', and '.join(
             'the Klipper defaults %s to stepper_%s and stepper_%s1' % (stock, axis, axis)

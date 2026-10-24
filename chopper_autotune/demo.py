@@ -99,7 +99,8 @@ def rail_registers(hw: Hardware) -> tmc.Chopper:
                      'Klipper loaded gives %s. The demo plays one set against the defaults. '
                      'Copy the driver_* lines of one section into the others and restart Klipper. '
                      'Or run %s: it writes the latest tuning result of motor %s into the section '
-                     'of each driver. Nothing was moved'
+                     'of each driver. It does not save a result older than the last '
+                     'CHOPPER_RESTORE. Nothing was moved'
                      % (hw.motor, ', '.join('%s %s' % pair for pair in sets),
                         command_line('save', motor=hw.motor), hw.motor))
 
@@ -125,7 +126,7 @@ def refuse_on_defaults(motors: 'list[tuple[Hardware, tmc.Chopper]]'):
                          'loaded gives %s. Both rounds would play the same registers. Nothing was '
                          'moved' % gives)
     raise SystemExit('tune and save motor%s %s first: the config that Klipper loaded gives %s. '
-                     'Both rounds would play the same registers. If you edited printer.cfg after '
+                     'Both rounds would play the same registers. If you edited the config after '
                      'Klipper started, restart it (RESTART). Nothing was moved'
                      % ('s' if len(motors) > 1 else '', ' and '.join(hw.motor for hw, _ in motors),
                         gives))
@@ -164,7 +165,7 @@ def refuse_set_live(kl: Klippy, hws: 'list[Hardware]'):
     raise SystemExit('save or drop the registers set live, then retry: %s. The demo plays the '
                      'registers of that config. At its end it puts them back, which would undo '
                      'the ones set live. To keep them, repeat the CHOPPER_ANALYZE that set them, '
-                     'with SAVE=1 in place of APPLY=1. Or write them into printer.cfg and restart '
+                     'with SAVE=1 in place of APPLY=1. Or write them into the config and restart '
                      'Klipper (RESTART). To drop them, restart Klipper. Nothing was moved' % runs)
 
 

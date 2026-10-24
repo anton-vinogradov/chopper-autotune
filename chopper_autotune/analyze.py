@@ -433,6 +433,22 @@ def settings_without(settings: dict, stale: dict) -> dict:
     return settings
 
 
+def file_settings(listing: 'list[str]', read) -> dict:
+    """The sections as Klipper reads these files (config_chunks): {section: {option: value}},
+    lower-cased as in its settings."""
+    return {section.lower(): {option: value for option, (value, _) in options.items()}
+            for section, (_, options) in klipper_reads(config_chunks(listing, read)).items()}
+
+
+def restart_settings(mk) -> dict:
+    """file_settings of Klipper's next start, the old copies gone (move_old_copies). Klipper
+    runs what it read at its last start: old copies it read then, copies moved since, or a
+    file edited since set the two apart."""
+    return file_settings([name for name in mk.list_config_files()
+                          if not name.endswith(OLD_BACKUP_SUFFIX)],
+                         functools.lru_cache(maxsize=None)(mk.download_config))
+
+
 def section_file(files: 'dict[str, str]', section: str) -> 'str | None':
     """The file that holds the section, None when none does."""
     matches = [name for name in files
@@ -626,14 +642,14 @@ def run_apply(mk, driver_name: str, steppers: 'list[str]', chopper: tmc.Chopper)
                 pass
 
 
-def applied_line(settings: dict, manifest: dict, dataset: str, chopper: tmc.Chopper,
-                 args) -> str:
+def applied_line(mk, manifest: dict, dataset: str, chopper: tmc.Chopper, args) -> str:
     """The console line of APPLY on a rail: the registers, the run, the drivers; what
     CHOPPER_DEMO makes of them, which plays the config's registers against the defaults;
     how to keep them: this ANALYZE on this run with SAVE=1 for APPLY=1, its hearing and
     trim choosing the same set."""
     from .cli import command_line
     from .collect import autotune_manages, driver_config, motor_label
+    settings = mk.settings()
     steppers = measured_steppers(manifest)
     line = ('Motor %s: %s from run %s is set on %s'
             % (motor_label(manifest['axis']), chopper.label(), Path(dataset).name,
@@ -641,18 +657,17 @@ def applied_line(settings: dict, manifest: dict, dataset: str, chopper: tmc.Chop
     # klipper_tmc_autotune writes its own registers at every start, whatever printer.cfg says
     if manifest.get('autotune') or autotune_manages(settings, manifest):
         return line + ' until Klipper restarts'
-    if all(configured(settings, manifest['driver'], stepper, chopper.fields())
-           for stepper in steppers):
-        return line + ('. These are the registers Klipper loaded from printer.cfg at its last '
-                       'start, so the run found nothing to change')
+    if stays(mk, settings, manifest['driver'], steppers, chopper.fields()):
+        return line + ('. These are the registers Klipper loaded from its config at its last '
+                       'start. The run found nothing to change')
     line += ' until Klipper restarts'
     saved = [tmc.baseline_chopper(dict(own['baseline'], **chopper.fields()),
                                   default=own['driver'].default) == own['driver'].default
              for own in (driver_config(settings, stepper) for stepper in steppers)]
     hear = ('These are the Klipper defaults. After you save them, CHOPPER_DEMO has nothing to '
             'play against the defaults' if all(saved) else
-            'CHOPPER_DEMO plays the registers Klipper loaded from printer.cfg at its last start. '
-            'It plays these after you save them')
+            'CHOPPER_DEMO plays the registers Klipper loaded from its config at its last start. '
+            'It plays the registers from this run after you save them')
     return '%s. %s. To save them: %s' % (line, hear, command_line(
         'analyze', args, dataset_opt=dataset, axis=None, apply=False, save=True))
 
@@ -827,9 +842,42 @@ def restore_last_save(mk, record: dict) -> int:
     return 0
 
 
+def rails_apart(mk, copies: 'dict[str, str]') -> 'list[str]':
+    """A console line for each motor with a twin (#129) whose drivers get different registers
+    once the copies (backup_copies) are back over their files."""
+    from .collect import driver_config, driver_of, motor_label, rail_steppers
+    settings = mk.settings()
+    rails = [steppers for steppers in (rail_steppers(settings, axis) for axis in 'xy')
+             if len(steppers) > 1]
+    if not rails:
+        return []
+    back = {backed_up(copy): text for copy, text in copies.items()}
+    read = functools.lru_cache(maxsize=None)(mk.download_config)
+    after = file_settings(sorted(set(mk.list_config_files()) | set(back)),
+                          lambda name: back[name] if name in back else read(name))
+    lines = []
+    for steppers in rails:
+        sets = {}
+        for stepper in steppers:
+            if driver_of(after, stepper):
+                own = driver_config(after, stepper)
+                sets[stepper] = tmc.baseline_chopper(own['baseline'],
+                                                     default=own['driver'].default).label()
+        if len(set(sets.values())) > 1:
+            lines.append('After the files go back, the drivers of motor %s get different '
+                         'registers: %s. CHOPPER_DEMO refuses such a motor. To give its drivers '
+                         'one set, copy the driver_* lines of one section into the others and '
+                         'restart Klipper'
+                         % (motor_label(steppers[0].rsplit('_', 1)[-1]),
+                            ', '.join('%s %s' % pair for pair in sets.items())))
+    return lines
+
+
 def restore_whole_files(mk) -> int:
     """BACKUP=1 without a record of the last save (some older versions keep none): the
-    copies go back over their files whole."""
+    copies go back over their files whole. Each copy is of its file before the last save
+    that changed it, so the sections of a rail in two files may get registers of different
+    saves: the console names such a motor."""
     copies = backup_copies(mk)
     if not copies:
         raise SystemExit('no copies in %s: this tool has not saved anything yet, or someone '
@@ -837,7 +885,8 @@ def restore_whole_files(mk) -> int:
     tell(mk, ['The last save left no record of the lines it changed, so whole files go back: '
               + ', '.join('%s from %s' % (backed_up(copy), copy) for copy in copies),
               'This also undoes anything written to these files after the tool copied them, such '
-              'as the input shaper, bed mesh and Z offset from SAVE_CONFIG. Klipper restarts now'])
+              'as the input shaper, bed mesh and Z offset from SAVE_CONFIG. Klipper restarts now']
+         + rails_apart(mk, copies))
     for copy, text in copies.items():
         mk.upload_config(backed_up(copy), text)
     _record_restore()
@@ -889,12 +938,23 @@ def configured(settings: dict, driver_name: str, stepper: str, fields: dict) -> 
                for field, value in fields.items())
 
 
-def axis_choice(args, axis: str, settings: dict, since: float,
-                runs: 'list[Path] | None' = None) -> 'tuple[str, tuple | None, bool]':
+def stays(mk, settings: dict, driver_name: str, steppers: 'list[str]', fields: dict) -> bool:
+    """Whether each of the steppers keeps these registers with nothing saved: the config
+    Klipper loaded at its last start gives them (settings), and so do the files it reads at
+    the next one (restart_settings, read through mk once the first holds). Only then does
+    a save write nothing and restart nothing."""
+    def held(view):
+        return all(configured(view, driver_name, stepper, fields) for stepper in steppers)
+    return held(settings) and held(restart_settings(mk))
+
+
+def axis_choice(args, axis: str, settings: dict, since: float, runs: 'list[Path] | None',
+                mk, loaded: dict) -> 'tuple[str, tuple | None, bool]':
     """What CHOPPER_SAVE does with a motor of the gantry: its console line, the (manifest,
     registers) to write or None, and whether the line is a refusal. The motor's run is
-    its newest tuning dataset among runs (default: all of them); one stopped before its
-    first measurement does not count."""
+    its newest tuning dataset among runs (all of them when None); one stopped before its
+    first measurement does not count. settings: the config as Klipper reads it once the
+    old copies are gone; loaded: Klipper's settings, what it runs; mk: the files (stays)."""
     from .collect import BACK_TO_BACK_ROUNDS, motor_label, tmc_sections
     from .tune import winner_of
     motor = 'motor ' + motor_label(axis)
@@ -915,8 +975,12 @@ def axis_choice(args, axis: str, settings: dict, since: float,
                     % (motor, path.name, path)), None, False
         # a rail's registers go to every section of it: the line names them
         sections = tmc_sections(driver_name, *steppers) if len(steppers) > 1 else ''
-        if manifest.get('kept') and all(configured(settings, driver_name, stepper, winner)
-                                        for stepper in steppers):
+
+        def stay(fields):
+            # one motor keeps main's check (decision 19)
+            return stays(mk, loaded, driver_name, steppers, fields) if sections \
+                else configured(settings, driver_name, steppers[0], fields)
+        if manifest.get('kept') and stay(winner):
             return ('%s: your registers %s stay%s. In run %s, neither the winner nor Klipper '
                     'defaults was quieter than them in all %d rounds'
                     % (motor, tmc.Chopper(**winner).label(), ' in ' + sections if sections else '',
@@ -925,8 +989,7 @@ def axis_choice(args, axis: str, settings: dict, since: float,
             manifest, combo = winner_of(str(path), args)
         except SystemExit as reason:
             return '%s: %s' % (motor, reason), None, True
-        if sections and all(configured(settings, driver_name, stepper, combo.fields())
-                            for stepper in steppers):
+        if sections and stay(combo.fields()):
             return ('%s: your registers %s stay in %s. Run %s ended on them, so there is nothing '
                     'to write' % (motor, combo.label(), sections, path.name)), None, False
         return ('%s: %s %s%s from run %s' % (motor, 'would save' if args.dry_run else 'saving',
@@ -980,16 +1043,18 @@ def run_save_latest(args, motors: 'str | None' = None, runs: 'list[Path] | None'
     runs: the datasets to take the motors' runs from instead of all; CHOPPER_TUNE SAVE=1
     passes its own, newer than any CHOPPER_RESTORE whatever the clock says."""
     mk = Moonraker(args.url)
+    loaded = mk.settings()
     # Klipper read the old copies at its last start: each motor is weighed against the
     # config as Klipper reads it once they are gone
-    settings = settings_without(mk.settings(), move_old_copies(mk, args.dry_run))
+    settings = settings_without(loaded, move_old_copies(mk, args.dry_run))
     since = 0.0 if runs else last_restore()
     lines, refusals, items, extruder_state = [], [], [], None
     for motor in motors or args.motor:
         if motor == 'E':
             line, extruder_state, refused = extruder_choice(args, settings, since)
         else:
-            line, item, refused = axis_choice(args, MOTOR_AXES[motor], settings, since, runs)
+            line, item, refused = axis_choice(args, MOTOR_AXES[motor], settings, since, runs,
+                                              mk, loaded)
             if item:
                 items.append(item)
         lines.append(line)
@@ -1235,7 +1300,7 @@ def run_analyze(args) -> int:
         if len(steppers) > 1:
             # APPLY runs detached: the console sees nothing else of it. One motor's APPLY
             # stays main's (decision 19)
-            tell(mk, [applied_line(mk.settings(), manifest, dataset, best['chopper'], args)])
+            tell(mk, [applied_line(mk, manifest, dataset, best['chopper'], args)])
         else:
             print('\nApplied via SET_TMC_FIELD (runtime only%s)'
                   % ('' if manifest.get('autotune') else ', use SAVE=1 to persist'))

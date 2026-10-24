@@ -1764,33 +1764,35 @@ def check_resume(manifest: dict, speeds: 'list[int]', accel: float, measure_time
 
 
 def run_collect(args) -> int:
+    from .moonraker import Moonraker
     kl = Klippy(find_socket(args.socket)).connect()
     try:
         code, root = collect(kl, args)
         if root:
-            what_next(kl, Dataset.open(root))
+            what_next(kl, Dataset.open(root), Moonraker(args.url))
         return code
     finally:
         kl.close()
 
 
-def what_next(kl: Klippy, ds: Dataset):
+def what_next(kl: Klippy, ds: Dataset, mk):
     """After a register search run on its own: what klipper_tmc_autotune means for its
-    result, to the log as CHOPPER_TUNE's summary says it, or how to hear and keep it."""
+    result, to the log as CHOPPER_TUNE's summary says it, or how to hear and keep it. mk:
+    Moonraker, for the config files (worth_saving)."""
     settings = kl.settings()
     manifest = ds.manifest()
     if ds.moves() and autotune_manages(settings, manifest):
         steppers = measured_steppers(manifest)
         print('\n%s: %s' % (', '.join(steppers), autotune_advice(settings, manifest['driver'],
                                                                   *steppers)))
-    tell_next(kl, hear_and_save(settings, ds))
+    tell_next(kl, hear_and_save(settings, ds, mk))
 
 
-def hear_and_save(settings: dict, ds: Dataset) -> 'list[str]':
+def hear_and_save(settings: dict, ds: Dataset, mk) -> 'list[str]':
     """How to hear and keep what a run found; none when it measured nothing or has nothing
     to save (worth_saving)."""
     manifest = ds.manifest()
-    if not ds.moves() or not worth_saving(settings, [manifest]):
+    if not ds.moves() or not worth_saving(settings, [manifest], mk):
         return []
     from .cli import command_line
     # without MOTOR= ANALYZE takes the newest run of any motor; one motor's hint stays
@@ -1801,23 +1803,25 @@ def hear_and_save(settings: dict, ds: Dataset) -> 'list[str]':
             'To save the registers this run found: ' + save_command([manifest])]
 
 
-def worth_saving(settings: dict, manifests: 'list[dict]') -> 'list[dict]':
-    """The runs whose registers a save would write and the driver would keep: not the
-    motor's own registers kept, not on a motor klipper_tmc_autotune rewrites at start, not
-    a rail's winner the config already gives each of its drivers."""
+def worth_saving(settings: dict, manifests: 'list[dict]', mk) -> 'list[dict]':
+    """The runs whose registers a save would write and the driver would keep: not on a motor
+    klipper_tmc_autotune rewrites at start, not one motor's own registers kept, not a
+    rail's winner that stays on every driver of it (configured_rail). One motor keeps
+    main's hints and save (decision 19)."""
     return [manifest for manifest in manifests
-            if not manifest.get('kept') and not autotune_manages(settings, manifest)
-            and not configured_rail(settings, manifest)]
+            if not autotune_manages(settings, manifest)
+            and not (configured_rail(settings, manifest, mk) if len(measured_steppers(manifest)) > 1
+                     else manifest.get('kept'))]
 
 
-def configured_rail(settings: dict, manifest: dict) -> bool:
-    """A rail run whose winner the config already gives every driver of the rail. One
-    motor's run keeps main's hints and save (decision 19)."""
-    from .analyze import configured
-    steppers = measured_steppers(manifest)
-    return len(steppers) > 1 and bool(manifest.get('winner')) and all(
-        configured(settings, manifest['driver'], stepper, manifest['winner'])
-        for stepper in steppers)
+def configured_rail(settings: dict, manifest: dict, mk) -> bool:
+    """A rail run whose winner every driver of the rail runs now and gets again at Klipper's
+    next start (analyze.stays: settings, then the files through mk). The rail's own
+    registers kept count the same way: Klipper may run them from an old copy it read, and
+    then a save still has to write them."""
+    from .analyze import stays
+    return bool(manifest.get('winner')) and stays(mk, settings, manifest['driver'],
+                                                  measured_steppers(manifest), manifest['winner'])
 
 
 def run_motors(manifests: 'list[dict]') -> str:

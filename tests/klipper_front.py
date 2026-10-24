@@ -1009,9 +1009,10 @@ class Front:
 
 
 class FrontMoonraker:
-    """Moonraker in front of a Front: the files API on its printer.cfg (no includes),
-    G-code to the printer, and a RESTART that builds the printer again from the
-    printer.cfg uploaded, the release's TMC modules reading the saved driver_* lines."""
+    """Moonraker in front of a Front: the files API on its printer.cfg (no includes) and
+    the tool's files beside it, G-code to the printer, and a RESTART that builds the
+    printer again from the printer.cfg uploaded, the release's TMC modules reading the
+    saved driver_* lines."""
 
     def __init__(self, source: str, printer_cfg: str):
         self.source, self.files = source, {'printer.cfg': printer_cfg}
@@ -1030,12 +1031,15 @@ class FrontMoonraker:
     def list_config_files(self) -> 'list[str]':
         return list(self.files)
 
-    def download_config(self, name: str) -> str:
-        return self.files[name]
+    def download_config(self, name: str, missing_ok: bool = False) -> 'str | None':
+        return self.files.get(name) if missing_ok else self.files[name]
 
     def upload_config(self, name: str, content: str):
         self.uploads.append(name)
         self.files[name] = content
+
+    def delete_config(self, name: str):
+        del self.files[name]
 
     def gcode(self, script: str):
         if script.strip() == 'RESTART':

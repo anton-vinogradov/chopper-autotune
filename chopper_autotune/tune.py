@@ -16,6 +16,7 @@ from .collect import (Screen, autotune_advice, autotune_manages, collect, driver
 from .dataset import Dataset, measured_steppers
 from .find_speed import no_peak, scan, tune_at
 from .klippy import Klippy, find_socket
+from .moonraker import Moonraker
 from .rail import rails_first, refuse_rail_run
 
 DRY_RUN_SPEED = 60
@@ -99,7 +100,7 @@ def left_undone(args, settings: dict, axes: 'list[str]', axis: str,
     before, tune the ones after."""
     from .cli import command_line
     lines = []
-    tuned = worth_saving(settings, [manifest for manifest, _ in winners])
+    tuned = worth_saving(settings, [manifest for manifest, _ in winners], Moonraker(args.url))
     if tuned:
         done = run_motors(tuned)
         lines.append('The run tuned motor %s. To save it: %s' % (done, save_command(tuned)))
@@ -164,7 +165,7 @@ def run_tune(args) -> int:
         winners.sort(key=lambda winner: winner[0]['stepper'])      # A, B: the order shown
         runs = [manifest for manifest, _ in winners]
         free = [manifest for manifest in runs if not autotune_manages(settings, manifest)]
-        changed = worth_saving(settings, runs)
+        changed = worth_saving(settings, runs, Moonraker(args.url))
 
         # the run's outcome must reach the screen: the console summary below only lands
         # in the detached log, and SAVE=1 restarts Klipper, wiping the status line — so

@@ -222,6 +222,7 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser('collect', help='run measurements on the printer, write a dataset')
     c.add_argument('--socket', default=None,
                    help='klippy unix socket path, default: auto-detect (printer_data/comms, /tmp/klippy_uds)')
+    c.add_argument('--url', default='http://127.0.0.1:7125')
     c.add_argument('--csv', action='store_true',
                    help='fallback capture via ACCELEROMETER_MEASURE and its CSV instead of streaming')
     c.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y'), default='x',

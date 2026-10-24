@@ -249,25 +249,25 @@ def test_a_rail_whose_twin_autotune_manages_now_has_nothing_to_hear_or_save(tmp_
     # its registers would reach the twin only until the next Klipper start (#129)
     pair = searched(tmp_path, winner=tmc.Chopper(0, 5, 0, 6).fields(), motion='rail',
                     steppers=['stepper_y', 'stepper_y1'])
-    assert collect.hear_and_save({}, pair)[-1].endswith('CHOPPER_SAVE MOTOR=B')
-    assert collect.hear_and_save({'autotune_tmc stepper_y1': {}}, pair) == []
+    assert collect.hear_and_save({}, pair, None)[-1].endswith('CHOPPER_SAVE MOTOR=B')
+    assert collect.hear_and_save({'autotune_tmc stepper_y1': {}}, pair, None) == []
 
 
 def test_a_register_search_names_no_next_step_where_there_is_nothing_to_hear_or_save(tmp_path):
     winner = tmc.Chopper(0, 5, 0, 6).fields()
-    assert collect.hear_and_save({}, searched(tmp_path, winner=winner))[-1].endswith(
+    assert collect.hear_and_save({}, searched(tmp_path, winner=winner), None)[-1].endswith(
         'CHOPPER_SAVE MOTOR=B')
     # a full sweep with VALIDATE=0 records no winner: CHOPPER_SAVE says how to save it anyway
-    assert collect.hear_and_save({}, searched(tmp_path / 'grid'))[-1].endswith(
+    assert collect.hear_and_save({}, searched(tmp_path / 'grid'), None)[-1].endswith(
         'CHOPPER_SAVE MOTOR=B')
     # the motor keeps its own registers: nothing new to hear or write
-    assert collect.hear_and_save({}, searched(tmp_path / 'kept', winner=winner, kept=True)) == []
+    assert collect.hear_and_save({}, searched(tmp_path / 'kept', winner=winner, kept=True), None) == []
     # klipper_tmc_autotune writes its own chopper at every start
     assert collect.hear_and_save({'autotune_tmc stepper_y': {}},
-                                   searched(tmp_path / 'autotune', winner=winner)) == []
+                                   searched(tmp_path / 'autotune', winner=winner), None) == []
     empty = Dataset.create(tmp_path / 'empty', {'axis': 'y', 'stepper': 'stepper_y'})
     empty.append({'id': 'a', 'kind': 'move', 'status': 'failed'})
-    assert collect.hear_and_save({}, empty) == []
+    assert collect.hear_and_save({}, empty, None) == []
 
 
 class Guard:
