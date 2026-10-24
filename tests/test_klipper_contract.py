@@ -558,6 +558,86 @@ def test_a_single_accelerometer_keeps_its_name_as_written(source, tmp_path, monk
     assert chip == 'adxl345 Hotend' and accel_command_chip(settings, chip) == 'Hotend'
 
 
+class DiskMoonraker:
+    """Moonraker over a config folder: its files API and the G-code it is sent."""
+
+    def __init__(self, root):
+        self.root, self.scripts = root, []
+
+    def is_printing(self):
+        return False
+
+    def settings(self):
+        return {}
+
+    def accepted_commands(self):
+        return None
+
+    def list_config_files(self):
+        return [str(path.relative_to(self.root)) for path in self.root.rglob('*.cfg')]
+
+    def download_config(self, name, missing_ok=False):
+        path = self.root / name
+        return None if missing_ok and not path.exists() else path.read_text()
+
+    def upload_config(self, name, content):
+        (self.root / name).parent.mkdir(parents=True, exist_ok=True)
+        (self.root / name).write_text(content)
+
+    def gcode(self, script):
+        self.scripts.append(script)
+
+
+def config_autosave(source: str, path: str):
+    """This release's SAVE_CONFIG machinery over printer.cfg at path."""
+    gcode = types.SimpleNamespace(register_command=lambda *args, **kwargs: None,
+                                  request_restart=lambda how: None)
+    printer = types.SimpleNamespace(lookup_object=lambda name: gcode, command_error=Exception,
+                                    get_start_args=lambda: {'config_file': path})
+    autosave = load_klippy(source, 'configfile').ConfigAutoSave(printer)
+    autosave.load_main_config()
+    return autosave
+
+
+# a TMC section last: SAVE_CONFIG appends its block inside that section's span
+CALIBRATED_PRINTER = """[input_shaper]
+shaper_freq_x: 40
+
+[tmc2209 stepper_x]
+uart_pin: PA1
+run_current: 1.2
+driver_TOFF: 3
+"""
+
+
+# Kalico runs SAVE_CONFIG in PrinterConfig, Klipper in ConfigAutoSave
+@pytest.mark.parametrize('source', [source for source in fetched('configfile.py')
+                                    if not (source or '').startswith('kalico')] or [None])
+def test_a_backup_keeps_what_save_config_wrote_after_the_save(source, tmp_path, monkeypatch):
+    # SHAPER_CALIBRATE and PROBE_CALIBRATE after a save, then SAVE_CONFIG: its block, and
+    # the line it comments out because the block now holds it, outlive the rollback
+    require(source)
+    from chopper_autotune import analyze
+    path = tmp_path / 'printer.cfg'
+    path.write_text(CALIBRATED_PRINTER)
+    mk = DiskMoonraker(tmp_path)
+    analyze.run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(1, 8, 2, 5))])
+    autosave = config_autosave(source, str(path))
+    autosave.set('input_shaper', 'shaper_freq_x', '52.4')
+    autosave.set('probe', 'z_offset', '1.725')
+    autosave.cmd_SAVE_CONFIG(types.SimpleNamespace(error=Exception))
+    calibrated = path.read_text()
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    analyze.run_restore_config(types.SimpleNamespace(defaults=False, backup=True, url=''))
+    assert path.read_text() == calibrated.replace(
+        'driver_TBL: 1\ndriver_TOFF: 8\ndriver_HSTRT: 2\ndriver_HEND: 5\n', 'driver_TOFF: 3\n')
+    config, _ = config_autosave(source, str(path)).load_main_config()
+    assert (config.get('input_shaper', 'shaper_freq_x'), config.get('probe', 'z_offset')) \
+        == ('52.4', '1.725')
+    assert dict(config.items('tmc2209 stepper_x')) == {'uart_pin': 'PA1', 'run_current': '1.2',
+                                                       'driver_toff': '3'}
+
+
 # a TMPDIR of klippy's service: Kalico writes the raw files there, and the tool that
 # RUN_SHELL_COMMAND starts inherits it
 KLIPPY_TMPDIR = '/srv/klippy-tmp'

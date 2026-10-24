@@ -135,7 +135,7 @@ class Panel(ScreenPanel):
                 ("refresh", _("Klipper defaults"), "color1", "CHOPPER_RESTORE DEFAULTS=1",
                  _("Write each driver's stock chopper registers into every tuned motor and restart Klipper? run_current stays as saved.")),
                 ("complete", _("Backup"), "color3", "CHOPPER_RESTORE BACKUP=1",
-                 _("Put back the config exactly as it was before the last save (registers AND currents) and restart Klipper?")),
+                 _("Undo the last save and restart Klipper? The registers and currents that the last save changed get their old values back. The rest of the config stays, including what SAVE_CONFIG wrote after the save. If an older version of the tool made the last save, whole files go back. This also undoes what SAVE_CONFIG wrote after that save.")),
                 ("stop", _("Cancel"), "color4", None, None))):
             button = self._gtk.Button(icon, label, style)
             button.connect("clicked", self.pick_restore, command, confirm)
@@ -277,8 +277,8 @@ class Panel(ScreenPanel):
         self.status.set_markup(
             "<span size='large'>" + GLib.markup_escape_text(_(
                 "Restore what? Klipper defaults = stock chopper registers, tuning off "
-                "(run_current stays). Backup = the config exactly as before the last save, "
-                "currents included.")) + "</span>")
+                "(run_current stays). Backup = the old values of the registers and currents "
+                "that the last save changed.")) + "</span>")
 
     def pick_restore(self, widget, command, confirm):
         self.restore_menu.hide()
