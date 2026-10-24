@@ -1,13 +1,27 @@
 """The scripts a printer with one motor per axis gets from COLLECT, FIND_SPEED, DEMO, MAP
-and TUNE, what the run prints and the dataset it writes, recorded from main before the
-two-motor rail (#129) and kept as they were: tools that learn to move a rail must not
-change a line for a single motor. The printers are AWD's own (tests/test_klipper_front.py)
-without the twins, frozen beside the scripts (printer-*.cfg): meijjaa's cartesian with its
-low limits, a Voron's CoreXY, and that Voron with a second motor on Y alone, where motor
-A still runs alone on its axis; each built from every release's modules. The scores the
-text and the dataset carry come from the test printer's accelerometer, whose samples fall
-a little apart on each release: they are held on PRINTED_ON, to nine significant digits, the
-last ones being numpy's and the platform's."""
+and TUNE, what the run prints and the dataset it writes, recorded from the code of main:
+tools that learn to move a rail (#129) must not change a line for a single motor. The
+printers are AWD's own (tests/test_klipper_front.py) without the twins, frozen beside the
+scripts (printer-*.cfg): meijjaa's cartesian with its low limits, a Voron's CoreXY, and that
+Voron with a second motor on Y alone, where motor A still runs alone on its axis; each built
+from every release's modules. The scores the text and the dataset carry come from the test
+printer's accelerometer, whose samples fall a little apart on each release: they are held on
+PRINTED_ON, to nine significant digits, the last ones being numpy's and the platform's.
+
+After merging main, record the references again from main's code:
+
+    python tests/record_single_motor_scripts.py --check
+    python tests/record_single_motor_scripts.py origin/main
+
+The first command records from the commit the references came from, which
+single_motor_scripts/recorded-from names, with the merged tests. It must reproduce them byte
+for byte, except a score's digits past the ninth significant one, which this test ignores. If
+the recording fails or more differs, the merge changed how the tests drive the tools (run(),
+the test printer), and a new recording would carry that change along with main's: find out why
+first. The second command records from main into single_motor_scripts and names the files that
+changed. Apart from such digits, each change in `git diff tests/single_motor_scripts` must
+come from a change in main; this test then holds the merged code to them. A normal test run
+records nothing."""
 import os
 import re
 import types
