@@ -956,6 +956,17 @@ def refuse_if_printing(kl: Klippy):
         raise PrinterBusy('printer is busy printing — not moving anything')
 
 
+def confirmed(args) -> bool:
+    """'Proceed?' before a run moves the printer, asked only at a terminal: a macro's run
+    has no one to answer, its stdin is /dev/null (run.sh), where input() fails."""
+    if args.yes or not (sys.stdin and sys.stdin.isatty()):
+        return True
+    if input('Proceed? [y/N] ').strip().lower() in ('y', 'yes'):
+        return True
+    print('Aborted')
+    return False
+
+
 def run_restore(*steps):
     """Run every restore step even when one fails or a second SIGTERM lands mid-restore:
     registers, spreadCycle and homing must each get their chance. A Stop swallowed there
@@ -1795,35 +1806,35 @@ def hear_and_save(settings: dict, ds: Dataset, mk) -> 'list[str]':
     if not ds.moves() or not worth_saving(settings, [manifest], mk):
         return []
     from .cli import command_line
-    # without MOTOR= ANALYZE takes the newest run of any motor; one motor's hint stays
-    # main's (decision 19)
-    hear = command_line('analyze', axis=manifest['axis'], apply=True) \
-        if len(measured_steppers(manifest)) > 1 else 'CHOPPER_ANALYZE APPLY=1'
-    return ['To hear the registers this run found, set them live: ' + hear,
+    # without MOTOR= ANALYZE takes the newest run of any motor
+    return ['To hear the registers this run found, set them live: '
+            + command_line('analyze', axis=manifest['axis'], apply=True),
             'To save the registers this run found: ' + save_command([manifest])]
 
 
 def worth_saving(settings: dict, manifests: 'list[dict]', mk) -> 'list[dict]':
     """The runs whose registers a save would write and the driver would keep: not on a motor
-    klipper_tmc_autotune rewrites at start, not one motor's own registers kept or a winner
-    the config already gives it, not a rail's winner that stays on every driver of it
-    (configured_rail). One motor keeps main's hints and save (decision 19)."""
-    from .analyze import configured
+    klipper_tmc_autotune rewrites at start, not a winner each driver the run measured (a
+    rail's every driver) runs now and gets again at Klipper's next start (analyze.stays:
+    settings, then the files through mk). The motor's own registers kept count the same way:
+    Klipper may run them from an old copy it read, and then a save still has to write them.
+    Files Moonraker does not give leave the config Klipper loaded to judge by: the run is
+    over, and its result is in the dataset."""
+    from .analyze import configured, stays
+    from .moonraker import MoonrakerError
+
+    def stay(manifest: dict) -> bool:
+        steppers = measured_steppers(manifest)
+        try:
+            return stays(mk, settings, manifest['driver'], steppers, manifest['winner'])
+        except MoonrakerError as failure:
+            print('%s. The tool checks what is left to save against the config Klipper loaded, '
+                  'not against the config files Klipper reads at its next start' % failure)
+            return all(configured(settings, manifest['driver'], stepper, manifest['winner'])
+                       for stepper in steppers)
     return [manifest for manifest in manifests
             if not autotune_manages(settings, manifest)
-            and not (configured_rail(settings, manifest, mk) if len(measured_steppers(manifest)) > 1
-                     else manifest.get('kept') or (manifest.get('winner') and configured(
-                         settings, manifest['driver'], manifest['stepper'], manifest['winner'])))]
-
-
-def configured_rail(settings: dict, manifest: dict, mk) -> bool:
-    """A rail run whose winner every driver of the rail runs now and gets again at Klipper's
-    next start (analyze.stays: settings, then the files through mk). The rail's own
-    registers kept count the same way: Klipper may run them from an old copy it read, and
-    then a save still has to write them."""
-    from .analyze import stays
-    return bool(manifest.get('winner')) and stays(mk, settings, manifest['driver'],
-                                                  measured_steppers(manifest), manifest['winner'])
+            and not (manifest.get('winner') and stay(manifest))]
 
 
 def run_motors(manifests: 'list[dict]') -> str:
@@ -1894,8 +1905,7 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
     print('Registers the run tries: %s' % space.text())
     if args.dry_run:
         return 0, None
-    if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):
-        print('Aborted')
+    if not confirmed(args):
         return 1, None
 
     refuse_if_printing(kl)
@@ -1946,6 +1956,12 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
                 or tmc.Space.recorded(ds.manifest()) != space:
             ds.update_manifest(winner=None, improvement=None, **hearing.manifest_fields(),
                                **space.manifest_fields())
+        # STATUS counts every move of the dataset against total_moves: beside this run's plan
+        # stay the old moves it does not reuse, the failed ones and those outside its ranges
+        stale = [r for r in ds.records() if r.get('kind') == 'move' and (
+            r.get('status') != 'ok' or space.outside(
+                tmc.Chopper(r['tbl'], r['toff'], r['hstrt'], r['hend'], r.get('tpfd'))))]
+        ds.update_manifest(total_moves=n_moves + len(stale))
     done = ds.done_ids()
     if done:
         print('Resuming %s: %d measurements already present' % (root, len(done)))

@@ -66,13 +66,14 @@ class Panel(ScreenPanel):
                 reasons[label] = _(
                     "%s needs a physical endstop — this machine homes sensorless (StallGuard), "
                     "and the skip referee cannot creep into a virtual switch. The plan here is "
-                    "shorter: tune once (no current step to adapt to), then 5 Extruder."
+                    "1 Belts, one Tune, then 5 Extruder: without Current there is no second Tune."
                 ) % label
         rail = _("%s does not work yet on an axis with two motors (chopper-autotune issue #129 "
                  "on GitHub).")
         if self.two_motors("stepper_x", "stepper_y"):
             reasons.setdefault(_("3 Current"), rail % _("3 Current") + " " + _(
-                "The plan here is shorter: tune once, then 5 Extruder."))
+                "The plan here is 1 Belts, one Tune, then 5 Extruder: without Current there is "
+                "no second Tune."))
         # Map runs motor A alone: a second motor on Y does not stop it
         if self.two_motors("stepper_x"):
             reasons.setdefault(_("Map"), rail % _("Map") + " " + _(
@@ -102,7 +103,7 @@ class Panel(ScreenPanel):
         # acceleration ringing belongs to Klipper's own Input Shaper panel afterwards
         actions = [
             ("move", _("1 Belts"), "color1", "CHOPPER_BELTS",
-             _("Step 1 — mechanics first. Measure belt tension: follow the display, pluck each belt's long front span hard, like a guitar string, twice per belt.")),
+             _("Step 1 — mechanics first. Measure belt tension: follow the display and pluck the longest free span of each belt hard, like a guitar string, twice per belt. That is a side span on a small printer and the front span on a big one.")),
             ("fine-tune", _("2,4 Tune"), "color2", "CHOPPER_TUNE MOTOR=AB SAVE=1",
              _("Step 2 — tune both gantry motors' choppers at their resonances (~20 minutes of movement), SAVE the winners and restart Klipper. Run it once. Step 4 re-tunes for a new current from 3 Current, which does not work yet on an axis with two motors. Then continue with 5 Extruder. Restore undoes.")
              if self.two_motors("stepper_x", "stepper_y") else
@@ -232,9 +233,9 @@ class Panel(ScreenPanel):
             return
         # no widget: Stop never waits busy for the answer, a second tap still goes out
         self._screen._send_action(None, "printer.gcode.script", {"script": "CHOPPER_STOP"})
-        # the tool restores registers and re-homes before exiting (~10 s), so give
-        # immediate feedback that the tap registered
-        self.show_status(_("Stopping — restoring registers and re-homing…"))
+        # the job undoes its changes before exiting (~10 s), so give immediate feedback
+        # that the tap registered
+        self.show_status(_("Stopping — the job undoes its changes before it exits…"))
 
     def process_update(self, action, data):
         # fire whenever the message field is in the update (progress-only updates omit it),

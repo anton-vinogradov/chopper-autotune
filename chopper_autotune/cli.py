@@ -155,8 +155,9 @@ def _gcode_args(argv: 'list[str]', boolean_flags: 'frozenset[str]') -> 'list[str
                 if '--no-' + flag[2:] in boolean_flags:
                     out.append('--no-' + flag[2:])
             else:
-                # silently treating e.g. DRY_RUN=Y as "off" would move the printer
-                raise SystemExit('%s: expected a boolean like 1/0, got %r'
+                # silently treating e.g. DRY_RUN=2 as "off" would move the printer; the
+                # action first: the display shows its first characters (failure_display)
+                raise SystemExit('fix %s=: expected 1 or 0, got %r'
                                  % (match.group(1), match.group(2)))
         else:
             out.extend((flag, match.group(2)))
@@ -175,6 +176,37 @@ def boolean_flags(parser: argparse.ArgumentParser) -> 'frozenset[str]':
     return frozenset(flags)
 
 
+def macro_name(command: str) -> str:
+    """The macro of a CLI command: find-speed is CHOPPER_FIND_SPEED."""
+    return 'CHOPPER_' + command.upper().replace('-', '_')
+
+
+def macro_key(option: str) -> str:
+    """The macro parameter of a CLI option: --measure-time is MEASURE_TIME."""
+    return option[2:].replace('-', '_').upper()
+
+
+def macro_reason(message: str, command: str) -> str:
+    """argparse's error in the words of the macro: its parameter KEY=, not the CLI option,
+    and the action first, which the display shows (failure_display)."""
+    option = re.fullmatch(r'argument (--[\w-]+)[^:]*: (.*)', message, re.S)
+    if option:
+        return 'fix %s=: %s' % (macro_key(option.group(1)), option.group(2))
+    extra = re.fullmatch(r'unrecognized arguments: (.*)', message, re.S)
+    if not extra:
+        return message
+    params = []
+    for word in extra.group(1).split(' '):
+        if word.startswith('--'):
+            params.append(macro_key(word) + '=')
+        elif params and params[-1].endswith('='):
+            params[-1] += word
+        else:
+            params.append(word)
+    return 'drop %s: %s has no such parameter%s' % (' '.join(params), macro_name(command),
+                                                    's' if len(params) > 1 else '')
+
+
 def command_line(command: str, args=None, **changes) -> str:
     """The console line of a run of `command`: the parameters of `args` that differ from
     their defaults, with `changes` (by dest) applied, so it can be pasted as is."""
@@ -185,7 +217,7 @@ def command_line(command: str, args=None, **changes) -> str:
     params = []
     for action in subparsers.choices[command]._actions:
         value = values.get(action.dest, action.default)
-        # the launchers add --yes themselves
+        # a macro runs without a terminal and never asks to proceed
         if not action.option_strings or action.dest == 'yes' or value == action.default:
             continue
         if isinstance(value, bool):
@@ -196,9 +228,9 @@ def command_line(command: str, args=None, **changes) -> str:
             value = ','.join(str(field) for field in (value.tbl, value.toff, value.hstrt, value.hend))
         elif action.dest == 'axis':
             value = ''.join(motor_label(axis) for axis in value)
-        params.append('%s=%s' % (action.option_strings[0][2:].replace('-', '_').upper(),
+        params.append('%s=%s' % (macro_key(action.option_strings[0]),
                                  '%g' % value if isinstance(value, float) else value))
-    return ' '.join(['CHOPPER_' + command.upper().replace('-', '_')] + params)
+    return ' '.join([macro_name(command)] + params)
 
 
 def install_sigterm_handler():
@@ -210,9 +242,28 @@ def install_sigterm_handler():
         pass
 
 
+class BadParameter(SystemExit):
+    """argparse's refusal of the command line: its exit status 2, and the reason."""
+
+    def __init__(self, reason: str):
+        super().__init__(2)
+        self.reason = reason
+
+
+class Parser(argparse.ArgumentParser):
+    """argparse's parser, its subcommands' too. An error raises BadParameter, so main can
+    announce it like any other refusal."""
+
+    def error(self, message: str):
+        try:
+            super().error(message)          # the usage and the error on stderr, as argparse prints them
+        except SystemExit:
+            raise BadParameter(message) from None
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog='chopper-autotune',
-                                     description='Measurement-driven tuning of TMC chopper registers for Klipper')
+    parser = Parser(prog='chopper-autotune',
+                    description='Measurement-driven tuning of TMC chopper registers for Klipper')
     sub = parser.add_subparsers(dest='command', required=True)
 
     u = sub.add_parser('tune', help='the whole pipeline in one command: resonance speed + descent per motor')
@@ -227,7 +278,10 @@ def build_parser() -> argparse.ArgumentParser:
     u.add_argument('--tpfd', type=_tpfd, default=tmc.SEARCH_SPACE.tpfd,
                    help='TPFD range (TMC2240/5160 only), default %s' % tmc.SEARCH_SPACE.tpfd.text())
     add_hearing(u)
-    u.add_argument('--accel', type=float, default=None)
+    u.add_argument('--accel', type=float, default=None,
+                   help='acceleration of the speed scan and the register search, '
+                        'default printer max_accel / 10 (can be higher on a two-motor axis, '
+                        'see README)')
     u.add_argument('--no-raw', action='store_true')
     u.add_argument('--csv', action='store_true')
     u.add_argument('--socket', default=None)
@@ -256,7 +310,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument('--validate', type=int, default=3,
                    help='re-measure top N candidates with extra runs before recommending (0 = off)')
     c.add_argument('--measure-time', type=float, default=1.25, help='cruise time per move in seconds')
-    c.add_argument('--accel', type=float, default=None, help='acceleration, default printer max_accel / 10 (higher on a two-motor axis, see README)')
+    c.add_argument('--accel', type=float, default=None, help='acceleration, default printer max_accel / 10 (can be higher on a two-motor axis, see README)')
     c.add_argument('--trim', type=float, default=None,
                    help='guard fraction of the cruise window (stream, default 0.1); '
                         'with --csv: fraction of the whole capture (default 0.25)')
@@ -266,7 +320,8 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument('--dry-run', action='store_true', help='print the plan and ETA, do not move anything')
     c.add_argument('-y', '--yes', action='store_true', help='skip the confirmation prompt')
 
-    f = sub.add_parser('find-speed', help='sweep speeds with current registers to locate resonance peaks')
+    f = sub.add_parser('find-speed', help='sweep speeds on Klipper\'s stock registers to find the '
+                                          'resonance speed to tune at')
     f.add_argument('--socket', default=None,
                    help='klippy unix socket path, default: auto-detect')
     f.add_argument('--csv', action='store_true',
@@ -278,7 +333,7 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument('--iterations', type=int, default=1)
     f.add_argument('--measure-time', type=float, default=1.0,
                    help='target cruise time per move; shrinks at high speeds to fit the axis')
-    f.add_argument('--accel', type=float, default=None, help='acceleration, default printer max_accel / 10 (higher on a two-motor axis, see README)')
+    f.add_argument('--accel', type=float, default=None, help='acceleration, default printer max_accel / 10 (can be higher on a two-motor axis, see README)')
     f.add_argument('--trim', type=float, default=None)
     f.add_argument('--dataset', default=None, help='dataset directory; pass an existing one to resume')
     f.add_argument('--no-raw', action='store_true')
@@ -322,8 +377,6 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument('--sweep', action='store_true',
                    help='the diagonal swept-sine response comparison instead of the pluck '
                         'test — a structural-change diagnostic, NOT a tension gauge')
-    b.add_argument('--pluck', action='store_true',
-                   help='the guided pluck tension test (the default; kept for compatibility)')
     b.add_argument('--span', type=float, default=None,
                    help='pluck: plucked span length in cm -> report absolute newtons')
     b.add_argument('--mu', type=float, default=7.7,
@@ -344,11 +397,16 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument('--report', action='store_true',
                    help='measured numbers (defaults vs tuned, Nx quieter) instead of the audible showcase')
     d.add_argument('--iterations', type=int, default=3, help='--report: repeats per config, default 3')
-    d.add_argument('--live', action='store_true', help=argparse.SUPPRESS)  # back-compat: showcase is the default
     d.add_argument('--rounds', type=int, default=3, help='showcase: alternations of defaults/tuned, default 3')
     d.add_argument('--repeats', type=int, default=4, help='showcase: moves per config per round, default 4')
-    d.add_argument('--measure-time', type=float, default=1.0)
-    d.add_argument('--accel', type=float, default=None)
+    d.add_argument('--measure-time', type=float, default=1.0,
+                   help='target cruise time per move in seconds, default 1.0; shrinks at high '
+                        'speeds to fit the axis. Used with --motor a or b, or with --report. In the '
+                        'show of both motors on a two-motor axis, a longer --measure-time can also '
+                        'raise the default acceleration (see README)')
+    d.add_argument('--accel', type=float, default=None,
+                   help='acceleration, default printer max_accel / 10 (can be higher on a '
+                        'two-motor axis, see README)')
     d.add_argument('--trim', type=float, default=None)
     d.add_argument('--socket', default=None)
     d.add_argument('--dry-run', action='store_true')
@@ -361,7 +419,6 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument('dataset', nargs='?', default=None)
     t.add_argument('--dataset', dest='dataset_opt', default=None,
                    help='same as the positional argument, for DATASET= macro params')
-    t.add_argument('--total', type=int, default=None, help='planned moves, for ETA of pre-ranges datasets')
 
     m = sub.add_parser('compare', help='agreement between two datasets: winners, rank correlation, top overlap')
     m.add_argument('dataset_a')
@@ -382,7 +439,12 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument('--recompute', action='store_true', help='recompute metrics from raw csv')
     a.add_argument('--html', default=None, help='report path, default <dataset>/report.html')
     a.add_argument('--no-html', action='store_true')
-    a.add_argument('--apply', action='store_true', help='apply the best config via SET_TMC_FIELD')
+    a.add_argument('--apply', action='store_true',
+                   help='set the best config live via SET_TMC_FIELD, until Klipper restarts. On '
+                        'a motor without klipper_tmc_autotune, a later tune, collect or find-speed '
+                        'run undoes it. Such a run ends by putting back the registers from the '
+                        'Klipper config. Demo on that motor refuses to start while the driver runs '
+                        'the applied registers')
     a.add_argument('--save', action='store_true',
                    help='write the best config of this dataset only into the Klipper config and '
                         'restart Klipper. The save command writes the latest run of each motor')
@@ -518,8 +580,18 @@ def main(argv=None) -> int:
     install_sigterm_handler()
 
     parser = build_parser()
-    args = parser.parse_args(_gcode_args(sys.argv[1:] if argv is None else argv,
-                                         boolean_flags(parser)))
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        args = parser.parse_args(_gcode_args(argv, boolean_flags(parser)))
+    except SystemExit as failure:
+        command = argv[0] if argv else parser.prog
+        reason = macro_reason(failure.reason, command) if isinstance(failure, BadParameter) \
+            else failure.code
+        # run.sh prints a start-up failure only within its first second: a CLI that starts
+        # slower is past it, as detached as any run
+        if isinstance(reason, str):
+            announce_failure(None, '%s FAILED: %s' % (command, reason))
+        raise
     if getattr(args, 'dataset_opt', None):
         args.dataset = args.dataset_opt
 

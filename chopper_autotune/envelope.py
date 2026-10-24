@@ -10,7 +10,7 @@ from __future__ import annotations
 import math
 import os
 
-from .collect import (KLIPPY_DIR, Screen, ThermalGuard, coupled_xy, detect_hardware,
+from .collect import (KLIPPY_DIR, Screen, ThermalGuard, confirmed, coupled_xy, detect_hardware,
                       enter_spreadcycle, exit_spreadcycle, fit_row, full_steps_per_mm, home_xy,
                       rail_twins, refuse_blind_z_hop, refuse_corexz, refuse_if_printing,
                       rehome_unless_hot, run_restore)
@@ -287,8 +287,7 @@ def envelope(kl: Klippy, args) -> int:
               % (top_speed, top_speed * steps_per_mm / 1000, rail['microsteps']))
     if args.dry_run:
         return 0
-    if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):
-        print('Aborted')
+    if not confirmed(args):
         return 1
 
     refuse_if_printing(kl)

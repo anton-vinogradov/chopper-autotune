@@ -1,6 +1,7 @@
 """What a command tells the person to run next: one Klipper command, ready to paste into
 the console. A command run on its own names it in the log and the console; inside
 CHOPPER_TUNE only the tune's own one is said."""
+import re
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -217,13 +218,16 @@ def test_a_register_search_names_how_to_hear_and_save_what_it_found(stub_printer
     assert collect.run_collect(build_parser().parse_args(
         ['collect', '--motor', motor, '--speed', '58', '--search', 'descent', '--yes',
          '--no-raw'])) == 0
-    # each command at the end of its own line: a '.' after one breaks it when pasted
-    advice = ['To hear the registers this run found, set them live: CHOPPER_ANALYZE APPLY=1',
+    # each command at the end of its own line: a '.' after one breaks it when pasted. Without
+    # MOTOR= ANALYZE takes the newest run of any motor, a later run of the other one too
+    advice = ['To hear the registers this run found, set them live: '
+              'CHOPPER_ANALYZE MOTOR=%s APPLY=1' % label,
               'To save the registers this run found: CHOPPER_SAVE MOTOR=%s' % label]
     out = capsys.readouterr().out
     assert out.splitlines()[-2:] == advice and 'chopper-autotune ' not in out
     assert console(stub_printer)[-2:] == advice
-    assert pasted(advice[0]).apply and pasted(advice[1]).motor == label
+    assert pasted(advice[0]).apply and pasted(advice[0]).axis == {'a': 'x', 'b': 'y'}[motor]
+    assert pasted(advice[1]).motor == label
 
 
 @pytest.mark.parametrize('driver', ['2209', '2208'])
@@ -278,6 +282,15 @@ def searched(tmp_path, **fields) -> Dataset:
     return ds
 
 
+def config_files(settings: dict) -> SimpleNamespace:
+    """Moonraker over a printer.cfg with the sections of `settings`, as Klipper reads it at
+    its next start."""
+    text = ''.join('[%s]\n%s\n' % (section, ''.join('%s: %s\n' % option for option in options.items()))
+                   for section, options in settings.items())
+    return SimpleNamespace(list_config_files=lambda: ['printer.cfg'],
+                           download_config=lambda name: text)
+
+
 def test_a_rail_whose_twin_autotune_manages_now_has_nothing_to_hear_or_save(tmp_path):
     # its registers would reach the twin only until the next Klipper start (#129)
     pair = searched(tmp_path, winner=tmc.Chopper(0, 5, 0, 6).fields(), motion='rail',
@@ -288,17 +301,19 @@ def test_a_rail_whose_twin_autotune_manages_now_has_nothing_to_hear_or_save(tmp_
 
 def test_a_register_search_names_no_next_step_where_there_is_nothing_to_hear_or_save(tmp_path):
     winner = tmc.Chopper(0, 5, 0, 6).fields()
-    assert collect.hear_and_save({}, searched(tmp_path, winner=winner), None)[-1].endswith(
-        'CHOPPER_SAVE MOTOR=B')
+    hints = ['To hear the registers this run found, set them live: CHOPPER_ANALYZE MOTOR=B APPLY=1',
+             'To save the registers this run found: CHOPPER_SAVE MOTOR=B']
+    assert collect.hear_and_save({}, searched(tmp_path, winner=winner), None) == hints
     # a full sweep with VALIDATE=0 records no winner: CHOPPER_SAVE says how to save it anyway
-    assert collect.hear_and_save({}, searched(tmp_path / 'grid'), None)[-1].endswith(
-        'CHOPPER_SAVE MOTOR=B')
-    # the motor keeps its own registers: nothing new to hear or write
-    assert collect.hear_and_save({}, searched(tmp_path / 'kept', winner=winner, kept=True), None) == []
-    # the run ended on the registers the config already gives the motor
+    assert collect.hear_and_save({}, searched(tmp_path / 'grid'), None) == hints
     holding = {'tmc2209 stepper_y': {'driver_' + field: value for field, value in winner.items()}}
-    assert collect.hear_and_save(holding, searched(tmp_path / 'configured', winner=winner),
-                                 None) == []
+    for name, kept in (('kept', True), ('configured', False)):
+        # the motor keeps its own registers, or the run ended on them: Klipper runs them and
+        # reads them at its next start, nothing new to hear or write
+        ds = searched(tmp_path / name, winner=winner, kept=kept)
+        assert collect.hear_and_save(holding, ds, config_files(holding)) == []
+        # the config Klipper loaded gives them, the files another set: they need a save
+        assert collect.hear_and_save(holding, ds, config_files({'tmc2209 stepper_y': {}})) == hints
     # klipper_tmc_autotune writes its own chopper at every start
     assert collect.hear_and_save({'autotune_tmc stepper_y': {}},
                                    searched(tmp_path / 'autotune', winner=winner), None) == []
@@ -481,3 +496,5 @@ def test_a_command_to_paste_is_the_run_it_names(argv):
     line = command_line(argv[0], args)
     assert line.split()[0] == 'CHOPPER_' + argv[0].upper()
     assert pasted(line) == args
+    # the parser takes MOTOR=x too: the line itself names motors, as the user knows them
+    assert all(re.fullmatch('MOTOR=[ABE]+', word) for word in line.split() if word.startswith('MOTOR='))

@@ -34,26 +34,23 @@ def bar(value: float, scale: float) -> str:
 
 def run_demo(args) -> int:
     from argparse import Namespace
-
-    from .cli import command_line
-    if getattr(args, 'live', False) and args.report:
-        raise SystemExit('LIVE=1 and REPORT=1 contradict — REPORT measures the numbers, '
-                         'LIVE plays the audible showcase (the default)')
-    if args.speed is not None and args.axis == 'xy':
-        raise SystemExit('add MOTOR=A or B, or leave SPEED out: each motor has its own resonance '
-                         'speed. Without SPEED, each motor plays at the speed of its last tune. '
-                         'To play motor A alone at this speed: %s'
-                         % command_line('demo', args, axis='x'))
     kl = Klippy(find_socket(args.socket)).connect()
     try:
         settings = kl.settings()
-        # before the per-motor loop: a refusal there reads as 'motor A/B skipped'
+        # before the per-motor loop: a refusal there reads as 'motor A/B skipped', after
+        # motor A played, and only in the log
         refuse_multi_motor(settings, args.axis, rails=True)
         if any(rail_twins(settings, axis) for axis in args.axis):
-            refuse_rail_run(kl, False)                  # DEMO has no CSV
+            refuse_rail_run(kl, False, args.dry_run)    # DEMO has no CSV
+        axes = ['x', 'y'] if args.axis == 'xy' else [args.axis]
+        if not args.dry_run:
+            refuse_if_printing(kl)              # first: the refusal below says to restart Klipper
+            refuse_set_live(kl, [rail_of(detect_hardware(kl, axis, accel=False)) for axis in axes])
+        if args.speed is not None and args.axis == 'xy':
+            refuse_one_speed(kl, args)
         if args.axis == 'xy' and not args.report:
             return showcase_together(kl, args)          # both motors together, like printing
-        axes = rails_first(settings, list(MOTORS), 'demo') if args.axis == 'xy' else [args.axis]
+        axes = rails_first(settings, axes, 'demo')
         worst = 0
         for axis in axes:
             per_motor = Namespace(**vars(args))
@@ -112,6 +109,41 @@ def rail_registers(hw: Hardware) -> tmc.Chopper:
                         command_line('save', motor=hw.motor), hw.motor))
 
 
+def plays_same(hw: Hardware, default: tmc.Chopper) -> bool:
+    """Whether the config Klipper loaded gives the motor, every driver of its rail, the
+    registers of its defaults round, so both rounds play the same (rail_registers).
+    klipper_tmc_autotune's motor runs its own registers, not its config lines: judged once
+    read live."""
+    return hw.autotune is None and rail_registers(hw) == default
+
+
+def refuse_one_speed(kl: Klippy, args):
+    """Refuse SPEED= on both motors, each with its own resonance speed, naming the demo of the
+    motor SPEED= is for: one with something to play, without a speed from its last tune
+    (known_speed) where there is one. The show of both refuses such a motor, the report
+    scans it. A rail whose drivers run registers apart has nothing to play: its refusal
+    (rail_registers) comes only where no motor plays."""
+    from .cli import command_line
+    hw = {axis: rail_of(detect_hardware(kl, axis, accel=False)) for axis in MOTORS}
+    default = {axis: before_registers(args, hw[axis].driver) for axis in MOTORS}
+    playing, apart = [], []
+    for axis in MOTORS:
+        try:
+            if not plays_same(hw[axis], default[axis]):
+                playing.append(axis)
+        except SystemExit as refusal:
+            apart.append(refusal)
+    if not playing:
+        if apart:
+            raise apart[0]
+        refuse_on_defaults([(hw[axis], default[axis]) for axis in MOTORS])
+    axis = next((axis for axis in playing if known_speed(axis) is None), playing[0])
+    raise SystemExit('add MOTOR=A or B, or leave SPEED out: each motor has its own resonance '
+                     'speed. Without SPEED, each motor plays at the speed of its last tune. '
+                     'To play only motor %s at this speed: %s'
+                     % (motor_label(axis), command_line('demo', args, axis=axis)))
+
+
 def on_defaults(hw: Hardware, default: tmc.Chopper) -> str:
     """'the Klipper defaults tbl2_… to stepper_y and stepper_y1': what the config Klipper loaded
     gives the drivers of a motor whose demo plays the same registers in both rounds."""
@@ -122,19 +154,19 @@ def on_defaults(hw: Hardware, default: tmc.Chopper) -> str:
 
 
 def refuse_on_defaults(motors: 'list[tuple[Hardware, tmc.Chopper]]'):
-    """The refusal of a demo on a printer with a rail where the config gives each motor
-    (hw, the registers of its defaults round) those very registers, once its drivers are
-    known to run them (refuse_set_live): tune and save, or, where DEFAULT= is the saved set,
-    pass another."""
+    """The refusal of a demo where the config gives each motor (hw, the registers of its
+    defaults round) those very registers, once its drivers are known to run them
+    (refuse_set_live): tune and save, or, where DEFAULT= is the saved set, pass another."""
     gives = ', and '.join(on_defaults(hw, default) for hw, default in motors)
     # the action first: the display shows its first characters (failure_display)
     if any(default != hw.driver.default for hw, default in motors):
         raise SystemExit('pass another DEFAULT= or drop it, then retry: the config that Klipper '
-                         'loaded gives %s. Both rounds would play the same registers. Nothing was '
-                         'moved' % gives)
+                         "loaded gives %s. So the demo's defaults and tuned registers would be "
+                         'the same. Nothing was moved' % gives)
     raise SystemExit('tune and save motor%s %s first: the config that Klipper loaded gives %s. '
-                     'Both rounds would play the same registers. If you edited the config after '
-                     'Klipper started, restart it (RESTART). Nothing was moved'
+                     "So the demo's defaults and tuned registers would be the same. If you "
+                     'edited the config after Klipper started, restart Klipper (RESTART). '
+                     'Nothing was moved'
                      % ('s' if len(motors) > 1 else '', ' and '.join(hw.motor for hw, _ in motors),
                         gives))
 
@@ -145,7 +177,7 @@ def refuse_set_live(kl: Klippy, hws: 'list[Hardware]'):
     registers and puts them back at its end, which would undo the live ones. A driver Klipper
     switched off with toff 0 gets the config's toff back when it goes on, so its toff is not
     compared; klipper_tmc_autotune's motors are read live anyway."""
-    apart = {}
+    apart, motors = {}, set()
     for hw in hws:
         if hw.autotune is not None:
             continue
@@ -162,18 +194,23 @@ def refuse_set_live(kl: Klippy, hws: 'list[Hardware]'):
                 continue
             apart.setdefault((tmc.Chopper(**live).label(), config.label()),
                              []).append(drive.stepper)
+            motors.add(hw.motor)
     if not apart:
         return
     runs = '; '.join('%s %s %s, but the config that Klipper loaded gives %s %s'
                      % (' and '.join(steppers), 'run' if len(steppers) > 1 else 'runs', live,
                         'them' if len(steppers) > 1 else 'it', config)
                      for (live, config), steppers in apart.items())
+    # without MOTOR= that CHOPPER_ANALYZE takes the newest run of any motor
+    analyze = ('repeat for each motor the CHOPPER_ANALYZE that set its registers, with MOTOR=A or '
+               'MOTOR=B added' if len(motors) > 1 else
+               'repeat the CHOPPER_ANALYZE that set them, with MOTOR=%s added' % motors.pop())
     # the action first: the display shows its first characters (failure_display)
     raise SystemExit('save or drop the registers set live, then retry: %s. The demo plays the '
                      'registers of that config. At its end it puts them back, which would undo '
-                     'the ones set live. To keep them, repeat the CHOPPER_ANALYZE that set them, '
-                     'with SAVE=1 in place of APPLY=1. Or write them into the config and restart '
-                     'Klipper (RESTART). To drop them, restart Klipper. Nothing was moved' % runs)
+                     'the ones set live. To keep them, %s and SAVE=1 in place of APPLY=1. Or '
+                     'write them into the config and restart Klipper (RESTART). To drop them, '
+                     'restart Klipper. Nothing was moved' % (runs, analyze))
 
 
 def showcase_together(kl, args) -> int:
@@ -186,14 +223,9 @@ def showcase_together(kl, args) -> int:
     hw = {axis: rail_of(detect_hardware(kl, axis)) for axis in MOTORS}
     tuned = {axis: rail_registers(hw[axis]) for axis in MOTORS}
     default = {axis: before_registers(args, hw[axis].driver) for axis in MOTORS}
-    # autotune's motor runs its own registers, not its config lines: judged once read live
-    if all(hw[axis].autotune is None and tuned[axis] == default[axis] for axis in MOTORS):
-        if any(hw[axis].twins for axis in MOTORS):
-            if not args.dry_run:
-                refuse_if_printing(kl)
-                refuse_set_live(kl, [hw[axis] for axis in MOTORS])
-            refuse_on_defaults([(hw[axis], default[axis]) for axis in MOTORS])
-        raise SystemExit('current registers equal the defaults on both motors — tune and save first')
+    alike = [axis for axis in MOTORS if plays_same(hw[axis], default[axis])]
+    if len(alike) == len(MOTORS):
+        refuse_on_defaults([(hw[axis], default[axis]) for axis in MOTORS])
 
     speed = {}
     for axis in MOTORS:
@@ -201,18 +233,29 @@ def showcase_together(kl, args) -> int:
         if speed[axis] is None:
             # a silent fallback speed would play the show off resonance and prove nothing.
             # Alone, a motor whose registers equal the defaults has nothing to demo (demo)
-            if hw[axis].autotune is None and tuned[axis] == default[axis]:
+            if axis in alike:
                 raise SystemExit('no tuned speed recorded for motor %s. Its registers equal the '
                                  'defaults, so it has nothing to show. To tune it: %s'
                                  % (motor_label(axis), command_line('tune', axis=axis)))
-            raise SystemExit('no tuned speed recorded for motor %s. The command that plays it '
-                             'alone scans for its resonance speed first: %s'
-                             % (motor_label(axis), command_line('demo', args, axis=axis)))
+            raise SystemExit('no tuned speed recorded for motor %s. The command that plays only '
+                             'motor %s scans for its resonance speed first: %s'
+                             % (motor_label(axis), motor_label(axis),
+                                command_line('demo', args, axis=axis)))
     print('Show on both motors together — diagonal move running motor A at %d and motor B at %d '
           'mm/s at once (both at resonance; head moves in X and Y): defaults vs tuned %s / %s'
           % (speed['x'], speed['y'], tuned['x'].label(), tuned['y'].label()))
+    same_rounds = []
+    for axis in alike:
+        motor = hw[axis].motor
+        hear = ('Tune and save motor %s to hear it change too' % motor
+                if default[axis] == hw[axis].driver.default else
+                'Pass another DEFAULT= or drop it to hear motor %s change too' % motor)
+        same_rounds.append('Motor %s plays the same registers in DEFAULTS and TUNED. The config '
+                           'that Klipper loaded gives %s. %s'
+                           % (motor, on_defaults(hw[axis], default[axis]), hear))
+        print(same_rounds[-1])
     if any(hw[axis].twins for axis in MOTORS):
-        return _show_rails(kl, hw, args, speed, tuned, default)
+        return _show_rails(kl, hw, args, speed, tuned, default, same_rounds)
     board = hw['x']
     accel = args.accel or board.max_accel / 10
     span = min(hw['x'].axis_span, hw['y'].axis_span)
@@ -228,6 +271,8 @@ def showcase_together(kl, args) -> int:
     refuse_blind_z_hop(kl, kl.settings())
     guard.preflight()
     accel_now = live_limits(kl)['max_accel']        # an M204 left from a print comes back
+    for line in same_rounds:
+        screen.tell(line)
     try:
         # home and hold at center with the motors ENABLED (park disables them) for G1 moves
         home_xy(kl, 'G28 X Y\nG90\nM204 S%.0f\nG1 X%.1f Y%.1f F6000\nM400' % (accel, *board.center))
@@ -239,14 +284,15 @@ def showcase_together(kl, args) -> int:
             *[lambda axis=axis: exit_spreadcycle(kl, hw[axis]) for axis in MOTORS],
             lambda: kl.gcode('M204 S%.0f' % accel_now),
             lambda: rehome_unless_hot(kl))
-    return _verdict(results, screen, tuned)
+    return _verdict(results, screen, tuned, default)
 
 
-def _show_rails(kl, hw, args, speed, tuned, default) -> int:
+def _show_rails(kl, hw, args, speed, tuned, default, same_rounds: 'list[str]') -> int:
     """The show where an axis has two motors: one G1 of the head through the bed center
     runs each belt at its own speed (head_velocity), every rail moved as the runs on a rail
     move it (RailMove), along the head's course in head mm. It sweeps the whole zone
-    between the kept edges, as the show on one motor per axis does."""
+    between the kept edges, as the show on one motor per axis does. same_rounds: the lines
+    on the motors that play one set in both rounds, for the console before the first."""
     board = hw['x']
     vx, vy = head_velocity(board.kinematics, speed['x'], speed['y'])
     feed = math.hypot(vx, vy)
@@ -262,31 +308,22 @@ def _show_rails(kl, hw, args, speed, tuned, default) -> int:
                'the head')
     print('  head: F%.0f, M204 S%.0f%s' % (feed * 60, motion.asked, motion.per_axis_cut()))
     motion.conditions(feed, stroke)
-    for axis in MOTORS:
-        if hw[axis].autotune is None and tuned[axis] == default[axis]:
-            motor = hw[axis].motor
-            print('Motor %s plays the same registers in both rounds: the config that Klipper '
-                  'loaded gives %s. %s'
-                  % (motor, on_defaults(hw[axis], default[axis]),
-                     'Tune and save motor %s to hear it change too' % motor
-                     if default[axis] == hw[axis].driver.default else
-                     'Pass another DEFAULT= or drop it to hear motor %s change too' % motor))
     if args.dry_run:
         return 0
 
     refuse_if_printing(kl)
-    refuse_set_live(kl, [hw[axis] for axis in MOTORS])
     kl.subscribe_accel(board.accel_chip)
     # Screen asks Klipper first: a Stop there must not land between prepare and the way back
     screen = Screen(kl, board.display)
+    for line in same_rounds:
+        screen.tell(line)
     motion.prepare()
     try:
         results = _play(kl, hw, args, tuned, default, screen,
                         lambda: _rail_sweep(board, motion, feed, accel, stroke, args))
     finally:
         motion.restore()
-    return _verdict(results, screen, tuned, [axis for axis in MOTORS
-                                             if tuned[axis] == default[axis]])
+    return _verdict(results, screen, tuned, default)
 
 
 def _play(kl, hw, args, tuned, default, screen, sweep) -> dict:
@@ -323,17 +360,18 @@ def _play(kl, hw, args, tuned, default, screen, sweep) -> dict:
     return results
 
 
-def _verdict(results, screen, tuned, same: 'list[str]' = ()) -> int:
+def _verdict(results, screen, tuned, default) -> int:
     """The show's end: how much less both motors vibrate on the tuned registers, on the
-    console, the display and the panel (write_state). same: the axes whose motor played one
-    set in both rounds; the panel shows no gain for it."""
+    console, the display and the panel (write_state)."""
     if not results['default'] or not results['tuned']:
         raise SystemExit('show failed to collect measurements')
     d, t = statistics.mean(results['default']), statistics.mean(results['tuned'])
-    note = ''.join('; motor %s played the same registers in both rounds' % motor_label(axis)
-                   for axis in same)
+    # a motor that played one set in both rounds: the panel shows no gain for it
+    same = [axis for axis in MOTORS if tuned[axis] == default[axis]]
+    note = ''.join('; motor %s played the same registers in DEFAULTS and TUNED'
+                   % motor_label(axis) for axis in same)
     print('\nboth motors together: %.2fx less vibration overall%s' % (d / t, note))
-    screen.final('Chopper: both motors %.1fx less vibration%s' % (d / t, note),
+    screen.final('Chopper: both motors together %.1fx less vibration%s' % (d / t, note),
                  '%.1fx less vib' % (d / t))
     for axis in MOTORS:
         # combined factor, shown per motor by the panel
@@ -399,45 +437,41 @@ def _rail_sweep(board, motion, feed, accel, stroke, args):
 
 
 def demo(kl: Klippy, args) -> int:
+    from .cli import command_line
     args.source = 'stream'
     args.csv = False
     args.no_raw = True
-    if args.trim is None:
-        args.trim = 0.1
 
     hw = rail_of(detect_hardware(kl, args.axis))
     motion = motion_for(kl, hw, args)
     tuned = rail_registers(hw)
     default = before_registers(args, hw.driver)
-    if hw.autotune is None and tuned == default:
-        if hw.twins:
-            if not args.dry_run:
-                refuse_if_printing(kl)
-                refuse_set_live(kl, [hw])
-            refuse_on_defaults([(hw, default)])
-        raise SystemExit('current registers equal the defaults — nothing to demo '
-                         '(tune and save the motor first)')
+    if plays_same(hw, default):
+        refuse_on_defaults([(hw, default)])
 
     if args.speed is not None:
         speed = args.speed
     else:
         speed = known_speed(args.axis)
         if speed is not None:
-            print('Using resonance speed %d mm/s from the last motor %s run (pass SPEED= to override)'
-                  % (speed, hw.motor))
+            # SPEED= without MOTOR= refuses where the demo plays both motors (run_demo)
+            print('Using resonance speed %d mm/s from the last motor %s run (pass SPEED= with '
+                  'MOTOR=%s to override)' % (speed, hw.motor, hw.motor))
         elif args.dry_run:
             print('Demo on motor %s (dry run): no recorded speed, a resonance scan would run first'
                   % hw.motor)
             return 0
         else:
-            if hw.twins:                # the scan ends on the config's registers
-                refuse_if_printing(kl)
-                refuse_set_live(kl, [hw])
             print('No previous run to reuse a speed from; scanning for resonance first')
             from .find_speed import scan
-            _, speed, _ = scan(kl, _scan_args(args))
+            _, speed, loudest = scan(kl, _scan_args(args))
             if speed is None:
-                raise SystemExit('no clear resonance speed found; pass SPEED=')
+                raise SystemExit('no clear resonance speed found. To play motor %s at the speed it '
+                                 'vibrates most: %s'
+                                 % (hw.motor, command_line('demo', args, speed=loudest)))
+    # after the hints above: a TRIM= the person never gave stays out of the commands they name
+    if args.trim is None:
+        args.trim = 0.1
 
     accel = motion.accel(args.accel, speed, args.measure_time)
     # a high resonance speed can push the default cruise past the axis (measured: the
@@ -460,8 +494,6 @@ def demo(kl: Klippy, args) -> int:
         return 0
 
     refuse_if_printing(kl)
-    if hw.twins:                        # one motor's demo stays main's (decision 19)
-        refuse_set_live(kl, [hw])
     kl.subscribe_accel(hw.accel_chip)
     root = default_dataset_root('%s_demo_%s' % (datetime.now().strftime('%Y%m%d_%H%M%S'), args.axis))
     ds = Dataset.create(root, {'version': __version__, 'created': now(), 'mode': 'demo',

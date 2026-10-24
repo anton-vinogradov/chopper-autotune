@@ -99,5 +99,5 @@ G28 X Y
 
 M117 1.2x less vib
 
-M118 Chopper: both motors 1.2x less vibration
+M118 Chopper: both motors together 1.2x less vibration
 

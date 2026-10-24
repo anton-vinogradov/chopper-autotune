@@ -12,8 +12,8 @@ import sys
 from . import tmc
 from .collect import (ForceMove, Hardware, RunStopped, ThermalGuard, autotune_goal,
                       driver_of, exit_spreadcycle, gear_factor, home_xy, motor_label, rail_steppers,
-                      rail_twins, refuse_after_shutdown, refuse_blind_z_hop, refused,
-                      rehome_unless_hot, release_gantry, restore_chopper, run_restore,
+                      rail_twins, refuse_after_shutdown, refuse_blind_z_hop, refuse_if_printing,
+                      refused, rehome_unless_hot, release_gantry, restore_chopper, run_restore,
                       set_rail_fields, travel_for, xy_driver_sections)
 from .current import (accel_along, axis_limits, belt_cap, free_strokes, live_limits, stress_vector,
                       velocity_caps, velocity_needs)
@@ -102,13 +102,16 @@ def tilted(settings: dict) -> bool:
     return any(float(tilt.get(option) or 0) for option in ('x_adjust', 'y_adjust'))
 
 
-def refuse_rail_run(kl: Klippy, csv: bool):
+def refuse_rail_run(kl: Klippy, csv: bool, dry_run: bool):
     """What a rail run needs of this run and of the printer now, before anything moves:
-    the stream, and room under the nozzle (a rail moves the head across most of the
-    bed at the height it finds), a homed Z under a tilted bed."""
+    the stream, no print (a dry run moves nothing), and room under the nozzle (a rail
+    moves the head across most of the bed at the height it finds), a homed Z under a
+    tilted bed."""
     if csv:
         raise SystemExit('drop CSV=1: runs on a two-motor axis need the stream, the default. '
                          'Nothing was moved')
+    if not dry_run:
+        refuse_if_printing(kl)          # the G1 Z10 or G28 advised below would spoil a print
     toolhead = kl.request('objects/query', {'objects': {'toolhead': ['homed_axes', 'position']}})[
         'status']['toolhead']
     if 'z' in toolhead['homed_axes'] and toolhead['position'][2] < MIN_Z_MM:
@@ -201,7 +204,7 @@ class RailMove:
         self.kl, self.hw = kl, hw
         self.rails = [hw, *also]
         self.settings = settings = kl.settings()
-        refuse_rail_run(kl, args.csv)
+        refuse_rail_run(kl, args.csv, args.dry_run)
         self.vec = vec or stress_vector(hw.kinematics, hw.stepper.rsplit('_', 1)[-1])
         self.k = math.hypot(*self.vec)
         self.unit = tuple(part / self.k for part in self.vec)

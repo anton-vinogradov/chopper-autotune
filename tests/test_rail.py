@@ -926,6 +926,30 @@ def test_what_would_spoil_a_rail_run_is_refused_before_any_gcode(source, case, t
 
 
 @pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('run', list(RUNS) + ['tune'])
+def test_a_rail_run_while_printing_refuses_before_it_says_to_raise_z(source, run, tmp_path,
+                                                                    monkeypatch):
+    # the first layers print below 5 mm: the G1 Z10 that the refusal of a low Z asks for
+    # would spoil the print
+    from chopper_autotune import tune
+    require(source)
+    front = klipper_front.Front(source, awd_cfg('meijjaa'))
+    front.run('G28 Z')                              # Z homed on the bed
+    sent = len(front.scripts)
+    kl = front.connect()
+    kl.is_printing = lambda: True
+    with pytest.raises(collect.PrinterBusy, match='busy printing'):
+        if run == 'tune':
+            monkeypatch.setattr(tune, 'Klippy', lambda path: types.SimpleNamespace(connect=lambda: kl))
+            monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<front>')
+            tune.run_tune(build_parser().parse_args(['tune', '--no-raw']))
+        else:
+            tool, argv = RUNS[run]
+            tool(kl, build_parser().parse_args(argv + ['--dataset', str(tmp_path / 'g')]))
+    assert front.scripts[sent:] == []
+
+
+@pytest.mark.parametrize('source', SOURCES)
 @pytest.mark.parametrize('tool, argv', [
     ('resonance_map:run_resonance_map', ['map', '--axis', 'x', '--dry-run']),
     ('current:run_current_tune', ['current', '--dry-run']),
@@ -1319,7 +1343,7 @@ def analyze_through(mk, monkeypatch, line: str) -> 'list[str]':
     return mk.front.console[before:]
 
 
-def stopped_run(mk, monkeypatch, axis: str, argv: 'list[str] | None' = None):
+def stopped_run(mk, monkeypatch, axis: str):
     """A COLLECT stopped before its first measurement (CHOPPER_STOP at once): the newest
     dataset, without one. Its own folder: a run of the same second would resume the last."""
     def stop(*args):
@@ -1327,7 +1351,7 @@ def stopped_run(mk, monkeypatch, axis: str, argv: 'list[str] | None' = None):
     with monkeypatch.context() as patch:
         patch.setattr(collect, 'measure_baseline', stop)
         with pytest.raises(SystemExit) as stopped:
-            run_tool(mk.front, collect.collect, (argv or RUNS['collect'][1]) + [
+            run_tool(mk.front, collect.collect, RUNS['collect'][1] + [
                 '--axis', axis, '--dataset', str(collect.RESULTS_HOME / 'datasets' / 'stopped')])
         assert stopped.value.code == 143
 
@@ -1343,8 +1367,9 @@ def test_apply_on_a_rail_tells_the_console_what_it_set_where_and_how_to_keep_it(
     told = analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE MOTOR=B APPLY=1')
     assert told == [
         'Chopper: Motor B: tbl1_toff4_hstrt4_hend3 from run %s is set on stepper_y and stepper_y1 '
-        'until Klipper restarts. CHOPPER_DEMO plays the registers Klipper loaded from its config '
-        'at its last start. It plays the registers from this run after you save them. '
+        'until Klipper restarts. CHOPPER_DEMO refuses to start while stepper_y and stepper_y1 run '
+        'them. At its end, the demo would put back the registers Klipper loaded from its config. '
+        'After you save them, CHOPPER_DEMO plays them. '
         'To save them: CHOPPER_ANALYZE DATASET=%s SAVE=1' % (root.rsplit('/', 1)[-1], root)]
     assert_clean(mk.front)
     for section in rail_sections('meijjaa', 'y'):
@@ -1472,9 +1497,9 @@ def test_a_rail_run_ending_on_registers_a_restart_would_change_names_how_to_save
         'CHOPPER_ANALYZE MOTOR=B APPLY=1',
         'Chopper: To save the registers this run found: CHOPPER_SAVE MOTOR=B']
     told = analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE MOTOR=B APPLY=1')
-    assert told[0].endswith('until Klipper restarts. These are the Klipper defaults. After you save '
-                            'them, CHOPPER_DEMO has nothing to play against the defaults. To save '
-                            'them: CHOPPER_ANALYZE DATASET=%s SAVE=1' % root)
+    assert told[0].endswith('until Klipper restarts. Klipper runs them from the config it loaded. '
+                            'At its next start, Klipper loads other registers from its config '
+                            'files. To save them: CHOPPER_ANALYZE DATASET=%s SAVE=1' % root)
     front = tune_through(mk, monkeypatch, AROUND_STOCK[1:-2] + ['--motor', 'b', '--tpfd', '4',
                                                                 '--no-raw'])
     done = [line for line in front.console if line.startswith('echo: Tune done: ')]
@@ -1511,9 +1536,9 @@ def test_a_rail_run_ending_on_the_registers_of_one_driver_names_how_to_hear_and_
         '[tmc5160 stepper_y1] from run %s' % name]
     told = analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE MOTOR=B APPLY=1')
     assert told == ['Chopper: Motor B: tbl2_toff3_hstrt5_hend2 from run %s is set on stepper_y and '
-                    'stepper_y1 until Klipper restarts. These are the Klipper defaults. After you '
-                    'save them, CHOPPER_DEMO has nothing to play against the defaults. To save '
-                    'them: '
+                    'stepper_y1 until Klipper restarts. These are the Klipper defaults. '
+                    'CHOPPER_DEMO refuses to start while stepper_y1 runs them. After you save '
+                    'them, it has nothing to play against the defaults. To save them: '
                     'CHOPPER_ANALYZE DATASET=%s SAVE=1' % (name, root)]
     analyze_through(mk, monkeypatch, told[0])
     assert mk.restarts == 1
@@ -1559,37 +1584,6 @@ def test_apply_on_a_rail_klipper_tmc_autotune_manages_names_no_config_and_no_sav
 
 
 @pytest.mark.parametrize('source', SOURCES)
-def test_one_motor_ending_on_the_registers_of_the_config_keeps_the_hints_and_the_save_of_main(
-        source, monkeypatch, capsys):
-    # decision 19: a motor alone on its axis hears, applies and saves as main does
-    require(source)
-    # a motor alone moves by FORCE_MOVE: its shake, quietest on the Klipper defaults
-    monkeypatch.setattr(klipper_front.Front, 'shake', staticmethod(lambda speed, chopper: (
-        40. + 600. * math.exp(-((speed - 60.) / 10.) ** 2)) * (1. + .1 * (
-            abs(chopper.get('toff', 3) - 3) + abs(chopper.get('hend', 2) - 2)))))
-    mk = klipper_front.FrontMoonraker(source, awd_cfg('meijjaa', twins=False))
-    # meijjaa's max_accel/10 fits 40 mm/s into its Y (test_single_motor_scripts)
-    at_40 = [{'60': '40'}.get(word, word) for word in AROUND_STOCK]
-    stopped_run(mk, monkeypatch, 'x', at_40)
-    with pytest.raises(SystemExit, match='^no successful measurements in .*/stopped$'):
-        analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE APPLY=1')
-    root = collect_motor(mk, 'y', at_40)
-    assert Dataset.open(root).manifest()['winner'] == STOCK_5160
-    before = len(mk.front.console)
-    collect.what_next(mk.front.connect(), Dataset.open(root), mk)
-    assert not [line for line in mk.front.console[before:] if 'CHOPPER_' in line]
-    capsys.readouterr()
-    assert analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE APPLY=1') == []
-    assert 'Applied via SET_TMC_FIELD (runtime only, use SAVE=1 to persist)' in capsys.readouterr().out
-    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
-    assert analyze.run_save_latest(build_parser().parse_args(['save', '--motor', 'b'])) == 0
-    assert mk.restarts == 0
-    assert [line for line in mk.front.console if line.startswith('Chopper: motor B: ')] == [
-        'Chopper: motor B: the config already has tbl2_toff3_hstrt5_hend2, the result of run %s, '
-        'so there is nothing to write' % root.rsplit('/', 1)[-1]]
-
-
-@pytest.mark.parametrize('source', SOURCES)
 def test_apply_of_the_klipper_defaults_says_the_demo_has_nothing_to_play_with_them(source,
                                                                                   monkeypatch):
     # motor B on a noisy set of its own, and the defaults beat it
@@ -1604,9 +1598,9 @@ def test_apply_of_the_klipper_defaults_says_the_demo_has_nothing_to_play_with_th
     assert Dataset.open(root).manifest()['winner'] == STOCK_5160
     told = analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE MOTOR=B APPLY=1')
     assert told == ['Chopper: Motor B: tbl2_toff3_hstrt5_hend2 from run %s is set on stepper_y and '
-                    'stepper_y1 until Klipper restarts. These are the Klipper defaults. After you '
-                    'save them, CHOPPER_DEMO has nothing to play against the defaults. To save '
-                    'them: '
+                    'stepper_y1 until Klipper restarts. These are the Klipper defaults. '
+                    'CHOPPER_DEMO refuses to start while stepper_y and stepper_y1 run them. After '
+                    'you save them, it has nothing to play against the defaults. To save them: '
                     'CHOPPER_ANALYZE DATASET=%s SAVE=1' % (root.rsplit('/', 1)[-1], root)]
     for section in rail_sections('meijjaa', 'y'):
         assert held(mk.front.chips[section], STOCK_5160) == STOCK_5160

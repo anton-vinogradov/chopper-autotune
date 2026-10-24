@@ -643,10 +643,10 @@ def run_apply(mk, driver_name: str, steppers: 'list[str]', chopper: tmc.Chopper)
 
 
 def applied_line(mk, manifest: dict, dataset: str, chopper: tmc.Chopper, args) -> str:
-    """The console line of APPLY on a rail: the registers, the run, the drivers; what
-    CHOPPER_DEMO makes of them, which plays the config's registers against the defaults;
-    how to keep them: this ANALYZE on this run with SAVE=1 for APPLY=1, its hearing and
-    trim choosing the same set."""
+    """The console line of APPLY: the registers, the run, the drivers (a rail's every one);
+    what CHOPPER_DEMO makes of them, which refuses a driver on registers other than the config
+    Klipper loaded gives it (demo.refuse_set_live); how to keep them: this ANALYZE on this run
+    with SAVE=1 for APPLY=1, its hearing and trim choosing the same set."""
     from .cli import command_line
     from .collect import autotune_manages, driver_config, motor_label
     settings = mk.settings()
@@ -661,13 +661,23 @@ def applied_line(mk, manifest: dict, dataset: str, chopper: tmc.Chopper, args) -
         return line + ('. These are the registers Klipper loaded from its config at its last '
                        'start. The run found nothing to change')
     line += ' until Klipper restarts'
+    # the drivers whose loaded config gives other registers: the demo refuses for them
+    live = [stepper for stepper in steppers
+            if not configured(settings, manifest['driver'], stepper, chopper.fields())]
+    runs = '%s %s them' % (' and '.join(live), 'runs' if len(live) == 1 else 'run')
     saved = [tmc.baseline_chopper(dict(own['baseline'], **chopper.fields()),
                                   default=own['driver'].default) == own['driver'].default
              for own in (driver_config(settings, stepper) for stepper in steppers)]
-    hear = ('These are the Klipper defaults. After you save them, CHOPPER_DEMO has nothing to '
-            'play against the defaults' if all(saved) else
-            'CHOPPER_DEMO plays the registers Klipper loaded from its config at its last start. '
-            'It plays the registers from this run after you save them')
+    if not live:
+        hear = ('Klipper runs them from the config it loaded. At its next start, Klipper loads '
+                'other registers from its config files')
+    elif all(saved):
+        hear = ('These are the Klipper defaults. CHOPPER_DEMO refuses to start while %s. After '
+                'you save them, it has nothing to play against the defaults' % runs)
+    else:
+        hear = ('CHOPPER_DEMO refuses to start while %s. At its end, the demo would put back the '
+                'registers Klipper loaded from its config. After you save them, CHOPPER_DEMO '
+                'plays them' % runs)
     return '%s. %s. To save them: %s' % (line, hear, command_line(
         'analyze', args, dataset_opt=dataset, axis=None, apply=False, save=True))
 
@@ -1008,12 +1018,7 @@ def axis_choice(args, axis: str, settings: dict, since: float, runs: 'list[Path]
                     % (motor, path.name, path)), None, False
         # a rail's registers go to every section of it: the line names them
         sections = tmc_sections(driver_name, *steppers) if len(steppers) > 1 else ''
-
-        def stay(fields):
-            # one motor keeps main's check (decision 19)
-            return stays(mk, loaded, driver_name, steppers, fields) if sections \
-                else configured(settings, driver_name, steppers[0], fields)
-        if manifest.get('kept') and stay(winner):
+        if manifest.get('kept') and stays(mk, loaded, driver_name, steppers, winner):
             return ('%s: your registers %s stay%s. In run %s, neither the winner nor Klipper '
                     'defaults was quieter than them in all %d rounds'
                     % (motor, tmc.Chopper(**winner).label(), ' in ' + sections if sections else '',
@@ -1022,7 +1027,7 @@ def axis_choice(args, axis: str, settings: dict, since: float, runs: 'list[Path]
             manifest, combo = winner_of(str(path), args)
         except SystemExit as reason:
             return '%s: %s' % (motor, reason), None, True
-        if stay(combo.fields()):
+        if stays(mk, loaded, driver_name, steppers, combo.fields()):
             return ('%s: the config already has %s, the result of run %s%s, so there is nothing '
                     'to write' % (motor, combo.label(), path.name,
                                   ', in ' + sections if sections else '')), None, False
@@ -1261,14 +1266,7 @@ def run_status(args) -> int:
     if age > 120:
         print('Last measurement %dm ago — the run looks finished or stalled' % (age // 60))
 
-    total = args.total or manifest.get('total_moves')
-    if not total and manifest.get('search') == 'grid' and 'ranges' in manifest:
-        from .collect import VALIDATE_EXTRA_ITERATIONS, build_plan
-        plan = build_plan(tmc.DRIVERS[manifest['driver']], tmc.Space.recorded(manifest),
-                          manifest.get('speeds', [0]), tmc.Hearing.of(recorded=manifest))
-        total = (len(plan) * manifest.get('iterations', 1) * 2
-                 + manifest.get('validate', 0) * VALIDATE_EXTRA_ITERATIONS
-                 * len(manifest.get('speeds', [0])) * 2)
+    total = manifest.get('total_moves')
     if total and rate:
         from .collect import eta_text
         remaining = max(0, total - len(moves))
@@ -1289,9 +1287,8 @@ def run_analyze(args) -> int:
                          % (dataset, motor_label(manifest.get('axis') or '?'), motor_label(axis)))
     driver = tmc.DRIVERS[manifest['driver']]
     aggregates = aggregate(ds, args.recompute, args.trim)
-    if not aggregates and not args.dataset and not axis and len(measured_steppers(manifest)) > 1:
-        # the action first: the display shows its first characters (failure_display). One
-        # motor's refusal stays main's (decision 19)
+    if not aggregates and not args.dataset and not axis:
+        # the action first: the display shows its first characters (failure_display)
         raise SystemExit('add MOTOR=A or MOTOR=B: the newest run, %s, has no successful '
                          'measurements. With MOTOR=, CHOPPER_ANALYZE takes the newest run of that '
                          'motor that has them' % Path(dataset).name)
@@ -1359,13 +1356,8 @@ def run_analyze(args) -> int:
     if args.apply and not args.save:
         mk = Moonraker(args.url)
         run_apply(mk, driver.name, steppers, best['chopper'])
-        if len(steppers) > 1:
-            # APPLY runs detached: the console sees nothing else of it. One motor's APPLY
-            # stays main's (decision 19)
-            tell(mk, [applied_line(mk, manifest, dataset, best['chopper'], args)])
-        else:
-            print('\nApplied via SET_TMC_FIELD (runtime only%s)'
-                  % ('' if manifest.get('autotune') else ', use SAVE=1 to persist'))
+        # APPLY runs detached: the console sees nothing else of it
+        tell(mk, [applied_line(mk, manifest, dataset, best['chopper'], args)])
     if args.save:
         from .cli import command_line
         from .collect import motor_label, tmc_sections

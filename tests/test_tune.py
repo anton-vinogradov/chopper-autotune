@@ -1,10 +1,14 @@
+import builtins
+import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
 from chopper_autotune import tmc, tune
 from chopper_autotune.cli import build_parser
 from chopper_autotune.dataset import Dataset
+from chopper_autotune.moonraker import MoonrakerError
 
 
 @pytest.fixture(autouse=True)
@@ -13,12 +17,32 @@ def two_wheel_drive(monkeypatch):
     monkeypatch.setattr(tune.Klippy, 'settings', lambda self: {})
 
 
+def moonraker(settings: dict, **more) -> SimpleNamespace:
+    """Moonraker of a printer whose printer.cfg gives the sections of `settings`, the ones
+    Klipper loaded from it."""
+    def download_config(name):
+        return ''.join('[%s]\n%s\n' % (section, ''.join('%s: %s\n' % option
+                                                       for option in options.items()))
+                       for section, options in settings.items())
+    return SimpleNamespace(settings=lambda: settings, accepted_commands=lambda: None,
+                           list_config_files=lambda: ['printer.cfg'],
+                           download_config=download_config, **more)
+
+
 def tune_args(**overrides):
     # through the real parser, so a new parameter of CHOPPER_TUNE reaches these runs
     args = build_parser().parse_args(['tune', '--url', 'http://x'])
     for name, value in overrides.items():
         setattr(args, name, value)
     return args
+
+
+def test_a_tune_at_a_terminal_runs_its_stages_without_asking(stub_printer, monkeypatch):
+    # CHOPPER_TUNE asks nothing before it moves, so neither do its scan and its search
+    monkeypatch.setattr(sys, 'stdin', SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(builtins, 'input', lambda prompt: pytest.fail('asked: ' + prompt))
+    assert tune.run_tune(build_parser().parse_args(['tune', '--motor', 'a', '--no-raw'])) == 0
+    assert 'MOVE' in stub_printer.log and stub_printer.measured
 
 
 def make_dataset(tmp_path, axis, toff, winner=True):
@@ -91,9 +115,9 @@ def test_tune_save_saves_what_save_with_the_motors_of_the_run_saves(tmp_path, mo
     # the config holds other registers than the runs found
     settings = {'tmc2209 stepper_' + axis: {'driver_toff': 3} for axis in 'xy'}
     told = []
-    monkeypatch.setattr(analyze, 'Moonraker', lambda url: SimpleNamespace(
-        settings=lambda: settings, accepted_commands=lambda: None, gcode=told.append,
-        list_config_files=lambda: []))
+    mk = moonraker(settings, gcode=told.append)
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    monkeypatch.setattr(tune, 'Moonraker', lambda url: mk)
     saved = []
     monkeypatch.setattr(analyze, 'run_save', lambda mk, items, extruder_state=None, lines=():
                         saved.append(([manifest['stepper'] for manifest, _ in items], extruder_state,
@@ -145,10 +169,10 @@ def test_a_tune_whose_winners_the_config_already_has_writes_nothing(tmp_path, mo
                                             'driver_hend': 5} for axis, toff in (('x', 8), ('y', 6))}
     monkeypatch.setattr(tune.Klippy, 'settings', lambda self: settings)
     told = []
-    mk = SimpleNamespace(settings=lambda: settings, accepted_commands=lambda: None, gcode=told.append,
-                         list_config_files=lambda: [],
-                         upload_config=lambda *args: pytest.fail('nothing to write'))
+    mk = moonraker(settings, gcode=told.append,
+                   upload_config=lambda *args: pytest.fail('nothing to write'))
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    monkeypatch.setattr(tune, 'Moonraker', lambda url: mk)
     monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
     monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
     monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
@@ -223,7 +247,13 @@ def test_tune_reports_the_outcome_on_screen(tmp_path, monkeypatch, capsys):
     assert finals[-1].endswith(' — to save: CHOPPER_SAVE MOTOR=AB')
     assert tune.run_tune(tune_args(axis='y', speed=52)) == 0
     assert finals[-1].endswith(' — to save: CHOPPER_SAVE MOTOR=B')
-    # a motor whose own registers held against the winner says so
+    # a motor whose own registers held against the winner says so: the config Klipper loaded
+    # gave them
+    loaded = {'tmc2209 stepper_' + axis: {'driver_tbl': 0, 'driver_toff': toff, 'driver_hstrt': 7,
+                                          'driver_hend': 5} for axis, toff in (('x', 8), ('y', 2))}
+    monkeypatch.setattr(tune.Klippy, 'settings', lambda self: loaded)
+    files = dict(loaded)
+    monkeypatch.setattr(tune, 'Moonraker', lambda url: moonraker(files))
     Dataset.open(roots['y']).update_manifest(kept=True, winner={'tbl': 0, 'toff': 2, 'hstrt': 7,
                                                                 'hend': 5})
     assert tune.run_tune(tune_args()) == 0
@@ -233,6 +263,22 @@ def test_tune_reports_the_outcome_on_screen(tmp_path, monkeypatch, capsys):
     assert tune.run_tune(tune_args()) == 0
     assert finals[-1].endswith(' — your registers stay')
     assert 'To save' not in capsys.readouterr().out          # nor does the log offer a save
+    # Moonraker does not give the files: the config Klipper loaded decides, and the tune
+    # ends with its verdict all the same
+    def unread():
+        raise MoonrakerError('cannot reach Moonraker at http://x: [Errno 61] Connection refused')
+    monkeypatch.setattr(tune, 'Moonraker', lambda url: SimpleNamespace(
+        **dict(vars(moonraker(files)), list_config_files=unread)))
+    assert tune.run_tune(tune_args()) == 0
+    assert finals[-1].endswith(' — your registers stay')
+    assert 'cannot reach Moonraker at http://x' in capsys.readouterr().out
+    monkeypatch.setattr(tune, 'Moonraker', lambda url: moonraker(files))
+    # Klipper runs them, but its next start reads others from the files (an old copy moved,
+    # a hand edit): CHOPPER_SAVE writes them, so the tune names it
+    files['tmc2209 stepper_y'] = {'driver_toff': 3}
+    assert tune.run_tune(tune_args()) == 0
+    assert finals[-1].endswith(' — to save: CHOPPER_SAVE MOTOR=B')
+    assert capsys.readouterr().out.splitlines()[-1] == 'To save: CHOPPER_SAVE MOTOR=B'
 
     # a failure must speak too — via the global CLI announcer now (any tool, any error)
     finals.clear()

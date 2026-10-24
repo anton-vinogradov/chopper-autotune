@@ -307,11 +307,12 @@ line that was 4×101.6 — read at face value it claimed a 15× tension differen
 a hard pluck shows the pair and settles it. On the reference rig the verdict
 inverted the axial-sweep scare: **A = 101.6 Hz, B = 105.0 Hz — tensions matched
 within ~7 %** (T ∝ f²), confirming that the 15 % diagonal gap was structural.
-`CHOPPER_BELTS PLUCK=1` productizes this: display-cued plucks, automatic f/2f
-pairing (lone lines are flagged as suspect harmonics), tension ratio from f²,
-and absolute newtons from T = μ·(2·L·f)² when the span length is given. The protocol
-settled on the **longest free span** of each belt, with **repeatability as the
-control** (two plucks must agree within 2 % before a belt is accepted). A
+`CHOPPER_BELTS` productizes this: display-cued plucks, two short jogs that
+show the tool the machine axes, a line along X or Y read as 2f and halved, tension
+ratio from f², and absolute newtons from T = μ·(2·L·f)² when the span length is
+given. The protocol settled on the **longest free span** of each belt, with
+**repeatability as the control** (two plucks must show the same line within 3 %
+before a belt is accepted). A
 left/right-of-head variant — one loop, equal spans, a built-in cross-check —
 looked more elegant but failed in the field: near-head spans are too short and
 stiff to pluck usefully, ringing weakly and briefly (measured: one faint

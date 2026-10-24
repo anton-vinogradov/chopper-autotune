@@ -327,11 +327,12 @@ def buttons_of(panel):
     return {button.children[0].text: button for button in panel.grid.children}
 
 
+PLAN = ('The plan here is 1 Belts, one Tune, then 5 Extruder: without Current there is no '
+        'second Tune.')
 ENDSTOP = ('%s needs a physical endstop — this machine homes sensorless (StallGuard), and the '
-           'skip referee cannot creep into a virtual switch. The plan here is shorter: tune once '
-           '(no current step to adapt to), then 5 Extruder.')
+           'skip referee cannot creep into a virtual switch. ' + PLAN)
 RAIL = '%s does not work yet on an axis with two motors (chopper-autotune issue #129 on GitHub). '
-CURRENT_ON_A_RAIL = RAIL % '3 Current' + 'The plan here is shorter: tune once, then 5 Extruder.'
+CURRENT_ON_A_RAIL = RAIL % '3 Current' + PLAN
 MAP_ON_A_RAIL = RAIL % 'Map' + 'It maps motor A (stepper_x), and stepper_x1 here drives the same axis.'
 COMMANDS = {'2,4 Tune': 'CHOPPER_TUNE MOTOR=AB SAVE=1', '3 Current': 'CHOPPER_CURRENT SAVE=1',
             'Envelope': 'CHOPPER_ENVELOPE', 'Map': 'CHOPPER_MAP'}

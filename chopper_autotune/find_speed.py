@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 
 from . import __version__
-from .collect import (OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, ForceMove, Screen,
+from .collect import (OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, ForceMove, Screen, confirmed,
                       default_dataset_root, detect_hardware, enter_spreadcycle, measure_baseline,
                       measure_move, motor_label, now, rail_of, refuse_if_printing,
                       refuse_multi_motor, refuse_other_motion, set_rail_fields, tell_next,
@@ -255,8 +255,7 @@ def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None, int | 
              eta // 60, eta % 60))
     if args.dry_run:
         return 0, None, None
-    if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):
-        print('Aborted')
+    if not confirmed(args):
         return 1, None, None
 
     refuse_if_printing(kl)

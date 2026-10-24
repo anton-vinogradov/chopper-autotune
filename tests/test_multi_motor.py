@@ -313,18 +313,19 @@ def test_a_rail_of_three_runs_the_same_way(capsys):
 
 def test_a_rail_run_wants_the_stream_and_room_under_the_nozzle():
     with pytest.raises(SystemExit, match='drop CSV=1'):
-        rail.refuse_rail_run(PlanKl(rail_settings()), True)
+        rail.refuse_rail_run(PlanKl(rail_settings()), True, True)
     with pytest.raises(SystemExit, match=r'raise Z to 5 mm or more \(G1 Z10\), then retry: '
                                          r'.* now at Z 2.0'):
-        rail.refuse_rail_run(PlanKl(rail_settings(), z=2.0), False)
-    rail.refuse_rail_run(PlanKl(rail_settings(), z=10.0), False)
-    rail.refuse_rail_run(PlanKl(rail_settings()), False)      # Z unhomed: a note in the plan
+        rail.refuse_rail_run(PlanKl(rail_settings(), z=2.0), False, True)
+    rail.refuse_rail_run(PlanKl(rail_settings(), z=10.0), False, True)
+    rail.refuse_rail_run(PlanKl(rail_settings()), False, True)    # Z unhomed: a note in the plan
     # a tilted bed moves Z on every G1 of X or Y: unhomed, the first would fail
     tilted = rail_settings(bed_tilt={'x_adjust': 0.002, 'y_adjust': 0.0})
     with pytest.raises(SystemExit, match=r'home all axes \(G28\), then retry: \[bed_tilt\]'):
-        rail.refuse_rail_run(PlanKl(tilted), False)
-    rail.refuse_rail_run(PlanKl(tilted, z=10.0), False)
-    rail.refuse_rail_run(PlanKl(rail_settings(bed_tilt={'x_adjust': 0.0, 'y_adjust': 0.0})), False)
+        rail.refuse_rail_run(PlanKl(tilted), False, True)
+    rail.refuse_rail_run(PlanKl(tilted, z=10.0), False, True)
+    rail.refuse_rail_run(PlanKl(rail_settings(bed_tilt={'x_adjust': 0.0, 'y_adjust': 0.0})),
+                         False, True)
 
 
 def test_the_plan_notes_a_tilted_bed_moving_z_along(capsys):

@@ -614,18 +614,40 @@ def test_a_dry_run_shows_the_same_lines_and_writes_nothing(runs, save):
     assert dry.uploads == [] and 'RESTART' not in dry.scripts
 
 
+def started(files: dict) -> FakeMoonraker:
+    """A printer whose Klipper read these files at its last start, old copies included;
+    printer.cfg is [include config/*.cfg] unless files give it."""
+    from chopper_autotune.analyze import file_settings
+    mk = FakeMoonraker(dict({'printer.cfg': '[include config/*.cfg]\n'}, **files))
+    mk.config_settings = file_settings(mk.list_config_files(), mk.download_config)
+    return mk
+
+
+def config_on(text: str, **sections: tmc.Chopper) -> str:
+    """The config with these registers in the TMC2209 sections (stepper_x=A...)."""
+    for name, combo in sections.items():
+        text = updated_options(text, 'tmc2209 ' + name, register_options(combo.fields()))
+    return text
+
+
+def rewritten(mk, before: str) -> 'set[str]':
+    """The sections of printer.cfg (`before` a save) whose lines the save changed."""
+    after = read(mk.files['printer.cfg'])
+    return {section.split()[1] for section, options in read(before).items()
+            if after[section] != options}
+
+
 def test_a_motor_whose_run_kept_its_registers_is_not_rewritten(runs, save):
     # nothing to write for it: no backup, no restart
     own = tmc.Chopper(0, 2, 2, 12)
     runs('01_x', 'x', own, kept=True)
     runs('02_y', 'y', B, age=60)
-    holding = {'tmc2209 stepper_x': {'driver_' + field: value for field, value in own.fields().items()}}
-    mk = save(mk=FakeMoonraker({'printer.cfg': CFG_ABE}, settings=holding))
-    assert changed(mk) == {'stepper_y'}
+    mk = save(mk=started({'printer.cfg': config_on(CFG_ABE, stepper_x=own)}))
+    assert rewritten(mk, config_on(CFG_ABE, stepper_x=own)) == {'stepper_y'}
     assert console(mk)[0] == ('motor A: your registers %s stay. In run 01_x, neither the winner '
                               'nor Klipper defaults was quieter than them in all 4 rounds'
                               % own.label())
-    mk = save('MOTOR=A', mk=FakeMoonraker({'printer.cfg': CFG_ABE}, settings=holding))
+    mk = save('MOTOR=A', mk=started({'printer.cfg': config_on(CFG_ABE, stepper_x=own)}))
     assert mk.uploads == [] and 'RESTART' not in mk.scripts
 
 
@@ -1183,15 +1205,6 @@ W, O = tmc.Chopper(1, 4, 4, 3), tmc.Chopper(0, 2, 2, 12)
 RAIL_X = dict(RAIL_RUN, driver='2209', stepper='stepper_x', axis='x')
 
 
-def started(files: dict) -> FakeMoonraker:
-    """A printer whose Klipper read these files at its last start, old copies included;
-    printer.cfg is [include config/*.cfg] unless files give it."""
-    from chopper_autotune.analyze import file_settings
-    mk = FakeMoonraker(dict({'printer.cfg': '[include config/*.cfg]\n'}, **files))
-    mk.config_settings = file_settings(mk.list_config_files(), mk.download_config)
-    return mk
-
-
 def rail_registers(mk) -> 'list[dict]':
     """The driver_* lines of each driver of motor A as Klipper reads them at its next start."""
     from chopper_autotune.analyze import restart_settings
@@ -1406,7 +1419,7 @@ def test_registers_a_run_kept_from_an_old_copy_go_into_the_config(runs, save):
 
 RAIL_MAIN = RAIL_PRINTER.replace('[include awd.cfg]\n\n', '')
 RAIL_STEPPERS = RAIL_MAIN + '\n' + RAIL_AWD
-SAVING = 'motor A: saving %s into [tmc2209 stepper_x] and [tmc2209 stepper_x1] from run 01_x'
+RAIL_SAVING = 'motor A: saving %s into [tmc2209 stepper_x] and [tmc2209 stepper_x1] from run 01_x'
 
 
 @pytest.mark.parametrize('files', [
@@ -1421,7 +1434,7 @@ def test_a_rail_run_ending_on_the_registers_of_the_files_is_saved_while_klipper_
         runs, save, files):
     runs('01_x', 'x', W, **RAIL_RUN)
     mk = save('MOTOR=A', mk=started(files))
-    assert console(mk)[1] == SAVING % W.label() and mk.scripts[-1] == 'RESTART'
+    assert console(mk)[1] == RAIL_SAVING % W.label() and mk.scripts[-1] == 'RESTART'
     regs = {'driver_' + field: str(value) for field, value in W.fields().items()}
     assert rail_registers(mk) == [regs, regs]
 
@@ -1438,7 +1451,7 @@ def test_a_rail_run_ending_on_what_klipper_runs_is_saved_once_a_copy_moved_witho
     assert 'config/steppers.chopper-backup.cfg' not in mk.files and 'RESTART' not in mk.scripts
     mk.scripts = []
     save('MOTOR=A', mk=mk)
-    assert console(mk) == [SAVING % O.label() + TBL0_A] and mk.scripts[-1] == 'RESTART'
+    assert console(mk) == [RAIL_SAVING % O.label() + TBL0_A] and mk.scripts[-1] == 'RESTART'
     regs = {'driver_' + field: str(value) for field, value in O.fields().items()}
     assert rail_registers(mk) == [regs, regs]
 
@@ -1461,10 +1474,71 @@ def test_a_rail_run_ending_on_registers_klipper_runs_from_a_copy_names_how_to_sa
         'To save the registers this run found: CHOPPER_SAVE MOTOR=A']
     applied = analyze.applied_line(mk, ds.manifest(), str(root), W,
                                    build_parser().parse_args(['analyze', str(root), '--apply']))
-    assert applied.endswith('until Klipper restarts. CHOPPER_DEMO plays the registers Klipper '
-                            'loaded from its config at its last start. It plays the registers '
-                            'from this run after you save them. To save them: '
-                            'CHOPPER_ANALYZE DATASET=%s SAVE=1' % root)
+    assert applied.endswith('until Klipper restarts. Klipper runs them from the config it loaded. '
+                            'At its next start, Klipper loads other registers from its config '
+                            'files. To save them: CHOPPER_ANALYZE DATASET=%s SAVE=1' % root)
+    save('MOTOR=A', mk=mk)
+    assert console(mk)[1] == RAIL_SAVING % W.label() and mk.scripts[-1] == 'RESTART'
+
+
+SAVING = 'motor A: saving %s from run 01_x'
+
+
+def registers(mk) -> dict:
+    """The driver_* lines of [tmc2209 stepper_x] as Klipper reads them at its next start."""
+    from chopper_autotune.analyze import restart_settings
+    return {option: value for option, value in restart_settings(mk)['tmc2209 stepper_x'].items()
+            if option.startswith('driver_')}
+
+
+def test_a_run_ending_on_the_registers_of_the_files_is_saved_while_klipper_runs_a_copy(runs,
+                                                                                       save):
+    # an older version saved W and left its copy beside the file: Klipper reads the copy last
+    runs('01_x', 'x', W)
+    mk = save('MOTOR=A', mk=started({'config/steppers.cfg': config_on(STEPPERS, stepper_x=W),
+                                     'config/steppers.chopper-backup.cfg':
+                                         config_on(STEPPERS, stepper_x=O)}))
+    assert console(mk)[1] == SAVING % W.label() and mk.scripts[-1] == 'RESTART'
+    assert registers(mk) == {'driver_' + field: str(value) for field, value in W.fields().items()}
+
+
+@pytest.mark.parametrize('kept', [False, True])
+def test_a_run_ending_on_what_klipper_runs_is_saved_once_a_copy_moved_without_a_restart(
+        runs, save, kept):
+    # a CHOPPER_SAVE with nothing to write moved the copy: Klipper runs O until it restarts,
+    # the file gives W
+    runs('01_x', 'x', O, kept=kept)
+    mk = started({'config/steppers.cfg': config_on(STEPPERS, stepper_x=W),
+                  'config/steppers.chopper-backup.cfg': config_on(STEPPERS, stepper_x=O)})
+    save('MOTOR=B', mk=mk)
+    assert 'config/steppers.chopper-backup.cfg' not in mk.files and 'RESTART' not in mk.scripts
+    mk.scripts = []
+    save('MOTOR=A', mk=mk)
+    assert console(mk) == [(SAVING + '%s') % (O.label(), TBL0_A)] and mk.scripts[-1] == 'RESTART'
+    assert registers(mk) == {'driver_' + field: str(value) for field, value in O.fields().items()}
+
+
+@pytest.mark.parametrize('kept', [False, True])
+def test_a_run_ending_on_registers_klipper_runs_from_a_copy_names_how_to_save_them(
+        runs, save, kept):
+    # an older version saved W, then CHOPPER_RESTORE DEFAULTS=1 wrote the defaults and left
+    # the copy with W beside the file: Klipper runs W. Once the copy moves, a restart brings
+    # the defaults, so each command that says what is left to do names the save
+    from chopper_autotune import analyze, collect
+    from chopper_autotune.cli import build_parser
+    from chopper_autotune.dataset import Dataset
+    root = runs('01_x', 'x', W, kept=kept)
+    mk = started({'config/steppers.cfg': STEPPERS,
+                  'config/steppers.chopper-backup.cfg': config_on(STEPPERS, stepper_x=W)})
+    ds = Dataset.open(root)
+    assert collect.hear_and_save(mk.settings(), ds, mk) == [
+        'To hear the registers this run found, set them live: CHOPPER_ANALYZE MOTOR=A APPLY=1',
+        'To save the registers this run found: CHOPPER_SAVE MOTOR=A']
+    applied = analyze.applied_line(mk, ds.manifest(), str(root), W,
+                                   build_parser().parse_args(['analyze', str(root), '--apply']))
+    assert applied.endswith('until Klipper restarts. Klipper runs them from the config it loaded. '
+                            'At its next start, Klipper loads other registers from its config '
+                            'files. To save them: CHOPPER_ANALYZE DATASET=%s SAVE=1' % root)
     save('MOTOR=A', mk=mk)
     assert console(mk)[1] == SAVING % W.label() and mk.scripts[-1] == 'RESTART'
 
@@ -1816,9 +1890,9 @@ def test_a_motor_whose_winner_the_config_already_has_is_not_rewritten(runs, save
     runs('02_y', 'y', B, age=60)
     extruder_run(E)
     when = datetime.fromtimestamp(os.path.getmtime(extruder.STATE)).strftime('%Y-%m-%d %H:%M')
-    config = holding(stepper_x=A, extruder=E)
-    mk = save(mk=FakeMoonraker({'printer.cfg': CFG_ABE}, settings=config))
-    assert changed(mk) == {'stepper_y'} and mk.scripts[-1] == 'RESTART'
+    config = config_on(CFG_ABE, stepper_x=A, extruder=E)
+    mk = save(mk=started({'printer.cfg': config}))
+    assert rewritten(mk, config) == {'stepper_y'} and mk.scripts[-1] == 'RESTART'
     assert console(mk) == [
         'motor A: the config already has %s, the result of run 01_x, so there is nothing to write'
         % A.label(),
@@ -1826,10 +1900,10 @@ def test_a_motor_whose_winner_the_config_already_has_is_not_rewritten(runs, save
         'motor E: the config already has %s, the result of the CHOPPER_EXTRUDER run of %s, so there '
         'is nothing to write' % (E.label(), when)]
     for params in (['MOTOR=AE'], ['MOTOR=AE', 'DRY_RUN=1']):
-        mk = save(*params, mk=FakeMoonraker({'printer.cfg': CFG_ABE}, settings=config))
+        mk = save(*params, mk=started({'printer.cfg': config}))
         assert mk.uploads == [] and 'RESTART' not in mk.scripts
-        assert console(mk)[:2] == [line for line in console(save(mk=FakeMoonraker(
-            {'printer.cfg': CFG_ABE}, settings=config))) if not line.startswith('motor B')]
+        assert console(mk)[:2] == [line for line in console(save(mk=started(
+            {'printer.cfg': config}))) if not line.startswith('motor B')]
     # a register without its line runs at the driver's stock value: so do the winner's
     runs('03_y', 'y', tmc.Chopper(2, 3, 5, 0))
     mk = save('MOTOR=B', mk=FakeMoonraker({'printer.cfg': CFG_ABE}, settings={'tmc2209 stepper_y': {}}))
@@ -1911,7 +1985,8 @@ def test_a_winner_one_register_away_from_the_config_is_saved(runs, save, field):
     mk = save('MOTOR=A', mk=FakeMoonraker({'printer.cfg': CFG_5160}, settings=other))
     assert console(mk) == ['motor A: saving %s from run 01_x' % winner.label()]
     assert mk.scripts[-1] == 'RESTART'
-    mk = save('MOTOR=A', mk=FakeMoonraker({'printer.cfg': CFG_5160}, settings=same))
+    mk = save('MOTOR=A', mk=started({'printer.cfg': updated_options(
+        CFG_5160, 'tmc5160 stepper_x', register_options(winner.fields()))}))
     assert console(mk)[0].startswith('motor A: the config already has ') and mk.uploads == []
 
 
