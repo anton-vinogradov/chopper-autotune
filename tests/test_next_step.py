@@ -291,6 +291,14 @@ def config_files(settings: dict) -> SimpleNamespace:
                            download_config=lambda name: text)
 
 
+def test_a_rail_whose_twin_autotune_manages_now_has_nothing_to_hear_or_save(tmp_path):
+    # its registers would reach the twin only until the next Klipper start (#129)
+    pair = searched(tmp_path, winner=tmc.Chopper(0, 5, 0, 6).fields(), motion='rail',
+                    steppers=['stepper_y', 'stepper_y1'])
+    assert collect.hear_and_save({}, pair, None)[-1].endswith('CHOPPER_SAVE MOTOR=B')
+    assert collect.hear_and_save({'autotune_tmc stepper_y1': {}}, pair, None) == []
+
+
 def test_a_register_search_names_no_next_step_where_there_is_nothing_to_hear_or_save(tmp_path):
     winner = tmc.Chopper(0, 5, 0, 6).fields()
     hints = ['To hear the registers this run found, set them live: CHOPPER_ANALYZE MOTOR=B APPLY=1',

@@ -1,14 +1,16 @@
-"""The stress strokes of CHOPPER_ENVELOPE and CHOPPER_CURRENT through the release's own
-motion planner: gcode.py, extras/gcode_move.py, toolhead.py (M204, SET_VELOCITY_LIMIT,
-lookahead) and kinematics/extruder.py run as they are; the MCU and the step generation
-are stubs, and trapq_append records the (start_v, cruise_v, accel) the steppers would
-get. One process per release: Klipper's modules are top-level names.
+"""The stress strokes of CHOPPER_ENVELOPE and CHOPPER_CURRENT, and a measurement's stroke
+on G1, through the release's own motion planner: gcode.py, extras/gcode_move.py,
+toolhead.py (M204, SET_VELOCITY_LIMIT, lookahead) and kinematics/extruder.py run as they
+are; the MCU and the step generation are stubs, and trapq_append records the trapezoid
+the steppers would get (when it starts, its phases, start_v, cruise_v, accel). One
+process per release: Klipper's modules are top-level names.
 
     python tests/toolhead_rig.py <source dir> '<scenario json>'   prints the result json
 """
 import contextlib
 import importlib.util
 import json
+import math
 import os
 import sys
 import threading
@@ -25,7 +27,8 @@ def trapq_append(trapq, print_time, accel_t, cruise_t, decel_t, sx, sy, sz, rx, 
     length = (start_v * accel_t + accel * accel_t ** 2 / 2 + cruise_v * cruise_t
               + cruise_v * decel_t - accel * decel_t ** 2 / 2)
     TRAPQ.append({'r': (rx, ry), 'start_v': start_v, 'cruise_v': cruise_v, 'accel': accel,
-                  'length': length, 'cruise_t': cruise_t})
+                  'length': length, 't0': print_time, 'accel_t': accel_t, 'cruise_t': cruise_t,
+                  'decel_t': decel_t})
 
 
 class Kinematics:
@@ -86,7 +89,8 @@ def load_release(source):
         kinpackage.extruder = load('klippy.kinematics.extruder', os.path.join(source, 'extruder.py'))
         return (load('klippy.toolhead', os.path.join(source, 'toolhead.py')),
                 load('klippy.gcode', os.path.join(source, 'gcode.py')),
-                load('klippy.extras.gcode_move', os.path.join(source, 'gcode_move.py')))
+                load('klippy.extras.gcode_move', os.path.join(source, 'gcode_move.py')),
+                load('klippy.extras.force_move', os.path.join(source, 'force_move.py')))
     kinpackage = types.ModuleType('kinematics')
     kinpackage.__path__ = []
     for name, module in (('chelper', chelper), ('stepper', mock.MagicMock(name='stepper')),
@@ -96,7 +100,8 @@ def load_release(source):
     kinpackage.extruder = load('kinematics.extruder', os.path.join(source, 'extruder.py'))
     return (load('toolhead', os.path.join(source, 'toolhead.py')),
             load('gcode', os.path.join(source, 'gcode.py')),
-            load('gcode_move', os.path.join(source, 'gcode_move.py')))
+            load('gcode_move', os.path.join(source, 'gcode_move.py')),
+            load('force_move', os.path.join(source, 'force_move.py')))
 
 
 class DangerOptions:
@@ -281,16 +286,46 @@ class RigKlippy:
         return self._settings
 
 
-def belt_speed(record, kinematics, motor):
-    """The belt speed of `motor` during a move: corexy's belts run along x+y and x-y."""
+def belt_speed(record, kinematics, motor, key='cruise_v'):
+    """The belt speed (or accel) of `motor` during a move: corexy's belts run along x+y
+    and x-y."""
     rx, ry = record['r']
     if kinematics == 'corexy':
-        return abs(rx + ry if motor == 'x' else rx - ry) * record['cruise_v']
-    return abs(rx if motor == 'x' else ry) * record['cruise_v']
+        return abs(rx + ry if motor == 'x' else rx - ry) * record[key]
+    return abs(rx if motor == 'x' else ry) * record[key]
+
+
+def g1_stroke(kl, force_move, kinematics, motor, vec, speed, scenario) -> dict:
+    """A measurement's stroke on G1, in the belt's mm as FORCE_MOVE takes them: the head on
+    the stroke's start, M400, M204 and the belt's travel along vec, M400. What the planner
+    queued against FORCE_MOVE's trapezoid (calc_move_time) of the same travel, and where
+    the window the tools cut (steady_window) lies in the stroke's cruise."""
+    from chopper_autotune.collect import steady_window, travel_for
+    accel, measure_time = scenario['accel'], scenario['measure_time']
+    factor = math.hypot(*vec)                           # belt mm per head mm along vec
+    travel = travel_for(speed, accel, measure_time)
+    start = (10., 10.)
+    end = [at + part * travel / factor ** 2 for at, part in zip(start, vec)]
+    kl.gcode('G90\nG1 X%.4f Y%.4f F6000\nM400' % start)
+    kl.gcode('M204 S%.4f\nG1 X%.4f Y%.4f F%.4f\nM400'
+             % (accel / factor, end[0], end[1], speed / factor * 60))
+    t_end = kl.request('objects/query', {'objects': {'toolhead': ['print_time']}})[
+        'status']['toolhead']['print_time']
+    stroke = TRAPQ[-1]
+    cruise = stroke['t0'] + stroke['accel_t'], stroke['t0'] + stroke['accel_t'] + stroke['cruise_t']
+    low, high = steady_window(t_end, speed, accel, measure_time, scenario['trim'])
+    _, accel_t, cruise_t, top = force_move.calc_move_time(travel, speed, accel)
+    return {'speed': belt_speed(stroke, kinematics, motor),
+            'other': belt_speed(stroke, kinematics, 'y' if motor == 'x' else 'x'),
+            'accel': belt_speed(stroke, kinematics, motor, 'accel'), 'start_v': stroke['start_v'],
+            'accel_t': stroke['accel_t'], 'cruise_t': stroke['cruise_t'],
+            'decel_t': stroke['decel_t'], 'force_move': [accel_t, cruise_t, top],
+            'end': cruise[1] + stroke['decel_t'] - t_end,
+            'window': [low - cruise[0], cruise[1] - high]}
 
 
 def run(source, scenario):
-    toolhead_module, gcode_module, gcode_move_module = load_release(source)
+    toolhead_module, gcode_module, gcode_move_module, force_move = load_release(source)
     printer = Printer(gcode_module)
     dispatch = gcode_module.GCodeDispatch(printer)
     printer.objects['gcode'] = dispatch
@@ -332,6 +367,9 @@ def run(source, scenario):
             del TRAPQ[:]
             envelope.stress_burst(kl, board, motor, vec, speed, accel, scenario['span'])
             rungs.append({'speed': speed, 'accel': accel, 'strokes': stroke_records()})
+    elif scenario['tool'] == 'g1':
+        rungs = [g1_stroke(kl, force_move, kinematics, motor, vec, speed, scenario)
+                 for speed in scenario['speeds']]
     else:
         del TRAPQ[:]
         current.run_rung(kl, board, motor, 0.8, 1.0, vec, scenario['span'], scenario['accel'])
