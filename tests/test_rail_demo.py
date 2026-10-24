@@ -11,13 +11,14 @@ from dataclasses import replace
 import pytest
 
 import klipper_front
-from chopper_autotune import collect, demo, rail, tmc
+from chopper_autotune import collect, demo, find_speed, rail, tmc
 from chopper_autotune.cli import build_parser
 from chopper_autotune.dataset import Dataset
 from test_klipper_front import (AT_RUNTIME, AWD, SOURCES, assert_clean, awd_cfg, limits_in_force,
                                 require)
 from test_rail import (NO_TRIGGER, approach, chips, dual_y, failing_closing_homing, from_homing,
-                       measured, off_the_edges, own_cfg, rail_sections, refusing, running_client)
+                       measured, off_the_edges, option_out, own_cfg, rail_sections, refusing,
+                       running_client)
 
 TUNED = {'x': {'toff': 4, 'hend': 3}, 'y': {'toff': 5, 'hend': 2}}
 AUTOTUNE = ''.join('\n[autotune_tmc %s]\nmotor: ldo-42sth48-2004ac\n' % name
@@ -357,7 +358,10 @@ def test_what_would_spoil_a_rail_demo_is_refused_before_any_gcode(source, case, 
     if case == 'max_velocity, show':
         assert 'it caps the head at 100 of the 113 mm/s' in message
     if case.startswith('registers apart'):
-        assert 'CHOPPER_SAVE MOTOR=A writes the same set into each driver' in message
+        assert message.endswith('Copy the driver_* lines of one section into the others and '
+                                'restart Klipper. Or run CHOPPER_SAVE MOTOR=A: it writes the '
+                                'latest tuning result of motor A into the section of each '
+                                'driver. Nothing was moved')
 
 
 @pytest.mark.parametrize('source', SOURCES)
@@ -585,3 +589,214 @@ def test_a_rail_klipper_tmc_autotune_runs_apart_is_refused_after_the_homing(sour
     assert show_moves(front, {'x': 60, 'y': 60}) == []
     assert len(front.homings) == 2 and all(homing['chips'] == found for homing in front.homings)
     assert chips(front) == found
+
+
+LIVE = tmc.Chopper(1, 5, 4, 3, 9)       # set by APPLY=1 or SET_TMC_FIELD, not in the config
+STOCK = tmc.DRIVERS['5160'].default
+SAVED = {axis: replace(STOCK, **TUNED[axis]) for axis in 'xy'}
+SET_LIVE = {
+    # (the printer.cfg, the drivers set live, the argv, the config's set)
+    'motor B on the defaults': (lambda: tuned_cfg(awd_cfg('meijjaa'), '5160', 'x'),
+                                ('stepper_y', 'stepper_y1'),
+                                ['--motor', 'b', '--speed', '60', '--rounds', '1'], STOCK),
+    'report of B on the defaults': (lambda: tuned_cfg(awd_cfg('meijjaa'), '5160', 'x'),
+                                    ('stepper_y', 'stepper_y1'),
+                                    ['--motor', 'b', '--speed', '60', '--report'], STOCK),
+    'show, B on the defaults': (lambda: tuned_cfg(awd_cfg('meijjaa'), '5160', 'x'),
+                                ('stepper_y', 'stepper_y1'), ['--speed', '60'], STOCK),
+    'show, both on the defaults': (lambda: awd_cfg('meijjaa'), ('stepper_y', 'stepper_y1'),
+                                   ['--speed', '60'], STOCK),
+    'motor B on a set of its own': (lambda: tuned_cfg(awd_cfg('meijjaa'), '5160'), ('stepper_y',),
+                                    ['--motor', 'b', '--speed', '60', '--rounds', '1'], SAVED['y']),
+    # the resonance scan would end on the config's registers before the check
+    'motor B with no speed to reuse': (lambda: tuned_cfg(awd_cfg('meijjaa'), '5160'),
+                                       ('stepper_y', 'stepper_y1'), ['--motor', 'b', '--rounds', '1'],
+                                       SAVED['y']),
+    'show, A set live': (lambda: tuned_cfg(awd_cfg('meijjaa'), '5160'),
+                         ('stepper_x', 'stepper_x1'), ['--speed', '60'], SAVED['x']),
+    'show, dual Y, the motor alone set live': (lambda: tuned_cfg(dual_y('meijjaa'), '5160'),
+                                               ('stepper_x',), ['--speed', '60'], SAVED['x']),
+}
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('case', SET_LIVE)
+def test_a_demo_of_drivers_set_live_unlike_the_config_is_refused_before_anything_moves(
+        source, case, monkeypatch):
+    # the demo plays the config's registers and puts them back at its end: it would play
+    # the wrong set and undo the live one
+    require(source)
+    cfg, steppers, argv, config = SET_LIVE[case]
+    front = klipper_front.Front(source, cfg())
+    front.run('\n'.join(tmc.set_fields_script(stepper, LIVE.fields()) for stepper in steppers))
+    live = chips(front)
+    with pytest.raises(SystemExit) as refused:
+        run_demo(front, monkeypatch, argv)
+    drivers = ' and '.join(steppers)
+    assert refused.value.code == (
+        'save or drop the registers set live, then retry: %s %s %s, but the config that Klipper loaded '
+        'gives %s %s. The demo plays the registers of that config. At its end it puts them back, '
+        'which would undo the ones set live. To keep them, repeat the CHOPPER_ANALYZE that set '
+        'them, with SAVE=1 in place of APPLY=1. Or write them into printer.cfg and restart Klipper '
+        '(RESTART). To drop them, restart Klipper. Nothing was moved'
+        % (drivers, 'run' if len(steppers) > 1 else 'runs', LIVE.label(),
+           'them' if len(steppers) > 1 else 'it', config.label()))
+    assert collect.failure_display('demo FAILED: %s' % refused.value.code)[:16] == 'FAIL save or dro'
+    assert_clean(front)
+    assert (front.homings, front.head_moves, front.moves) == ([], [], [])
+    assert chips(front) == live
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('dry_run', [True, False], ids=['dry run', 'run'])
+@pytest.mark.parametrize('argv, motors', [(['--motor', 'b'], 'y'), ([], 'xy')],
+                         ids=['motor B', 'show'])
+def test_a_demo_of_a_rail_on_the_defaults_names_where_they_come_from(source, dry_run, argv, motors,
+                                                                     monkeypatch):
+    # a config edited without a restart counts as the one Klipper loaded: the drivers run it
+    require(source)
+    front = klipper_front.Front(source, awd_cfg('meijjaa'))
+    with pytest.raises(SystemExit) as refused:
+        run_demo(front, monkeypatch, ['--speed', '60'] + argv + ['--dry-run'] * dry_run)
+    stock = tmc.DRIVERS['5160'].default.label()
+    assert refused.value.code == (
+        'tune and save %s first: the config that Klipper loaded gives %s. Both rounds would play the '
+        'same registers. If you edited printer.cfg after Klipper started, restart it (RESTART). '
+        'Nothing was moved'
+        % ('motor B' if motors == 'y' else 'motors A and B', ', and '.join(
+            'the Klipper defaults %s to stepper_%s and stepper_%s1' % (stock, axis, axis)
+            for axis in motors)))
+    assert collect.failure_display('demo FAILED: %s' % refused.value.code)[:16] == 'FAIL tune and sa'
+    # the drivers read before the refusal (between the fences of the output), and nothing else
+    assert [line for script in front.scripts for line in script.split('\n')
+            if not line.startswith('ECHO CHOPPER-')] == ([] if dry_run else [
+        'DUMP_TMC STEPPER=%s REGISTER=CHOPCONF' % stepper for axis in motors
+        for stepper in ('stepper_' + axis, 'stepper_%s1' % axis)])
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('dry_run', [True, False], ids=['dry run', 'run'])
+@pytest.mark.parametrize('argv, motors', [(['--motor', 'b'], 'y'), ([], 'xy')],
+                         ids=['motor B', 'show'])
+def test_a_default_equal_to_the_saved_set_asks_for_another_default(source, dry_run, argv, motors,
+                                                                    monkeypatch):
+    # both motors tuned and saved to motor B's set: DEFAULT= that set plays it in both rounds
+    require(source)
+    monkeypatch.setitem(TUNED, 'x', TUNED['y'])
+    front = klipper_front.Front(source, tuned_cfg(awd_cfg('meijjaa'), '5160'))
+    played = SAVED['y']
+    with pytest.raises(SystemExit) as refused:
+        run_demo(front, monkeypatch, ['--speed', '60', '--default', '2,5,5,2'] + argv
+                 + ['--dry-run'] * dry_run)
+    assert refused.value.code == (
+        'pass another DEFAULT= or drop it, then retry: the config that Klipper loaded gives %s. Both '
+        'rounds would play the same registers. Nothing was moved'
+        % ', and '.join('the DEFAULT= registers %s to stepper_%s and stepper_%s1'
+                        % (played.label(), axis, axis) for axis in motors))
+    assert collect.failure_display('demo FAILED: %s' % refused.value.code)[:16] == 'FAIL pass anothe'
+    assert (front.homings, front.head_moves, front.moves) == ([], [], [])
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_the_show_with_a_default_equal_to_one_saved_set_names_it(source, monkeypatch, capsys):
+    # motor A changes; motor B plays its saved set, the one DEFAULT= gives, in both rounds
+    require(source)
+    front = klipper_front.Front(source, tuned_cfg(awd_cfg('meijjaa'), '5160'))
+    assert run_demo(front, monkeypatch, ['--speed', '60', '--default', '2,5,5,2', '--dry-run']) == 0
+    assert ('Motor B plays the same registers in both rounds: the config that Klipper loaded '
+            'gives the DEFAULT= registers %s to stepper_y and stepper_y1. Pass another DEFAULT= '
+            'or drop it to hear motor B change too\n'
+            % SAVED['y'].label()) in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('dry_run', [True, False], ids=['dry run', 'run'])
+@pytest.mark.parametrize('argv, refusal', [
+    (['--motor', 'b'], 'current registers equal the defaults — nothing to demo (tune and save the '
+                       'motor first)'),
+    ([], 'current registers equal the defaults on both motors — tune and save first')],
+    ids=['motor B', 'show'])
+def test_a_demo_without_a_rail_on_the_defaults_refuses_as_main_does(source, dry_run, argv, refusal,
+                                                                    monkeypatch):
+    # decision 19: no driver read, main's words
+    require(source)
+    front = klipper_front.Front(source, awd_cfg('meijjaa', twins=False))
+    with pytest.raises(SystemExit) as refused:
+        run_demo(front, monkeypatch, ['--speed', '60'] + argv + ['--dry-run'] * dry_run)
+    assert refused.value.code == refusal
+    assert not [line for script in front.scripts for line in script.split('\n')
+                if not line.startswith('ECHO CHOPPER-')]
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_a_demo_of_a_motor_alone_scans_without_reading_its_drivers(source, monkeypatch):
+    # decision 19: the drivers read before the resonance scan are a rail's
+    require(source)
+    front = klipper_front.Front(source, tuned_cfg(awd_cfg('meijjaa', twins=False), '5160'))
+
+    def scan(kl, args, popup=True):
+        raise SystemExit('scanned')
+    monkeypatch.setattr(find_speed, 'scan', scan)
+    with pytest.raises(SystemExit, match='^scanned$'):
+        run_demo(front, monkeypatch, ['--motor', 'b', '--rounds', '1'])
+    assert not [line for script in front.scripts for line in script.split('\n')
+                if line.startswith('DUMP_TMC')]
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_the_show_says_which_motor_plays_the_same_registers_in_both_rounds(source, monkeypatch,
+                                                                           capsys):
+    # motor A tuned and saved, motor B on Klipper defaults: the panel shows no gain for B
+    require(source)
+    front = klipper_front.Front(source, tuned_cfg(awd_cfg('meijjaa'), '5160', 'x'))
+    assert run_demo(front, monkeypatch, ['--speed', '60', '--rounds', '1', '--repeats', '1']) == 0
+    assert_clean(front)
+    out = capsys.readouterr().out
+    assert ('Motor B plays the same registers in both rounds: the config that Klipper loaded '
+            'gives the Klipper defaults tbl2_toff3_hstrt5_hend2_tpfd4 to stepper_y and '
+            'stepper_y1. Tune and save motor B to hear it change too\n') in out
+    assert re.search(r'both motors together: \d\.\d\dx less vibration overall; motor B played the '
+                     r'same registers in both rounds\n', out)
+    assert [line for line in front.console if line.startswith('echo: Chopper: both motors ')][-1] \
+        .endswith('x less vibration; motor B played the same registers in both rounds')
+    state = json.loads((collect.RESULTS_HOME / 'state.json').read_text())
+    assert state['y']['quieter'] is None and state['x']['quieter'] > 1
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_registers_applied_to_a_rail_play_in_the_demo_once_saved(source, monkeypatch):
+    # meijjaa's way: the search on motor B, APPLY=1, the demo, the save it names
+    from test_rail import GRID_WINNER, analyze_through, collect_motor, held
+    require(source)
+    mk = klipper_front.FrontMoonraker(source, tuned_cfg(awd_cfg('meijjaa'), '5160', 'x'))
+    collect_motor(mk, 'y')
+    told = analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE MOTOR=B APPLY=1')
+    argv = ['--motor', 'b', '--speed', '60', '--rounds', '1', '--repeats', '1']
+    with pytest.raises(SystemExit, match='^save or drop the registers set live'):
+        run_demo(mk.front, monkeypatch, argv)
+    for section in rail_sections('meijjaa', 'y'):
+        assert held(mk.front.chips[section], GRID_WINNER) == GRID_WINNER
+    analyze_through(mk, monkeypatch, told[0])
+    assert mk.restarts == 1
+    assert run_demo(mk.front, monkeypatch, argv) == 0
+    assert_clean(mk.front)
+    assert {(record['toff'], record['hend']) for record, _ in measured(mk.front, [
+        root for root in (collect.RESULTS_HOME / 'datasets').iterdir() if '_demo_' in root.name][0])} \
+        == {(3, 2), (GRID_WINNER['toff'], GRID_WINNER['hend'])}
+    for section in rail_sections('meijjaa', 'y'):
+        assert held(mk.front.chips[section], GRID_WINNER) == GRID_WINNER
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_a_twin_switched_off_without_an_enable_pin_of_its_own_is_no_register_set_live(
+        source, monkeypatch):
+    # Klipper switches such a driver off with toff 0 and puts the config's toff back when the
+    # motor goes on: the demo plays as the config says
+    require(source)
+    front = klipper_front.Front(source, option_out(tuned_cfg(awd_cfg('meijjaa'), '5160'),
+                                                   'stepper_y1', 'enable_pin'))
+    front.run('M84')
+    assert front.chips['tmc5160 stepper_y1'].field('toff') == 0
+    assert run_demo(front, monkeypatch, ['--motor', 'b', '--speed', '60', '--rounds', '1',
+                                         '--repeats', '1']) == 0
+    assert_clean(front)

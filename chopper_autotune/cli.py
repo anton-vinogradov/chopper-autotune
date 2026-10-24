@@ -361,6 +361,9 @@ def build_parser() -> argparse.ArgumentParser:
                    help='dataset directory, default: the latest collected one')
     a.add_argument('--dataset', dest='dataset_opt', default=None,
                    help='same as the positional argument, for DATASET= macro params')
+    a.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y'), default=None,
+                   help='motor a or b: take the newest run of this motor, not the newest run of '
+                        'any motor; x/y also accepted')
     a.add_argument('--top', type=int, default=15, help='rows in the console table')
     add_hearing(a, recorded=True)
     a.add_argument('--trim', type=float, default=0.25)

@@ -11,12 +11,13 @@ import types
 import pytest
 
 import klipper_front
-from chopper_autotune import collect, find_speed, rail, tmc
+from chopper_autotune import analyze, collect, find_speed, rail, tmc
 from chopper_autotune.cli import build_parser
 from chopper_autotune.dataset import Dataset
 from chopper_autotune.klippy import KlippyError
 from test_klipper_front import (AT_RUNTIME, AWD, SOURCES, assert_clean, awd_cfg, limits_in_force,
                                 require, run_tool)
+from test_next_step import pasted
 
 RUNS = {
     'collect': (collect.collect, ['collect', '--speed', '60', '--tbl', '1:1', '--toff', '3:4',
@@ -1243,7 +1244,292 @@ def test_a_rail_run_on_its_own_names_the_next_command_for_the_pair(source, autot
                   'writes its own')
         assert 'stepper_x, stepper_x1: ' + advice in out and out.count(advice) == 1
     else:
+        # without MOTOR= ANALYZE would take the newest run of any motor
         assert told[1:] == [
-            'Chopper: To hear the registers this run found, set them live: CHOPPER_ANALYZE APPLY=1',
+            'Chopper: To hear the registers this run found, set them live: '
+            'CHOPPER_ANALYZE MOTOR=A APPLY=1',
             'Chopper: To save the registers this run found: CHOPPER_SAVE MOTOR=A']
+        assert pasted(told[1]).axis == 'x' and pasted(told[1]).apply
         assert 'klipper_tmc_autotune' not in out
+
+
+def collect_motor(mk, axis: str, argv: 'list[str] | None' = None) -> str:
+    """CHOPPER_COLLECT MOTOR=<axis> into the dataset folder of the runs, as the macro runs it."""
+    code, root = run_tool(mk.front, collect.collect, (argv or RUNS['collect'][1]) + ['--axis', axis])
+    assert code == 0
+    return root
+
+
+def analyze_through(mk, monkeypatch, line: str) -> 'list[str]':
+    """The CHOPPER_ANALYZE at the end of `line`, pasted into the console of the printer
+    behind `mk`, without the report: the console lines it added."""
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    # not NO_HTML=1: the save command of APPLY repeats what was pasted
+    monkeypatch.setattr(analyze, 'write_report', lambda *args, **kwargs: None)
+    args = pasted(line)
+    args.dataset = args.dataset_opt
+    before = len(mk.front.console)
+    assert analyze.run_analyze(args) == 0
+    return mk.front.console[before:]
+
+
+def stopped_run(mk, monkeypatch, axis: str, argv: 'list[str] | None' = None):
+    """A COLLECT stopped before its first measurement (CHOPPER_STOP at once): the newest
+    dataset, without one. Its own folder: a run of the same second would resume the last."""
+    def stop(*args):
+        raise SystemExit(143)
+    with monkeypatch.context() as patch:
+        patch.setattr(collect, 'measure_baseline', stop)
+        with pytest.raises(SystemExit) as stopped:
+            run_tool(mk.front, collect.collect, (argv or RUNS['collect'][1]) + [
+                '--axis', axis, '--dataset', str(collect.RESULTS_HOME / 'datasets' / 'stopped')])
+        assert stopped.value.code == 143
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_apply_on_a_rail_tells_the_console_what_it_set_where_and_how_to_keep_it(source,
+                                                                                monkeypatch):
+    # APPLY runs detached: its log is unseen, and Klipper prints nothing for SET_TMC_FIELD
+    require(source)
+    mk = klipper_front.FrontMoonraker(source, awd_cfg('meijjaa'))
+    stock = chips(mk.front)
+    root = collect_motor(mk, 'y')
+    told = analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE MOTOR=B APPLY=1')
+    assert told == [
+        'Chopper: Motor B: tbl1_toff4_hstrt4_hend3 from run %s is set on stepper_y and stepper_y1 '
+        'until Klipper restarts. CHOPPER_DEMO plays the registers Klipper loaded from printer.cfg '
+        'at its last start. It plays these after you save them. To save them: '
+        'CHOPPER_ANALYZE DATASET=%s SAVE=1' % (root.rsplit('/', 1)[-1], root)]
+    assert_clean(mk.front)
+    for section in rail_sections('meijjaa', 'y'):
+        assert held(mk.front.chips[section], GRID_WINNER) == GRID_WINNER
+    for section in rail_sections('meijjaa', 'x'):
+        assert mk.front.chips[section].chopper() == stock[section]
+    # the command at its end saves what was set
+    analyze_through(mk, monkeypatch, told[0])
+    assert mk.restarts == 1
+    for section in rail_sections('meijjaa', 'y'):
+        assert held(mk.front.chips[section], GRID_WINNER) == GRID_WINNER
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_analyze_of_a_motor_takes_its_newest_run_that_measured(source, monkeypatch, capsys):
+    # motor A ran after B, and a run of B stopped at once: MOTOR=B takes the B run that measured
+    require(source)
+    mk = klipper_front.FrontMoonraker(source, awd_cfg('meijjaa'))
+    stock = chips(mk.front)
+    with pytest.raises(SystemExit,
+                       match='^tune motor B first: none of its tuning runs has measurements$'):
+        analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE MOTOR=B APPLY=1')
+    root = collect_motor(mk, 'y')
+    other = collect_motor(mk, 'x')
+    stopped_run(mk, monkeypatch, 'y')
+    capsys.readouterr()
+    told = analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE MOTOR=B APPLY=1')
+    assert told[0].startswith('Chopper: Motor B: tbl1_toff4_hstrt4_hend3 from run %s '
+                              % root.rsplit('/', 1)[-1])
+    assert 'motor B: skipping run stopped: it has no measurements' in capsys.readouterr().out
+    # without MOTOR= the newest run of any motor: the stopped one
+    with pytest.raises(SystemExit, match='^add MOTOR=A or MOTOR=B: the newest run, stopped, has no '
+                                         'successful measurements. With MOTOR=, CHOPPER_ANALYZE '
+                                         'takes the newest run of that motor that has them$'):
+        analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE APPLY=1')
+    for section in rail_sections('meijjaa', 'y'):
+        assert held(mk.front.chips[section], GRID_WINNER) == GRID_WINNER
+    for section in rail_sections('meijjaa', 'x'):
+        assert mk.front.chips[section].chopper() == stock[section]
+    with pytest.raises(SystemExit, match='^drop DATASET= or MOTOR=: %s is a run of motor A, not '
+                                         'of motor B$' % other):
+        analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE DATASET=%s MOTOR=B APPLY=1' % other)
+    assert collect.failure_display('analyze FAILED: tune motor B first')[:16] == 'FAIL tune motor '
+
+
+def noisy_head(chopper_weight: float, jitter: float, best: dict):
+    """Front.head_vibration with a weak chopper effect, quietest at `best`, and a jitter
+    of each move: a motor whose registers barely matter, measured with noise, as meijjaa's
+    motor B (1.1x)."""
+    def head_vibration(self, move):
+        mg = 0.
+        for axis in 'xy':
+            motors = self.rail(axis)
+            if move['belts'][axis] and motors:
+                for motor in motors:
+                    chop = self.chopper(move, motor)
+                    base = 40. + 600. * math.exp(-((move['belts'][axis] - 60.) / 10.) ** 2)
+                    mg += base * (1. + chopper_weight * sum(
+                        abs(chop.get(name, value) - value) for name, value in best.items())) \
+                        / len(motors)
+        if not mg:
+            return klipper_front.STANDSTILL_MG
+        return mg * (1. + jitter * math.sin(move['window'][0] * 7919.))
+    return head_vibration
+
+
+AROUND_STOCK = ['collect', '--speed', '60', '--tbl', '2:2', '--toff', '3:4', '--hstrt', '5:5',
+                '--hend', '2:3', '--iterations', '1', '--yes', '--no-raw']
+STOCK_5160 = {'tbl': 2, 'toff': 3, 'hstrt': 5, 'hend': 2}
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('weight, jitter, best, kept', [
+    (0.03, 0.08, {'toff': 4, 'hend': 3}, True), (0.1, 0., {'toff': 3, 'hend': 2}, False)],
+    ids=['kept', 'best-is-the-config'])
+def test_a_rail_run_ending_on_the_registers_of_the_config_offers_nothing_to_hear_or_save(
+        source, weight, jitter, best, kept, monkeypatch):
+    # motor B on Klipper defaults (CHOPPER_RESTORE DEFAULTS=1), registers that barely matter:
+    # the run ends on the defaults, kept or found the best
+    require(source)
+    monkeypatch.setattr(klipper_front.Front, 'head_vibration', noisy_head(weight, jitter, best))
+    mk = klipper_front.FrontMoonraker(source, awd_cfg('meijjaa'))
+    stock = chips(mk.front)
+    root = collect_motor(mk, 'y', AROUND_STOCK)
+    manifest = Dataset.open(root).manifest()
+    assert (manifest['winner'], manifest['kept']) == (STOCK_5160, kept)
+    before = len(mk.front.console)
+    collect.what_next(mk.front.connect(), Dataset.open(root))
+    assert not [line for line in mk.front.console[before:] if 'CHOPPER_' in line]
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    assert analyze.run_save_latest(build_parser().parse_args(['save', '--motor', 'b'])) == 0
+    assert mk.restarts == 0
+    name = root.rsplit('/', 1)[-1]
+    said = [line for line in mk.front.console if line.startswith('Chopper: motor B: ')]
+    assert said == ['Chopper: motor B: your registers tbl2_toff3_hstrt5_hend2 stay in '
+                    '[tmc5160 stepper_y] and [tmc5160 stepper_y1]' + (
+                        '. In run %s, neither the winner nor Klipper defaults was quieter than '
+                        'them in all 4 rounds' if kept else
+                        '. Run %s ended on them, so there is nothing to write') % name]
+    told = analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE MOTOR=B APPLY=1')
+    assert told == ['Chopper: Motor B: tbl2_toff3_hstrt5_hend2 from run %s is set on stepper_y and '
+                    'stepper_y1. These are the registers Klipper loaded from printer.cfg at its '
+                    'last start, so the run found nothing to change' % name]
+    assert chips(mk.front) == stock
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_a_rail_run_ending_on_the_registers_of_one_driver_names_how_to_hear_and_save_them(
+        source, monkeypatch):
+    # stepper_y on Klipper defaults, stepper_y1 on a set of its own: the run ends on the
+    # defaults, which only stepper_y gets from the config
+    require(source)
+    monkeypatch.setattr(klipper_front.Front, 'head_vibration', noisy_head(0.1, 0., STOCK_5160))
+    cfg = awd_cfg('meijjaa').replace('[tmc5160 stepper_y1]\n',
+                                     '[tmc5160 stepper_y1]\ndriver_TOFF: 4\ndriver_HEND: 3\n')
+    mk = klipper_front.FrontMoonraker(source, cfg)
+    root = collect_motor(mk, 'y', AROUND_STOCK)
+    assert Dataset.open(root).manifest()['winner'] == STOCK_5160
+    before = len(mk.front.console)
+    collect.what_next(mk.front.connect(), Dataset.open(root))
+    assert mk.front.console[before:] == [
+        'Chopper: To hear the registers this run found, set them live: '
+        'CHOPPER_ANALYZE MOTOR=B APPLY=1',
+        'Chopper: To save the registers this run found: CHOPPER_SAVE MOTOR=B']
+    name = root.rsplit('/', 1)[-1]
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    assert analyze.run_save_latest(build_parser().parse_args(['save', '--motor', 'b',
+                                                              '--dry-run'])) == 0
+    assert [line for line in mk.front.console if line.startswith('Chopper: motor B: ')] == [
+        'Chopper: motor B: would save tbl2_toff3_hstrt5_hend2 into [tmc5160 stepper_y] and '
+        '[tmc5160 stepper_y1] from run %s' % name]
+    told = analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE MOTOR=B APPLY=1')
+    assert told == ['Chopper: Motor B: tbl2_toff3_hstrt5_hend2 from run %s is set on stepper_y and '
+                    'stepper_y1 until Klipper restarts. These are the Klipper defaults. After you '
+                    'save them, CHOPPER_DEMO has nothing to play against the defaults. To save '
+                    'them: '
+                    'CHOPPER_ANALYZE DATASET=%s SAVE=1' % (name, root)]
+    analyze_through(mk, monkeypatch, told[0])
+    assert mk.restarts == 1
+    for section in rail_sections('meijjaa', 'y'):
+        assert held(mk.front.chips[section], STOCK_5160) == STOCK_5160
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_the_save_command_of_apply_on_a_rail_saves_the_set_its_hearing_chose(source, monkeypatch):
+    # AUDIBLE_KHZ=36 SKIP_AUDIBLE=1 leaves out the winner the run recorded (34 kHz)
+    require(source)
+    mk = klipper_front.FrontMoonraker(source, awd_cfg('meijjaa'))
+    root = collect_motor(mk, 'y')
+    told = analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE MOTOR=B APPLY=1 AUDIBLE_KHZ=36 '
+                                            'SKIP_AUDIBLE=1')
+    assert told[0].endswith('To save them: CHOPPER_ANALYZE DATASET=%s AUDIBLE_KHZ=36 '
+                            'SKIP_AUDIBLE=1 SAVE=1' % root)
+    heard = tmc.Chopper(1, 3, 4, 3).fields()
+    for section in rail_sections('meijjaa', 'y'):
+        assert held(mk.front.chips[section], heard) == heard
+    analyze_through(mk, monkeypatch, told[0])
+    assert mk.restarts == 1
+    for section in rail_sections('meijjaa', 'y'):
+        assert held(mk.front.chips[section], heard) == heard
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_apply_on_a_rail_klipper_tmc_autotune_manages_names_no_config_and_no_save(source,
+                                                                                 monkeypatch):
+    # autotune writes its own registers at every start: the driver_* lines, here the very
+    # winner, say nothing of what a restart brings, and a save would not reach the drivers
+    require(source)
+    lines = ''.join('driver_%s: %d\n' % (name.upper(), value) for name, value in GRID_WINNER.items())
+    cfg = awd_cfg('meijjaa') + ''.join('\n[autotune_tmc %s]\nmotor: ldo-42sth48-2004ac\n' % name
+                                       for name in ('stepper_y', 'stepper_y1'))
+    for section in rail_sections('meijjaa', 'y'):
+        cfg = cfg.replace('[%s]\n' % section, '[%s]\n%s' % (section, lines))
+    mk = klipper_front.FrontMoonraker(source, cfg)
+    root = collect_motor(mk, 'y')
+    assert analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE MOTOR=B APPLY=1') == [
+        'Chopper: Motor B: tbl1_toff4_hstrt4_hend3 from run %s is set on stepper_y and stepper_y1 '
+        'until Klipper restarts' % root.rsplit('/', 1)[-1]]
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_one_motor_ending_on_the_registers_of_the_config_keeps_the_hints_and_the_save_of_main(
+        source, monkeypatch, capsys):
+    # decision 19: a motor alone on its axis hears, applies and saves as main does
+    require(source)
+    # a motor alone moves by FORCE_MOVE: its shake, quietest on the Klipper defaults
+    monkeypatch.setattr(klipper_front.Front, 'shake', staticmethod(lambda speed, chopper: (
+        40. + 600. * math.exp(-((speed - 60.) / 10.) ** 2)) * (1. + .1 * (
+            abs(chopper.get('toff', 3) - 3) + abs(chopper.get('hend', 2) - 2)))))
+    mk = klipper_front.FrontMoonraker(source, awd_cfg('meijjaa', twins=False))
+    # meijjaa's max_accel/10 fits 40 mm/s into its Y (test_single_motor_scripts)
+    at_40 = [{'60': '40'}.get(word, word) for word in AROUND_STOCK]
+    stopped_run(mk, monkeypatch, 'x', at_40)
+    with pytest.raises(SystemExit, match='^no successful measurements in .*/stopped$'):
+        analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE APPLY=1')
+    root = collect_motor(mk, 'y', at_40)
+    assert Dataset.open(root).manifest()['winner'] == STOCK_5160
+    before = len(mk.front.console)
+    collect.what_next(mk.front.connect(), Dataset.open(root))
+    assert mk.front.console[before:] == [
+        'Chopper: To hear the registers this run found, set them live: CHOPPER_ANALYZE APPLY=1',
+        'Chopper: To save the registers this run found: CHOPPER_SAVE MOTOR=B']
+    capsys.readouterr()
+    assert analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE APPLY=1') == []
+    assert 'Applied via SET_TMC_FIELD (runtime only, use SAVE=1 to persist)' in capsys.readouterr().out
+    front = mk.front                    # the save restarts Klipper: a new console
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    assert analyze.run_save_latest(build_parser().parse_args(['save', '--motor', 'b'])) == 0
+    assert mk.restarts == 1
+    assert [line for line in front.console if line.startswith('Chopper: motor B: ')] == [
+        'Chopper: motor B: saving tbl2_toff3_hstrt5_hend2 from run %s' % root.rsplit('/', 1)[-1]]
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_apply_of_the_klipper_defaults_says_the_demo_has_nothing_to_play_with_them(source,
+                                                                                  monkeypatch):
+    # motor B on a noisy set of its own, and the defaults beat it
+    require(source)
+    monkeypatch.setattr(klipper_front.Front, 'head_vibration', noisy_head(0.1, 0., STOCK_5160))
+    noisy = 'driver_TBL: 0\ndriver_TOFF: 2\ndriver_HSTRT: 3\ndriver_HEND: 15\n'
+    cfg = awd_cfg('meijjaa')
+    for section in rail_sections('meijjaa', 'y'):
+        cfg = cfg.replace('[%s]\n' % section, '[%s]\n%s' % (section, noisy))
+    mk = klipper_front.FrontMoonraker(source, cfg)
+    root = collect_motor(mk, 'y', AROUND_STOCK)
+    assert Dataset.open(root).manifest()['winner'] == STOCK_5160
+    told = analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE MOTOR=B APPLY=1')
+    assert told == ['Chopper: Motor B: tbl2_toff3_hstrt5_hend2 from run %s is set on stepper_y and '
+                    'stepper_y1 until Klipper restarts. These are the Klipper defaults. After you '
+                    'save them, CHOPPER_DEMO has nothing to play against the defaults. To save '
+                    'them: '
+                    'CHOPPER_ANALYZE DATASET=%s SAVE=1' % (root.rsplit('/', 1)[-1], root)]
+    for section in rail_sections('meijjaa', 'y'):
+        assert held(mk.front.chips[section], STOCK_5160) == STOCK_5160

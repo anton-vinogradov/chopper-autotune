@@ -96,10 +96,76 @@ def rail_registers(hw: Hardware) -> tmc.Chopper:
                             ', '.join('%s runs %s' % pair for pair in sets)))
     from .cli import command_line
     raise SystemExit('give every driver of motor %s the same registers, then retry: the config '
-                     'gives %s. The demo plays one set against the defaults. %s writes '
-                     'the same set into each driver. Nothing was moved'
+                     'Klipper loaded gives %s. The demo plays one set against the defaults. '
+                     'Copy the driver_* lines of one section into the others and restart Klipper. '
+                     'Or run %s: it writes the latest tuning result of motor %s into the section '
+                     'of each driver. Nothing was moved'
                      % (hw.motor, ', '.join('%s %s' % pair for pair in sets),
-                        command_line('save', motor=hw.motor)))
+                        command_line('save', motor=hw.motor), hw.motor))
+
+
+def on_defaults(hw: Hardware, default: tmc.Chopper) -> str:
+    """'the Klipper defaults tbl2_… to stepper_y and stepper_y1': what the config Klipper loaded
+    gives the drivers of a motor whose demo plays the same registers in both rounds."""
+    steppers = ' and '.join(drive.stepper for drive in hw.rail)
+    if default == hw.driver.default:
+        return 'the Klipper defaults %s to %s' % (default.label(), steppers)
+    return 'the DEFAULT= registers %s to %s' % (default.label(), steppers)
+
+
+def refuse_on_defaults(motors: 'list[tuple[Hardware, tmc.Chopper]]'):
+    """The refusal of a demo on a printer with a rail where the config gives each motor
+    (hw, the registers of its defaults round) those very registers, once its drivers are
+    known to run them (refuse_set_live): tune and save, or, where DEFAULT= is the saved set,
+    pass another."""
+    gives = ', and '.join(on_defaults(hw, default) for hw, default in motors)
+    # the action first: the display shows its first characters (failure_display)
+    if any(default != hw.driver.default for hw, default in motors):
+        raise SystemExit('pass another DEFAULT= or drop it, then retry: the config that Klipper '
+                         'loaded gives %s. Both rounds would play the same registers. Nothing was '
+                         'moved' % gives)
+    raise SystemExit('tune and save motor%s %s first: the config that Klipper loaded gives %s. '
+                     'Both rounds would play the same registers. If you edited printer.cfg after '
+                     'Klipper started, restart it (RESTART). Nothing was moved'
+                     % ('s' if len(motors) > 1 else '', ' and '.join(hw.motor for hw, _ in motors),
+                        gives))
+
+
+def refuse_set_live(kl: Klippy, hws: 'list[Hardware]'):
+    """Refuse a demo whose drivers run other registers than the config Klipper loaded gives
+    them, set live (CHOPPER_ANALYZE APPLY=1, SET_TMC_FIELD). The demo plays the config's
+    registers and puts them back at its end, which would undo the live ones. A driver Klipper
+    switched off with toff 0 gets the config's toff back when it goes on, so its toff is not
+    compared; klipper_tmc_autotune's motors are read live anyway."""
+    apart = {}
+    for hw in hws:
+        if hw.autotune is not None:
+            continue
+        for drive in hw.rail:
+            config = tmc.baseline_chopper(drive.baseline, default=drive.driver.default)
+            try:
+                lines = kl.gcode_output('DUMP_TMC STEPPER=%s REGISTER=CHOPCONF' % drive.stepper)
+            except KlippyError:
+                continue
+            live = {name: tmc.parse_dump_field(lines, 'CHOPCONF', name) for name in config.fields()}
+            if live['toff'] == 0:
+                live['toff'] = config.toff
+            if None in live.values() or live == config.fields():
+                continue
+            apart.setdefault((tmc.Chopper(**live).label(), config.label()),
+                             []).append(drive.stepper)
+    if not apart:
+        return
+    runs = '; '.join('%s %s %s, but the config that Klipper loaded gives %s %s'
+                     % (' and '.join(steppers), 'run' if len(steppers) > 1 else 'runs', live,
+                        'them' if len(steppers) > 1 else 'it', config)
+                     for (live, config), steppers in apart.items())
+    # the action first: the display shows its first characters (failure_display)
+    raise SystemExit('save or drop the registers set live, then retry: %s. The demo plays the '
+                     'registers of that config. At its end it puts them back, which would undo '
+                     'the ones set live. To keep them, repeat the CHOPPER_ANALYZE that set them, '
+                     'with SAVE=1 in place of APPLY=1. Or write them into printer.cfg and restart '
+                     'Klipper (RESTART). To drop them, restart Klipper. Nothing was moved' % runs)
 
 
 def showcase_together(kl, args) -> int:
@@ -113,6 +179,11 @@ def showcase_together(kl, args) -> int:
     default = {axis: before_registers(args, hw[axis].driver) for axis in MOTORS}
     # autotune's motor runs its own registers, not its config lines: judged once read live
     if all(hw[axis].autotune is None and tuned[axis] == default[axis] for axis in MOTORS):
+        if any(hw[axis].twins for axis in MOTORS):
+            if not args.dry_run:
+                refuse_if_printing(kl)
+                refuse_set_live(kl, [hw[axis] for axis in MOTORS])
+            refuse_on_defaults([(hw[axis], default[axis]) for axis in MOTORS])
         raise SystemExit('current registers equal the defaults on both motors — tune and save first')
 
     speed = {}
@@ -176,10 +247,20 @@ def _show_rails(kl, hw, args, speed, tuned, default) -> int:
                'the head')
     print('  head: F%.0f, M204 S%.0f%s' % (feed * 60, motion.asked, motion.per_axis_cut()))
     motion.conditions(feed, stroke)
+    for axis in MOTORS:
+        if hw[axis].autotune is None and tuned[axis] == default[axis]:
+            motor = hw[axis].motor
+            print('Motor %s plays the same registers in both rounds: the config that Klipper '
+                  'loaded gives %s. %s'
+                  % (motor, on_defaults(hw[axis], default[axis]),
+                     'Tune and save motor %s to hear it change too' % motor
+                     if default[axis] == hw[axis].driver.default else
+                     'Pass another DEFAULT= or drop it to hear motor %s change too' % motor))
     if args.dry_run:
         return 0
 
     refuse_if_printing(kl)
+    refuse_set_live(kl, [hw[axis] for axis in MOTORS])
     kl.subscribe_accel(board.accel_chip)
     # Screen asks Klipper first: a Stop there must not land between prepare and the way back
     screen = Screen(kl, board.display)
@@ -189,7 +270,8 @@ def _show_rails(kl, hw, args, speed, tuned, default) -> int:
                         lambda: _rail_sweep(board, motion, feed, accel, stroke, args))
     finally:
         motion.restore()
-    return _verdict(results, screen, tuned)
+    return _verdict(results, screen, tuned, [axis for axis in MOTORS
+                                             if tuned[axis] == default[axis]])
 
 
 def _play(kl, hw, args, tuned, default, screen, sweep) -> dict:
@@ -226,16 +308,21 @@ def _play(kl, hw, args, tuned, default, screen, sweep) -> dict:
     return results
 
 
-def _verdict(results, screen, tuned) -> int:
+def _verdict(results, screen, tuned, same: 'list[str]' = ()) -> int:
     """The show's end: how much less both motors vibrate on the tuned registers, on the
-    console, the display and the panel (write_state)."""
+    console, the display and the panel (write_state). same: the axes whose motor played one
+    set in both rounds; the panel shows no gain for it."""
     if not results['default'] or not results['tuned']:
         raise SystemExit('show failed to collect measurements')
     d, t = statistics.mean(results['default']), statistics.mean(results['tuned'])
-    print('\nboth motors together: %.2fx less vibration overall' % (d / t))
-    screen.final('Chopper: both motors %.1fx less vibration' % (d / t), '%.1fx less vib' % (d / t))
+    note = ''.join('; motor %s played the same registers in both rounds' % motor_label(axis)
+                   for axis in same)
+    print('\nboth motors together: %.2fx less vibration overall%s' % (d / t, note))
+    screen.final('Chopper: both motors %.1fx less vibration%s' % (d / t, note),
+                 '%.1fx less vib' % (d / t))
     for axis in MOTORS:
-        write_state(axis, tuned[axis], d / t)   # combined factor, shown per motor by the panel
+        # combined factor, shown per motor by the panel
+        write_state(axis, tuned[axis], None if axis in same else d / t)
     return 0
 
 
@@ -308,6 +395,11 @@ def demo(kl: Klippy, args) -> int:
     tuned = rail_registers(hw)
     default = before_registers(args, hw.driver)
     if hw.autotune is None and tuned == default:
+        if hw.twins:
+            if not args.dry_run:
+                refuse_if_printing(kl)
+                refuse_set_live(kl, [hw])
+            refuse_on_defaults([(hw, default)])
         raise SystemExit('current registers equal the defaults — nothing to demo '
                          '(tune and save the motor first)')
 
@@ -323,6 +415,9 @@ def demo(kl: Klippy, args) -> int:
                   % hw.motor)
             return 0
         else:
+            if hw.twins:                # the scan ends on the config's registers
+                refuse_if_printing(kl)
+                refuse_set_live(kl, [hw])
             print('No previous run to reuse a speed from; scanning for resonance first')
             from .find_speed import scan
             _, speed, _ = scan(kl, _scan_args(args))
@@ -350,6 +445,8 @@ def demo(kl: Klippy, args) -> int:
         return 0
 
     refuse_if_printing(kl)
+    if hw.twins:                        # one motor's demo stays main's (decision 19)
+        refuse_set_live(kl, [hw])
     kl.subscribe_accel(hw.accel_chip)
     root = default_dataset_root('%s_demo_%s' % (datetime.now().strftime('%Y%m%d_%H%M%S'), args.axis))
     ds = Dataset.create(root, {'version': __version__, 'created': now(), 'mode': 'demo',

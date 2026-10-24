@@ -1792,15 +1792,32 @@ def hear_and_save(settings: dict, ds: Dataset) -> 'list[str]':
     manifest = ds.manifest()
     if not ds.moves() or not worth_saving(settings, [manifest]):
         return []
-    return ['To hear the registers this run found, set them live: CHOPPER_ANALYZE APPLY=1',
+    from .cli import command_line
+    # without MOTOR= ANALYZE takes the newest run of any motor; one motor's hint stays
+    # main's (decision 19)
+    hear = command_line('analyze', axis=manifest['axis'], apply=True) \
+        if len(measured_steppers(manifest)) > 1 else 'CHOPPER_ANALYZE APPLY=1'
+    return ['To hear the registers this run found, set them live: ' + hear,
             'To save the registers this run found: ' + save_command([manifest])]
 
 
 def worth_saving(settings: dict, manifests: 'list[dict]') -> 'list[dict]':
     """The runs whose registers a save would write and the driver would keep: not the
-    motor's own registers kept, not on a motor klipper_tmc_autotune rewrites at start."""
+    motor's own registers kept, not on a motor klipper_tmc_autotune rewrites at start, not
+    a rail's winner the config already gives each of its drivers."""
     return [manifest for manifest in manifests
-            if not manifest.get('kept') and not autotune_manages(settings, manifest)]
+            if not manifest.get('kept') and not autotune_manages(settings, manifest)
+            and not configured_rail(settings, manifest)]
+
+
+def configured_rail(settings: dict, manifest: dict) -> bool:
+    """A rail run whose winner the config already gives every driver of the rail. One
+    motor's run keeps main's hints and save (decision 19)."""
+    from .analyze import configured
+    steppers = measured_steppers(manifest)
+    return len(steppers) > 1 and bool(manifest.get('winner')) and all(
+        configured(settings, manifest['driver'], stepper, manifest['winner'])
+        for stepper in steppers)
 
 
 def run_motors(manifests: 'list[dict]') -> str:

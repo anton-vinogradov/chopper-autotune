@@ -36,7 +36,32 @@ def dataset_dirs(bases=None) -> 'list[Path]':
                    for path in base.iterdir() if (path / 'manifest.json').is_file()), key=written)
 
 
-def latest_dataset(bases=None) -> str:
+def motor_runs(axis: str, runs: 'list[Path] | None' = None):
+    """The (path, manifest) of each tuning run of the motor on `axis` among runs (default:
+    all of them), newest first. A run stopped before its first measurement is skipped,
+    named in the log."""
+    from .collect import motor_label
+    for path in reversed(dataset_dirs() if runs is None else runs):
+        manifest = Dataset(path).manifest()
+        if manifest.get('axis') != axis or 'search' not in manifest:
+            continue
+        if not manifest.get('winner') and not Dataset(path).moves():
+            print('motor %s: skipping run %s: it has no measurements'
+                  % (motor_label(axis), path.name))
+            continue
+        yield path, manifest
+
+
+def latest_dataset(bases=None, axis: 'str | None' = None) -> str:
+    """The run ANALYZE takes without DATASET=: the newest one, or with MOTOR= the newest
+    run of that motor, as CHOPPER_SAVE takes it."""
+    if axis:
+        from .collect import motor_label
+        for path, _ in motor_runs(axis, dataset_dirs(bases)):
+            return str(path)
+        # the action first: the display shows its first characters (failure_display)
+        raise SystemExit('tune motor %s first: none of its tuning runs has measurements'
+                         % motor_label(axis))
     for path in reversed(dataset_dirs(bases)):
         # scans and demos are not tuning results: analyzing (worse, SAVE-ing) a
         # two-combo demo dataset as "the latest run" would persist nonsense
@@ -405,6 +430,37 @@ def run_apply(mk, driver_name: str, steppers: 'list[str]', chopper: tmc.Chopper)
                 pass
 
 
+def applied_line(settings: dict, manifest: dict, dataset: str, chopper: tmc.Chopper,
+                 args) -> str:
+    """The console line of APPLY on a rail: the registers, the run, the drivers; what
+    CHOPPER_DEMO makes of them, which plays the config's registers against the defaults;
+    how to keep them: this ANALYZE on this run with SAVE=1 for APPLY=1, its hearing and
+    trim choosing the same set."""
+    from .cli import command_line
+    from .collect import autotune_manages, driver_config, motor_label
+    steppers = measured_steppers(manifest)
+    line = ('Motor %s: %s from run %s is set on %s'
+            % (motor_label(manifest['axis']), chopper.label(), Path(dataset).name,
+               ' and '.join(steppers)))
+    # klipper_tmc_autotune writes its own registers at every start, whatever printer.cfg says
+    if manifest.get('autotune') or autotune_manages(settings, manifest):
+        return line + ' until Klipper restarts'
+    if all(configured(settings, manifest['driver'], stepper, chopper.fields())
+           for stepper in steppers):
+        return line + ('. These are the registers Klipper loaded from printer.cfg at its last '
+                       'start, so the run found nothing to change')
+    line += ' until Klipper restarts'
+    saved = [tmc.baseline_chopper(dict(own['baseline'], **chopper.fields()),
+                                  default=own['driver'].default) == own['driver'].default
+             for own in (driver_config(settings, stepper) for stepper in steppers)]
+    hear = ('These are the Klipper defaults. After you save them, CHOPPER_DEMO has nothing to '
+            'play against the defaults' if all(saved) else
+            'CHOPPER_DEMO plays the registers Klipper loaded from printer.cfg at its last start. '
+            'It plays these after you save them')
+    return '%s. %s. To save them: %s' % (line, hear, command_line(
+        'analyze', args, dataset_opt=dataset, axis=None, apply=False, save=True))
+
+
 def apply_rail(mk, settings: dict, steppers: 'list[str]', chopper: tmc.Chopper):
     """The set into every driver of a rail in one script, as a run writes a candidate: all
     of them switch at one print time. Klipper stops a script at its first line that fails,
@@ -582,14 +638,8 @@ def axis_choice(args, axis: str, settings: dict, since: float,
     from .collect import BACK_TO_BACK_ROUNDS, motor_label, tmc_sections
     from .tune import winner_of
     motor = 'motor ' + motor_label(axis)
-    for path in reversed(runs or dataset_dirs()):
-        manifest = Dataset(path).manifest()
-        if manifest.get('axis') != axis or 'search' not in manifest:
-            continue
+    for path, manifest in motor_runs(axis, runs):
         winner = manifest.get('winner')
-        if not winner and not Dataset(path).moves():
-            print('%s: skipping run %s: it has no measurements' % (motor, path.name))
-            continue
         if written(path) < since:
             return ('%s: not saving run %s: it is older than the last CHOPPER_RESTORE. Saving it '
                     'would undo that rollback. To save it anyway: CHOPPER_ANALYZE DATASET=%s SAVE=1'
@@ -615,6 +665,10 @@ def axis_choice(args, axis: str, settings: dict, since: float,
             manifest, combo = winner_of(str(path), args)
         except SystemExit as reason:
             return '%s: %s' % (motor, reason), None, True
+        if sections and all(configured(settings, driver_name, stepper, combo.fields())
+                            for stepper in steppers):
+            return ('%s: your registers %s stay in %s. Run %s ended on them, so there is nothing '
+                    'to write' % (motor, combo.label(), sections, path.name)), None, False
         return ('%s: %s %s%s from run %s' % (motor, 'would save' if args.dry_run else 'saving',
                                              combo.label(), ' into ' + sections if sections else '',
                                              path.name)), (manifest, combo), False
@@ -835,11 +889,23 @@ def run_status(args) -> int:
 
 
 def run_analyze(args) -> int:
-    dataset = args.dataset or latest_dataset()
+    axis = getattr(args, 'axis', None)
+    dataset = args.dataset or latest_dataset(axis=axis)
     ds = Dataset.open(dataset)
     manifest = ds.manifest()
+    if axis and manifest.get('axis') != axis:
+        from .collect import motor_label
+        # the action first: the display shows its first characters (failure_display)
+        raise SystemExit('drop DATASET= or MOTOR=: %s is a run of motor %s, not of motor %s'
+                         % (dataset, motor_label(manifest.get('axis') or '?'), motor_label(axis)))
     driver = tmc.DRIVERS[manifest['driver']]
     aggregates = aggregate(ds, args.recompute, args.trim)
+    if not aggregates and not args.dataset and not axis and len(measured_steppers(manifest)) > 1:
+        # the action first: the display shows its first characters (failure_display). One
+        # motor's refusal stays main's (decision 19)
+        raise SystemExit('add MOTOR=A or MOTOR=B: the newest run, %s, has no successful '
+                         'measurements. With MOTOR=, CHOPPER_ANALYZE takes the newest run of that '
+                         'motor that has them' % Path(dataset).name)
     if not aggregates:
         raise SystemExit('no successful measurements in %s' % dataset)
     hearing = tmc.Hearing.of(args, manifest)
@@ -902,9 +968,15 @@ def run_analyze(args) -> int:
         print('\nRecommended for printer.cfg:\n')
     print(rail_snippet(driver, steppers, best['chopper']))
     if args.apply and not args.save:
-        run_apply(Moonraker(args.url), driver.name, steppers, best['chopper'])
-        print('\nApplied via SET_TMC_FIELD (runtime only%s)'
-              % ('' if manifest.get('autotune') else ', use SAVE=1 to persist'))
+        mk = Moonraker(args.url)
+        run_apply(mk, driver.name, steppers, best['chopper'])
+        if len(steppers) > 1:
+            # APPLY runs detached: the console sees nothing else of it. One motor's APPLY
+            # stays main's (decision 19)
+            tell(mk, [applied_line(mk.settings(), manifest, dataset, best['chopper'], args)])
+        else:
+            print('\nApplied via SET_TMC_FIELD (runtime only%s)'
+                  % ('' if manifest.get('autotune') else ', use SAVE=1 to persist'))
     if args.save:
         run_save(Moonraker(args.url), [(manifest, best['chopper'])])
     return 0
