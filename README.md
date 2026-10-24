@@ -196,6 +196,8 @@ G28
 CHOPPER_TUNE SAVE=1     ; re-tune the chopper at the new current (its optimum depends on it)
 ```
 
+If your config has a `[stepper_x1]` or `[stepper_y1]` section (a second motor on an axis: AWD, dual Y), skip `CHOPPER_CURRENT` and the second tune. `CHOPPER_CURRENT` does not work on such an axis yet ([#129](https://github.com/anton-vinogradov/chopper-autotune/issues/129)).
+
 The first tune finds the resonance speed of each motor, runs the register descent at it, seeds the second motor with the first one's winner and persists the winners (with a backup). It also buys **torque margin** — which `CHOPPER_CURRENT` then converts into a lower, cooler `run_current` (measured skip threshold × safety margin). The final tune adapts the registers to the new current. Progress shows on the printer display; `CHOPPER_STATUS` prints it in the console. Just `CHOPPER_TUNE SAVE=1` alone is still a fine day one.
 
 ### From the touchscreen — KlipperScreen
@@ -210,6 +212,8 @@ If you run [KlipperScreen](https://github.com/KlipperScreen/KlipperScreen), `ins
 - **Results** — an on-demand summary of everything measured so far: default → tuned registers per motor (A/B/E) with the vibration drop, run currents with the measured skip thresholds behind them, the last belt-tension plucks, the achieved envelope ceilings (speed/acceleration; `350+` = held the whole tested range), and the resonance-map peaks/dips;
 - **Map** — the resonance map for motor A (~2 min): which speeds ring (VFAs) vs stay quiet;
 - **Stop** — abort a running job; the tool restores the registers, heaters and homing before it exits.
+
+A button marked ✗ does not work on this printer, and a tap on it says why. 3 Current gets ✗ on a printer that homes sensorless or has a second motor on X or Y. On such a printer, run Tune once.
 
 Every action confirms before it moves (or heats) the printer. While a job runs the panel shows live progress and finishes with a popup verdict; when idle it shows, per motor, the **default → tuned** registers and how much **less it vibrates** (measured by the last Show). The buttons drive the same `CHOPPER_*` macros, so anything you can do from the console you can do from the screen. (Every macro is on the panel now; the console keeps the parameterised forms.)
 

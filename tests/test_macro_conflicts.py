@@ -12,7 +12,12 @@ from types import SimpleNamespace
 
 import pytest
 
+import klipper_front
+from chopper_autotune import belts, current, demo, envelope, extruder, resonance_map, tune
+from chopper_autotune.cli import _gcode_args, boolean_flags, build_parser, dispatch
 from klipper_config import CFG, named, our_macros, read_like_klipper, run_selfcheck, selfcheck, settings_of
+from test_klipper_front import SOURCES, awd_cfg, require
+from test_rail import dual_y
 
 PANEL = os.path.join(os.path.dirname(CFG), 'klipperscreen', 'chopper.py')
 
@@ -102,12 +107,46 @@ def test_the_self_check_runs_at_every_start():
     assert '_CHOPPER_REPLACED NAMES=' in fileconfig.get(section, 'gcode')
 
 
-class Label:
-    def __init__(self):
-        self.text = None
+class Widget:
+    """A GTK widget the panel builds: its children, and what a tap on it calls."""
+
+    def __init__(self, *args, **kwargs):
+        self.children, self.tap = [], None
+
+    def add(self, child, *place):
+        self.children.append(child)
+
+    attach = pack_start = add
+
+    def get_children(self):
+        return self.children
+
+    def connect(self, signal, handler, *data):
+        if signal == 'clicked':
+            self.tap = lambda: handler(self, *data)
+
+    def __getattr__(self, name):
+        return lambda *args, **kwargs: None         # show, hide, set_policy and the like
+
+
+class Label(Widget):
+    def __init__(self, *args, **kwargs):
+        super().__init__()
+        self.text = self.markup = None
 
     def set_text(self, text):
         self.text = text
+
+    def set_markup(self, markup):
+        self.markup = markup
+
+
+class ScreenPanel:
+    """KlipperScreen's base of a panel: what ours takes from it."""
+
+    def __init__(self, screen, title):
+        self._screen, self._printer, self._gtk = screen, screen.printer, screen.gtk
+        self.content = Widget()
 
 
 @pytest.fixture
@@ -117,11 +156,14 @@ def panel_module(monkeypatch):
     gi.require_version = lambda *args: None
     repository = types.ModuleType('gi.repository')
     repository.GLib = SimpleNamespace(markup_escape_text=lambda text: text)
-    repository.Gtk = SimpleNamespace(Label=Label)
-    repository.Pango = SimpleNamespace()
+    repository.Gtk = SimpleNamespace(
+        Label=Label, Grid=Widget, Box=Widget, EventBox=Widget, ScrolledWindow=Widget,
+        Orientation=SimpleNamespace(VERTICAL=None), Align=SimpleNamespace(CENTER=None, START=None),
+        PolicyType=SimpleNamespace(NEVER=None, AUTOMATIC=None))
+    repository.Pango = SimpleNamespace(WrapMode=SimpleNamespace(WORD_CHAR=None))
     gi.repository = repository
     screen_panel = types.ModuleType('ks_includes.screen_panel')
-    screen_panel.ScreenPanel = object
+    screen_panel.ScreenPanel = ScreenPanel
     ks_includes = types.ModuleType('ks_includes')
     ks_includes.screen_panel = screen_panel
     for module in (gi, repository, ks_includes, screen_panel):
@@ -246,3 +288,139 @@ def test_the_results_name_each_axis_on_limited_cartesian(tmp_path, panel_module,
     panel.motors = []
     assert ('[printer] velocity ≤471 (X ≤400, Y ≤250) · accel ≤11100 (X ≤10000, Y ≤5000)'
             in panel.results_text())
+
+
+@pytest.fixture
+def built_panel(panel_module, tmp_path, monkeypatch):
+    """The panel KlipperScreen opens on a printer with this printer.cfg and our macros,
+    before anything is measured. Its `sent` keeps each script a tap sends, with the
+    question asked first."""
+    for name in ('STATE', 'BELTS_STATE', 'ENVELOPE_STATE', 'MAP_STATE', 'CURRENT_STATE'):
+        monkeypatch.setattr(panel_module, name, str(tmp_path / 'none.json'))
+
+    def button(icon, label, style):
+        widget, text = Widget(), Label()
+        text.set_text(label)
+        widget.add(text)
+        return widget
+
+    def build(cfg):
+        printer = tmp_path / 'printer.cfg'
+        printer.write_text(cfg)
+        fileconfig = read_like_klipper(str(printer), CFG)
+        config = {section: dict(fileconfig.items(section)) for section in fileconfig.sections()}
+        sent = []
+        screen = SimpleNamespace(
+            printer=SimpleNamespace(get_config_section=lambda section: config.get(section, False),
+                                    get_stat=lambda *args: None),
+            gtk=SimpleNamespace(Button=button),
+            _confirm_send_action=lambda widget, confirm, method, params:
+                sent.append((params['script'], confirm)))
+        panel = panel_module.Panel(screen, None)
+        panel.sent = sent
+        return panel
+    return build
+
+
+def buttons_of(panel):
+    """Each button of the panel by the text on it."""
+    return {button.children[0].text: button for button in panel.grid.children}
+
+
+ENDSTOP = ('%s needs a physical endstop — this machine homes sensorless (StallGuard), and the '
+           'skip referee cannot creep into a virtual switch. The plan here is shorter: tune once '
+           '(no current step to adapt to), then 5 Extruder.')
+RAIL = '%s does not work yet on an axis with two motors (chopper-autotune issue #129 on GitHub). '
+CURRENT_ON_A_RAIL = RAIL % '3 Current' + 'The plan here is shorter: tune once, then 5 Extruder.'
+MAP_ON_A_RAIL = RAIL % 'Map' + 'It maps motor A (stepper_x), and stepper_x1 here drives the same axis.'
+COMMANDS = {'2,4 Tune': 'CHOPPER_TUNE MOTOR=AB SAVE=1', '3 Current': 'CHOPPER_CURRENT SAVE=1',
+            'Envelope': 'CHOPPER_ENVELOPE', 'Map': 'CHOPPER_MAP'}
+
+
+@pytest.mark.parametrize('cfg, refused', [
+    (awd_cfg('voron-2209'), {'3 Current': CURRENT_ON_A_RAIL, 'Map': MAP_ON_A_RAIL}),
+    # Map runs motor A, alone on X
+    (dual_y('voron-2209'), {'3 Current': CURRENT_ON_A_RAIL}),
+    # homing sensorless as well: Current and Envelope have no endstop for their referee
+    (awd_cfg('meijjaa'), {'3 Current': ENDSTOP % '3 Current', 'Envelope': ENDSTOP % 'Envelope',
+                          'Map': MAP_ON_A_RAIL}),
+], ids=['awd', 'dual-y', 'awd-sensorless'])
+def test_a_two_motor_axis_marks_the_buttons_that_refuse_it_and_a_tap_says_why(built_panel, cfg,
+                                                                            refused):
+    panel = built_panel(cfg)
+    buttons = buttons_of(panel)
+    assert {text[:-len(' ✗')] for text in buttons if text.endswith(' ✗')} == set(refused)
+    for label, reason in refused.items():
+        buttons[label + ' ✗'].tap()
+        assert panel.status.markup == "<span size='large'>%s</span>" % reason
+    assert panel.sent == []
+    tapped = {'Envelope', 'Map'} - set(refused)
+    for label in tapped:
+        buttons[label].tap()
+    assert {script for script, confirm in panel.sent} == {COMMANDS[label] for label in tapped}
+
+
+@pytest.mark.parametrize('cfg', [awd_cfg('voron-2209'), dual_y('voron-2209'), awd_cfg('meijjaa')],
+                         ids=['awd', 'dual-y', 'awd-sensorless'])
+def test_a_tune_on_a_two_motor_axis_runs_once_then_goes_to_the_extruder(built_panel, cfg):
+    panel = built_panel(cfg)
+    buttons_of(panel)['2,4 Tune'].tap()
+    assert panel.sent == [(
+        'CHOPPER_TUNE MOTOR=AB SAVE=1',
+        "Step 2 — tune both gantry motors' choppers at their resonances (~20 minutes of movement), "
+        "SAVE the winners and restart Klipper. Run it once. Step 4 re-tunes for a new current from "
+        "3 Current, which does not work yet on an axis with two motors. Then continue with 5 "
+        "Extruder. Restore undoes.")]
+
+
+@pytest.mark.parametrize('printer, refused', [('voron-2209', set()), ('meijjaa', {'3 Current', 'Envelope'})])
+def test_one_motor_per_axis_gets_the_panel_it_had(built_panel, printer, refused):
+    panel = built_panel(awd_cfg(printer, twins=False))
+    buttons = buttons_of(panel)
+    assert {text[:-len(' ✗')] for text in buttons if text.endswith(' ✗')} == refused
+    for label in refused:
+        buttons[label + ' ✗'].tap()
+        assert panel.status.markup == "<span size='large'>%s</span>" % (ENDSTOP % label)
+    tapped = set(COMMANDS) - refused
+    for label in tapped:
+        buttons[label].tap()
+    sent = dict(panel.sent)
+    assert set(sent) == {COMMANDS[label] for label in tapped}
+    assert ('First pass: continue with 3 Current; after Current, come back here for the second '
+            'pass') in sent['CHOPPER_TUNE MOTOR=AB SAVE=1']
+
+
+def refuses_two_motors(source: str, cfg: str, command: str, monkeypatch) -> bool:
+    """Whether the tool behind this macro, dry-run on a printer built from `cfg`, refuses a
+    two-motor axis there."""
+    front = klipper_front.Front(source, cfg)
+    kl = front.connect()
+    for module in (belts, current, demo, envelope, extruder, resonance_map, tune):
+        for name, value in (('Klippy', lambda path: SimpleNamespace(connect=lambda: kl)),
+                            ('find_socket', lambda explicit=None: '<front>')):
+            if hasattr(module, name):
+                monkeypatch.setattr(module, name, value)
+    macro, *params = command.split()
+    parser = build_parser()
+    args = parser.parse_args(_gcode_args([macro[len('CHOPPER_'):].lower().replace('_', '-')]
+                                         + params + ['DRY_RUN=1'], boolean_flags(parser)))
+    try:
+        dispatch(args)
+    except SystemExit as refusal:
+        return 'not on two-motor axes yet (#129)' in str(refusal.code)
+    return False
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('cfg', [awd_cfg('voron-2209'), dual_y('voron-2209'),
+                                 awd_cfg('voron-2209', twins=False)], ids=['awd', 'dual-y', 'one-motor'])
+def test_a_button_is_marked_for_two_motors_exactly_where_its_tool_refuses_them(built_panel, source,
+                                                                             cfg, monkeypatch):
+    # the panel repeats the tools' rule, and a tool that learns a rail (#129) must lose its
+    # mark; these printers home on switches, so only that rule marks a button
+    require(source)
+    commands = built_panel(awd_cfg('voron-2209', twins=False)).commands
+    marked = {text[:-len(' ✗')] for text in buttons_of(built_panel(cfg)) if text.endswith(' ✗')}
+    assert marked == {label for label, command in commands.items()
+                      if label not in ('Restore', 'Stop')
+                      and refuses_two_motors(source, cfg, command, monkeypatch)}
