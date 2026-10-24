@@ -144,6 +144,22 @@ def test_save_runs_only_a_dry_run_in_the_foreground(tmp_path, args, detached):
     assert (called[0] != '--sync') is detached and called[called.index('save'):] == ['save'] + args
 
 
+LAUNCHERS = sorted(name for name in os.listdir(REPO) if name.endswith('.sh')
+                   and name not in ('run.sh', 'stop.sh', 'install.sh', 'uninstall.sh'))
+
+
+@pytest.mark.parametrize('script', LAUNCHERS)
+def test_a_launcher_hands_the_tool_the_macro_parameters_as_they_are(tmp_path, script):
+    # a detached run has no terminal and never asks to proceed: it needs no --yes. Only
+    # status, a plain analyze and a dry-run save run in the foreground: a run that moves
+    # the printer or restarts Klipper hangs there: RUN_SHELL_COMMAND holds Klipper's queue
+    command = script[:-len('.sh')].replace('_', '-')
+    called = launched(tmp_path, script, ['MOTOR=A', 'DRY_RUN=1'])
+    assert called[:called.index(command)] == (
+        ['--sync'] if script in ('status.sh', 'analyze.sh', 'save.sh') else [])
+    assert called[called.index(command):] == [command, 'MOTOR=A', 'DRY_RUN=1']
+
+
 @pytest.mark.parametrize('script, first, keys', [('analyze.sh', '--apply|', ('APPLY', 'SAVE')),
                                                  ('save.sh', '--dry-run|', ('DRY_RUN',))])
 def test_the_launchers_take_the_yes_values_the_cli_takes(script, first, keys):

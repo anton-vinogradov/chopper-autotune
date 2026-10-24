@@ -879,6 +879,17 @@ def refuse_if_printing(kl: Klippy):
         raise PrinterBusy('printer is busy printing — not moving anything')
 
 
+def confirmed(args) -> bool:
+    """'Proceed?' before a run moves the printer, asked only at a terminal: a macro's run
+    has no one to answer, its stdin is /dev/null (run.sh), where input() fails."""
+    if args.yes or not (sys.stdin and sys.stdin.isatty()):
+        return True
+    if input('Proceed? [y/N] ').strip().lower() in ('y', 'yes'):
+        return True
+    print('Aborted')
+    return False
+
+
 def run_restore(*steps):
     """Run every restore step even when one fails or a second SIGTERM lands mid-restore:
     registers, spreadCycle and homing must each get their chance. A Stop swallowed there
@@ -1697,8 +1708,7 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
     print('Registers the run tries: %s' % space.text())
     if args.dry_run:
         return 0, None
-    if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):
-        print('Aborted')
+    if not confirmed(args):
         return 1, None
 
     refuse_if_printing(kl)
@@ -1746,6 +1756,12 @@ def collect(kl: Klippy, args, popup: bool = True) -> 'tuple[int, str | None]':
                 or tmc.Space.recorded(ds.manifest()) != space:
             ds.update_manifest(winner=None, improvement=None, **hearing.manifest_fields(),
                                **space.manifest_fields())
+        # STATUS counts every move of the dataset against total_moves: beside this run's plan
+        # stay the old moves it does not reuse, the failed ones and those outside its ranges
+        stale = [r for r in ds.records() if r.get('kind') == 'move' and (
+            r.get('status') != 'ok' or space.outside(
+                tmc.Chopper(r['tbl'], r['toff'], r['hstrt'], r['hend'], r.get('tpfd'))))]
+        ds.update_manifest(total_moves=n_moves + len(stale))
     done = ds.done_ids()
     if done:
         print('Resuming %s: %d measurements already present' % (root, len(done)))

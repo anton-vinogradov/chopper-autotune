@@ -1,6 +1,7 @@
 """What a command tells the person to run next: one Klipper command, ready to paste into
 the console. A command run on its own names it in the log and the console; inside
 CHOPPER_TUNE only the tune's own one is said."""
+import re
 from dataclasses import replace
 from types import SimpleNamespace
 
@@ -472,3 +473,5 @@ def test_a_command_to_paste_is_the_run_it_names(argv):
     line = command_line(argv[0], args)
     assert line.split()[0] == 'CHOPPER_' + argv[0].upper()
     assert pasted(line) == args
+    # the parser takes MOTOR=x too: the line itself names motors, as the user knows them
+    assert all(re.fullmatch('MOTOR=[ABE]+', word) for word in line.split() if word.startswith('MOTOR='))

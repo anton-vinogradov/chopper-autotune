@@ -3,13 +3,14 @@ Winners on both at once vibrated least at the resonance yet were noisy at 5 and 
 so a register search leaves them out unless told otherwise. The ranges and the hysteresis
 cap bound everything a run tries and recommends: the start of the descent, your registers
 in the back-to-back rounds, the ranking of a resumed dataset."""
+import re
 from dataclasses import fields, replace
 
 import pytest
 
 from chopper_autotune import collect, tmc, tune
 from chopper_autotune import extruder as extruder_mod
-from chopper_autotune.analyze import run_analyze
+from chopper_autotune.analyze import run_analyze, run_compare
 from chopper_autotune.cli import _gcode_args, boolean_flags, build_parser
 from chopper_autotune.dataset import Dataset
 
@@ -360,8 +361,8 @@ def test_a_stopped_resume_under_other_ranges_forgets_the_old_winner_and_its_edge
         run_collect(stub_printer, '--dataset', root)
     manifest = Dataset.open(root).manifest()
     assert manifest['winner'] is None and manifest['max_hysteresis'] == 15
-    # without a winner CHOPPER_SAVE and CHOPPER_ANALYZE rank the dataset, edges of the old
-    # run included, inside the ranges of the new one
+    # without a winner CHOPPER_SAVE, CHOPPER_ANALYZE and compare rank the dataset, edges of
+    # the old run included, inside the ranges of the new one
     saved = tune.winner_of(root)[1]
     assert not on_edge(saved)
     capsys.readouterr()
@@ -370,6 +371,42 @@ def test_a_stopped_resume_under_other_ranges_forgets_the_old_winner_and_its_edge
     assert tmc.cfg_snippet(DRIVER, 'stepper_x', saved) in out
     assert ('measured combos are left out: they are outside the ranges of the last run on '
             'this dataset, TBL=1:3 TOFF=1:8 HSTRT=0:7 HEND=0:15 MAX_HYSTERESIS=15') in out
+    run_compare(build_parser().parse_args(['compare', root, root]))
+    winners = re.findall(r'winner (tbl\d+_toff\d+_hstrt\d+_hend\d+)', capsys.readouterr().out)
+    assert len(winners) == 2 and not any(on_edge(tmc.Chopper(*map(int, re.findall(r'\d+', w))))
+                                         for w in winners)
+
+
+@pytest.mark.parametrize('ranges', [
+    ('--tbl', '1:2', '--toff', '2:3', '--hstrt', '0:1', '--hend', '0:3'),     # as the stopped run
+    ('--tbl', '2', '--toff', '3', '--hstrt', '1', '--hend', '2:3'),
+])
+def test_a_resumed_run_ends_at_the_whole_of_its_progress(stub_printer, monkeypatch, tmp_path,
+                                                         ranges):
+    # STATUS reads progress as the moves of the dataset against total_moves. The stopped
+    # run leaves 5 failed moves, which a resume measures again, and 5 measured ones
+    root = str(tmp_path / 'resumed')
+    measure, measured = collect.run_measurement, []
+
+    def fail_five_then_stop(hw, ds, args, combo, speed, iteration, direction, *rest):
+        measured.append(combo)
+        if len(measured) > 10:
+            raise KeyboardInterrupt
+        if len(measured) > 5:
+            return measure(hw, ds, args, combo, speed, iteration, direction, *rest)
+        record = {'id': collect.measurement_id(combo, speed, iteration, direction),
+                  'kind': 'move', **combo.fields(), 'status': 'failed'}
+        ds.append(record)
+        return record
+    monkeypatch.setattr(collect, 'run_measurement', fail_five_then_stop)
+    with pytest.raises(KeyboardInterrupt):
+        run_collect(stub_printer, '--dataset', root, '--search', 'grid', '--validate', '0',
+                    '--tbl', '1:2', '--toff', '2:3', '--hstrt', '0:1', '--hend', '0:3')
+    monkeypatch.setattr(collect, 'run_measurement', measure)
+    manifest = run_collect(stub_printer, '--dataset', root, '--search', 'grid', '--validate', '0',
+                           *ranges)
+    moves = [r for r in Dataset.open(root).records() if r['kind'] == 'move']
+    assert manifest['total_moves'] == len(moves) > 10
 
 
 # 5. SPEED of TUNE and DEMO is one speed, and a tune of both motors takes none

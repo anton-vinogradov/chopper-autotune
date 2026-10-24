@@ -22,6 +22,9 @@ DRY_RUN_SPEED = 60
 def sub_args(args, argv: 'list[str]'):
     """Build sub-command args through the real parser, so defaults live in one place."""
     from .cli import build_parser
+    # a stage never asks to proceed, even at a terminal: TUNE and DEMO, which run the
+    # stages, ask nothing themselves
+    argv.append('--yes')
     if args.accel is not None:
         argv += ['--accel', str(args.accel)]
     for flag, enabled in (('--csv', args.csv), ('--no-raw', args.no_raw),
@@ -32,12 +35,12 @@ def sub_args(args, argv: 'list[str]'):
 
 
 def scan_args(args, axis: str):
-    return sub_args(args, ['find-speed', '--axis', axis, '--yes'])
+    return sub_args(args, ['find-speed', '--axis', axis])
 
 
 def collect_args(args, axis: str, speed: int, seed_from: 'str | None'):
     argv = ['collect', '--axis', axis, '--speed', str(speed), '--search', 'descent',
-            '--iterations', str(args.iterations), '--yes']
+            '--iterations', str(args.iterations)]
     for flag, value in (('--audible-khz', args.audible_khz), ('--audible-weight', args.audible_weight)):
         if value is not None:
             argv += [flag, repr(value)]

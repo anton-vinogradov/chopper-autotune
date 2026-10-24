@@ -17,7 +17,7 @@ import statistics
 
 from . import tmc
 from .collect import (Screen, autotune_advice, autotune_goal, autotune_stealth, autotune_tag,
-                      capture_stream, detect_hardware, live_chopper, live_stealth,
+                      capture_stream, confirmed, detect_hardware, live_chopper, live_stealth,
                       refuse_autotune_save, refuse_if_printing, refuse_nothing_to_try, run_restore,
                       unexpected_stealth, wake_stepper)
 from .dataset import load_json, save_json
@@ -251,8 +251,7 @@ def extruder_tune(kl: Klippy, args) -> int:
               'the hotend will HEAT to %.0fC (filament stays in)' % temp)
         if args.dry_run:
             return 0
-        if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):
-            print('Aborted')
+        if not confirmed(args):
             return 1
         refuse_if_printing(kl)
         return extruder_show(kl, args, driver, baseline_regs, stealth, temp)
@@ -272,8 +271,7 @@ def extruder_tune(kl: Klippy, args) -> int:
              '' if args.speed is None else ' (skipped, SPEED given)', budget, CRUISE_SEC + 0.6))
     if args.dry_run:
         return 0
-    if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):
-        print('Aborted')
+    if not confirmed(args):
         return 1
 
     refuse_if_printing(kl)

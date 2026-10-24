@@ -14,9 +14,9 @@ import os
 import re
 import sys
 
-from .collect import (Screen, ThermalGuard, autotune_goal, coupled_xy, detect_hardware, home_xy,
-                      motor_label, refuse_blind_z_hop, refuse_if_printing, refuse_multi_motor,
-                      rehome_unless_hot, run_restore)
+from .collect import (Screen, ThermalGuard, autotune_goal, confirmed, coupled_xy, detect_hardware,
+                      home_xy, motor_label, refuse_blind_z_hop, refuse_if_printing,
+                      refuse_multi_motor, rehome_unless_hot, run_restore)
 from .dataset import save_json
 from .klippy import Klippy, find_socket
 
@@ -379,8 +379,7 @@ def current_tune(kl: Klippy, args) -> int:
               % (motor_label(m), configured[m], accels[m], capped))
     if args.dry_run:
         return 0
-    if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):
-        print('Aborted')
+    if not confirmed(args):
         return 1
 
     refuse_if_printing(kl)

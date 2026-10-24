@@ -183,7 +183,7 @@ def command_line(command: str, args=None, **changes) -> str:
     params = []
     for action in subparsers.choices[command]._actions:
         value = values.get(action.dest, action.default)
-        # the launchers add --yes themselves
+        # a macro runs without a terminal and never asks to proceed
         if not action.option_strings or action.dest == 'yes' or value == action.default:
             continue
         if isinstance(value, bool):
@@ -225,7 +225,9 @@ def build_parser() -> argparse.ArgumentParser:
     u.add_argument('--tpfd', type=_tpfd, default=tmc.SEARCH_SPACE.tpfd,
                    help='TPFD range (TMC2240/5160 only), default %s' % tmc.SEARCH_SPACE.tpfd.text())
     add_hearing(u)
-    u.add_argument('--accel', type=float, default=None)
+    u.add_argument('--accel', type=float, default=None,
+                   help='acceleration of the speed scan and the register search, '
+                        'default printer max_accel / 10')
     u.add_argument('--no-raw', action='store_true')
     u.add_argument('--csv', action='store_true')
     u.add_argument('--socket', default=None)
@@ -263,7 +265,8 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument('--dry-run', action='store_true', help='print the plan and ETA, do not move anything')
     c.add_argument('-y', '--yes', action='store_true', help='skip the confirmation prompt')
 
-    f = sub.add_parser('find-speed', help='sweep speeds with current registers to locate resonance peaks')
+    f = sub.add_parser('find-speed', help='sweep speeds on Klipper\'s stock registers to find the '
+                                          'resonance speed to tune at')
     f.add_argument('--socket', default=None,
                    help='klippy unix socket path, default: auto-detect')
     f.add_argument('--csv', action='store_true',
@@ -319,8 +322,6 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument('--sweep', action='store_true',
                    help='the diagonal swept-sine response comparison instead of the pluck '
                         'test — a structural-change diagnostic, NOT a tension gauge')
-    b.add_argument('--pluck', action='store_true',
-                   help='the guided pluck tension test (the default; kept for compatibility)')
     b.add_argument('--span', type=float, default=None,
                    help='pluck: plucked span length in cm -> report absolute newtons')
     b.add_argument('--mu', type=float, default=7.7,
@@ -341,11 +342,13 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument('--report', action='store_true',
                    help='measured numbers (defaults vs tuned, Nx quieter) instead of the audible showcase')
     d.add_argument('--iterations', type=int, default=3, help='--report: repeats per config, default 3')
-    d.add_argument('--live', action='store_true', help=argparse.SUPPRESS)  # back-compat: showcase is the default
     d.add_argument('--rounds', type=int, default=3, help='showcase: alternations of defaults/tuned, default 3')
     d.add_argument('--repeats', type=int, default=4, help='showcase: moves per config per round, default 4')
-    d.add_argument('--measure-time', type=float, default=1.0)
-    d.add_argument('--accel', type=float, default=None)
+    d.add_argument('--measure-time', type=float, default=1.0,
+                   help='target cruise time per move in seconds, default 1.0; shrinks at high '
+                        'speeds to fit the axis. Used only with --motor a or b, or with --report')
+    d.add_argument('--accel', type=float, default=None,
+                   help='acceleration, default printer max_accel / 10')
     d.add_argument('--trim', type=float, default=None)
     d.add_argument('--socket', default=None)
     d.add_argument('--dry-run', action='store_true')
@@ -358,7 +361,6 @@ def build_parser() -> argparse.ArgumentParser:
     t.add_argument('dataset', nargs='?', default=None)
     t.add_argument('--dataset', dest='dataset_opt', default=None,
                    help='same as the positional argument, for DATASET= macro params')
-    t.add_argument('--total', type=int, default=None, help='planned moves, for ETA of pre-ranges datasets')
 
     m = sub.add_parser('compare', help='agreement between two datasets: winners, rank correlation, top overlap')
     m.add_argument('dataset_a')
@@ -377,7 +379,12 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument('--recompute', action='store_true', help='recompute metrics from raw csv')
     a.add_argument('--html', default=None, help='report path, default <dataset>/report.html')
     a.add_argument('--no-html', action='store_true')
-    a.add_argument('--apply', action='store_true', help='apply the best config via SET_TMC_FIELD')
+    a.add_argument('--apply', action='store_true',
+                   help='set the best config live via SET_TMC_FIELD, until Klipper restarts. '
+                        'On a motor without klipper_tmc_autotune, a later tune, collect, '
+                        'find-speed or demo run undoes it. Such a run ends by putting back the '
+                        'registers from the Klipper config. Demo on that motor also plays those '
+                        'registers, not the applied ones')
     a.add_argument('--save', action='store_true',
                    help='write the best config of this dataset only into the Klipper config and '
                         'restart Klipper. The save command writes the latest run of each motor')

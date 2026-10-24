@@ -21,9 +21,10 @@ from pathlib import Path
 
 from . import __version__
 from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen, ThermalGuard,
-                      default_dataset_root, detect_hardware, enter_spreadcycle, exit_spreadcycle,
-                      fit_row, make_parker, measure_baseline, now, park, refuse_blind_z_hop,
-                      refuse_if_printing, refuse_multi_motor, rehome_unless_hot, run_restore)
+                      confirmed, default_dataset_root, detect_hardware, enter_spreadcycle,
+                      exit_spreadcycle, fit_row, make_parker, measure_baseline, now, park,
+                      refuse_blind_z_hop, refuse_if_printing, refuse_multi_motor,
+                      rehome_unless_hot, run_restore)
 from .dataset import Dataset, save_json
 from .find_speed import (build_curve, build_speed_plan, find_peaks, find_valleys, planned_ids,
                          refuse_a_failed_scan, run_sweep, smooth, write_report)
@@ -102,8 +103,7 @@ def resonance_map(kl: Klippy, args) -> int:
           % (len(plan), plan[0][0], plan[-1][0], args.step, n_moves, args.source, eta // 60, eta % 60))
     if args.dry_run:
         return 0
-    if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):
-        print('Aborted')
+    if not confirmed(args):
         return 1
 
     refuse_if_printing(kl)
