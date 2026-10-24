@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import posixpath
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -66,20 +67,27 @@ class Moonraker:
         result = self._request('GET', '/server/files/list', {'root': 'config'})
         return [item['path'] for item in result if item['path'].endswith('.cfg')]
 
-    def download_config(self, name: str) -> str:
+    def download_config(self, name: str, missing_ok: bool = False) -> 'str | None':
+        """A file under the config root; with missing_ok, None when there is no such file."""
         req = urllib.request.Request('%s/server/files/config/%s' % (self.url, urllib.parse.quote(name)))
         try:
             with urllib.request.urlopen(req, timeout=self.timeout) as resp:
                 return resp.read().decode()
-        except (urllib.error.HTTPError, OSError) as e:
+        except OSError as e:
+            if missing_ok and isinstance(e, urllib.error.HTTPError) and e.code == 404:
+                return None
             raise MoonrakerError('cannot download %s: %s' % (name, e)) from e
 
     def upload_config(self, name: str, content: str):
+        # the folder goes in its own field: Moonraker creates a folder it names there, while
+        # a folder in the file name has to exist
+        folder, filename = posixpath.split(name)
         boundary = '----chopper-autotune-boundary'
-        body = ''.join([
-            '--%s\r\nContent-Disposition: form-data; name="root"\r\n\r\nconfig\r\n' % boundary,
+        fields = [('root', 'config')] + ([('path', folder)] if folder else [])
+        body = ''.join(['--%s\r\nContent-Disposition: form-data; name="%s"\r\n\r\n%s\r\n'
+                        % (boundary, field, value) for field, value in fields] + [
             '--%s\r\nContent-Disposition: form-data; name="file"; filename="%s"\r\n'
-            'Content-Type: text/plain\r\n\r\n%s\r\n' % (boundary, name, content),
+            'Content-Type: text/plain\r\n\r\n%s\r\n' % (boundary, filename, content),
             '--%s--\r\n' % boundary,
         ]).encode()
         req = urllib.request.Request(

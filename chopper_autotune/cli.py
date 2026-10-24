@@ -387,8 +387,10 @@ def build_parser() -> argparse.ArgumentParser:
                     help='write each driver\'s stock (Klipper default) chopper registers into every '
                          'tuned TMC section; run_current stays as saved')
     rs.add_argument('--backup', action='store_true',
-                    help='restore the *.chopper-backup.cfg snapshots taken before the last '
-                         'save (registers AND run currents)')
+                    help='undo the last save: the driver_* and run_current lines it wrote get '
+                         'back the values they had before it. The rest of the config stays. '
+                         'After a save by an older version of the tool, whole files go back. '
+                         'This also undoes what SAVE_CONFIG wrote after that save')
     rs.add_argument('--url', default='http://127.0.0.1:7125')
 
     cur = sub.add_parser('current', help='find the minimal safe run current per motor '

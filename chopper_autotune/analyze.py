@@ -4,6 +4,8 @@ Works offline on a collected dataset; the printer is only needed for --apply.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import re
 import statistics
@@ -219,29 +221,45 @@ def _section_span(lines: 'list[str]', section: str) -> 'tuple[int, int]':
     return start, end
 
 
-def updated_config(text: str, section: str, fields: dict) -> str:
-    """Rewrite the driver_* options of one config section, keeping everything else intact.
+def _option_re(options) -> 're.Pattern':
+    return re.compile(r'^\s*(%s)\s*[:=]' % '|'.join(map(re.escape, options)), re.IGNORECASE)
 
-    Existing active lines for the given fields are dropped (commented ones are left
-    as history), the new values are inserted right under the section header.
-    """
+
+def option_lines(text: str, section: str, options) -> 'dict[str, list[str]]':
+    """The active lines of each option in one config section, as written."""
     lines = text.splitlines(keepends=True)
     start, end = _section_span(lines, section)
-    drop = re.compile(r'^\s*driver_(%s)\s*[:=]' % '|'.join(fields), re.IGNORECASE)
-    body = [line for line in lines[start + 1:end] if not drop.match(line)]
-    inserted = ['driver_%s: %d\n' % (name.upper(), value) for name, value in fields.items()]
-    return ''.join(lines[:start + 1] + inserted + body + lines[end:])
+    return {option: [line if line.endswith('\n') else line + '\n'
+                     for line in lines[start + 1:end] if _option_re([option]).match(line)]
+            for option in options}
 
 
-def updated_scalars(text: str, section: str, entries: 'dict[str, str]') -> str:
-    """Rewrite plain options of one config section (e.g. run_current), same rules
-    as updated_config: active lines dropped, new values under the header."""
-    lines = text.splitlines(keepends=True)
-    start, end = _section_span(lines, section)
-    drop = re.compile(r'^\s*(%s)\s*[:=]' % '|'.join(map(re.escape, entries)), re.IGNORECASE)
-    body = [line for line in lines[start + 1:end] if not drop.match(line)]
-    inserted = ['%s: %s\n' % (name, value) for name, value in entries.items()]
-    return ''.join(lines[:start + 1] + inserted + body + lines[end:])
+def option_values(lines: 'list[str]') -> 'list[str]':
+    """What Klipper reads from option lines: each value without its comment."""
+    return [re.split(r'#|\s;', re.split(r'[:=]', line, maxsplit=1)[1])[0].strip() for line in lines]
+
+
+def replaced_options(text: str, section: str, lines: 'dict[str, list[str]]') -> str:
+    """Put the given lines in place of the options' active lines in one config section,
+    keeping everything else intact: commented lines are left as history, the given ones
+    go right under the section header."""
+    text_lines = text.splitlines(keepends=True)
+    start, end = _section_span(text_lines, section)
+    drop = _option_re(lines)
+    body = [line for line in text_lines[start + 1:end] if not drop.match(line)]
+    inserted = [line for option in lines.values() for line in option]
+    return ''.join(text_lines[:start + 1] + inserted + body + text_lines[end:])
+
+
+def register_options(fields: dict) -> 'dict[str, str]':
+    return {'driver_' + name.upper(): '%d' % value for name, value in fields.items()}
+
+
+def updated_options(text: str, section: str, entries: 'dict[str, str]') -> str:
+    """Rewrite options of one config section (driver_*, run_current): their active lines
+    are dropped, the new values go right under the header."""
+    return replaced_options(text, section, {name: ['%s: %s\n' % (name, value)]
+                                            for name, value in entries.items()})
 
 
 BACKUP_SUFFIX = '.chopper-backup.cfg'
@@ -272,37 +290,66 @@ def active_config_files(mk, root: str = 'printer.cfg') -> 'dict[str, str]':
     return active
 
 
-def _persist(mk, edits: 'list[tuple[str, object]]', what: str, lines: 'list[str]' = ()):
-    """Apply per-section edit functions to the live config through the Moonraker
-    files API: all edits in memory first, then every touched file is backed up,
-    then the edits are uploaded and Klipper restarted once. A failure mid-upload
-    can leave files from different items out of sync, but the originals are
-    already backed up by that point. lines: what the console gets once every edit
-    applies, before the first upload."""
+def live_config_files(mk) -> 'dict[str, str]':
+    """The config files Klipper loads, without the tool's copies a glob include may take."""
+    return {name: content for name, content in active_config_files(mk).items()
+            if not name.endswith(BACKUP_SUFFIX)}
+
+
+def section_file(files: 'dict[str, str]', section: str) -> 'str | None':
+    """The file that holds the section, None when none does."""
+    matches = [name for name in files
+               if re.search(r'^\[%s\]' % re.escape(section), files[name], re.MULTILINE)]
+    if len(matches) > 1:
+        raise SystemExit('section [%s] found in several files: %s' % (section, ', '.join(matches)))
+    return matches[0] if matches else None
+
+
+# the lines the last save wrote and the ones they replaced (restore_last_save). Through
+# Moonraker, as the copies, not into this host's RESULTS_HOME: `analyze --save` run on
+# another machine writes the printer's files, and the restore on the printer reads it
+LAST_SAVE = 'chopper-autotune/last-save.json'
+
+
+def copies_digest(mk) -> str:
+    """One digest of all the copies the saves left. A save of an older version rewrites a
+    copy and leaves the record alone: a record with another digest is not of the last save."""
+    digest = hashlib.sha256()
+    for name in sorted(name for name in mk.list_config_files() if name.endswith(BACKUP_SUFFIX)):
+        digest.update(('%s\0%s\0' % (name, mk.download_config(name))).encode())
+    return digest.hexdigest()
+
+
+def _persist(mk, writes: 'list[tuple[str, dict[str, str]]]', what: str, lines: 'list[str]' = ()):
+    """Write options (driver_*, run_current) into config sections through the Moonraker
+    files API: all edits in memory first, then every touched file is backed up and the
+    record of the save (LAST_SAVE) written, then the edits are uploaded and Klipper
+    restarted once. A failure mid-upload can leave files from different items out of
+    sync, but the originals and the record are already written by that point. lines:
+    what the console gets once every edit applies, before the first upload."""
     if mk.is_printing():
         raise SystemExit('printer is busy printing, not touching the config')
-    files = {name: content for name, content in active_config_files(mk).items()
-             if not name.endswith(BACKUP_SUFFIX)}
+    files = live_config_files(mk)
     if not files:
         raise SystemExit('could not read printer.cfg via Moonraker')
     originals = dict(files)
-    edited = []
-    for section, edit in edits:
-        matches = [name for name in files
-                   if re.search(r'^\[%s\]' % re.escape(section), files[name], re.MULTILINE)]
-        if not matches:
+    edited, record = [], {}
+    for section, options in writes:
+        name = section_file(files, section)
+        if name is None:
             raise SystemExit('section [%s] not found in any config file' % section)
-        if len(matches) > 1:
-            raise SystemExit('section [%s] found in several files: %s'
-                             % (section, ', '.join(matches)))
-        name = matches[0]
-        files[name] = edit(files[name], section)
+        before = option_lines(originals[name], section, options)
+        record.setdefault(section, {}).update(
+            {option: {'before': before[option], 'saved': value} for option, value in options.items()})
+        files[name] = updated_options(files[name], section, options)
         if name not in edited:
             edited.append(name)
 
     tell(mk, lines)
     for name in edited:
         mk.upload_config(name.rsplit('.', 1)[0] + BACKUP_SUFFIX, originals[name])
+    mk.upload_config(LAST_SAVE, json.dumps({'time': time.time(), 'copies': copies_digest(mk),
+                                            'sections': record}, indent=1))
     for name in edited:
         mk.upload_config(name, files[name])
     mk.gcode('RESTART')
@@ -398,23 +445,18 @@ def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]', extruder_state: 'dict 
                            extruder_state.get('autotune'))
         if why:
             raise SystemExit(why)
-    edits = [('tmc%s %s' % (manifest['driver'], manifest['stepper']),
-              lambda text, section, combo=combo: updated_config(text, section,
-                                                                combo.fields()))
-             for manifest, combo in items]
+    writes = [('tmc%s %s' % (manifest['driver'], manifest['stepper']),
+               register_options(combo.fields())) for manifest, combo in items]
     if extruder_state:
-        edits.append(('tmc%s extruder' % extruder_state['driver'],
-                      lambda text, section: updated_config(text, section,
-                                                           extruder_state['fields'])))
-    _persist(mk, edits, 'the new registers', lines)
+        writes.append(('tmc%s extruder' % extruder_state['driver'],
+                       register_options(extruder_state['fields'])))
+    _persist(mk, writes, 'the new registers', lines)
 
 
 def run_save_currents(mk, items: 'list[tuple[str, str, float]]', lines: 'list[str]' = ()):
     """Persist (driver, stepper, amps) run currents, one restart for the batch. lines:
     what the console gets before the write (see _persist)."""
-    _persist(mk, [('tmc%s %s' % (driver, stepper),
-                   lambda text, section, amps=amps: updated_scalars(text, section,
-                                                                    {'run_current': '%.2f' % amps}))
+    _persist(mk, [('tmc%s %s' % (driver, stepper), {'run_current': '%.2f' % amps})
                   for driver, stepper, amps in items], 'the new run currents', lines)
 
 
@@ -462,32 +504,102 @@ def last_restore() -> float:
     return load_json(RESULTS_HOME / RESTORED).get('time', 0.0)
 
 
+def rollback_text(name: str, section: str, back: 'dict[str, list[str]]') -> str:
+    """The lines a section gets back, as the console shows them: an option that had no
+    line before the save loses its line again and runs at Klipper's default."""
+    parts = [', '.join('%s: %s' % (option, value) for option, before in back.items()
+                       for value in option_values(before))]
+    stock = [option for option, before in back.items() if not before]
+    if stock:
+        parts.append("Klipper's default%s for %s" % ('s' if len(stock) > 1 else '', ', '.join(stock)))
+    return '%s [%s] gets back %s' % (name, section, ' and '.join(part for part in parts if part))
+
+
+def restore_last_save(mk, record: dict) -> int:
+    """BACKUP=1 by the record of the last save: the lines it wrote go back to what they
+    were before it, everything else stays. A line changed since the save goes back too,
+    and the console says so."""
+    files = live_config_files(mk)
+    when = datetime.fromtimestamp(record['time']).strftime('%Y-%m-%d %H:%M')
+    lines, edited, gone = [], [], []
+    for section, options in record['sections'].items():
+        name = section_file(files, section)
+        if name is None:
+            gone.append(section)
+            lines.append('[%s] is not in the config any more: nothing to put back there' % section)
+            continue
+        now = {option: option_values(found)
+               for option, found in option_lines(files[name], section, options).items()}
+        back = {option: entry['before'] for option, entry in options.items()
+                if now[option] != option_values(entry['before'])}
+        if not back:
+            continue
+        files[name] = replaced_options(files[name], section, back)
+        if name not in edited:
+            edited.append(name)
+        lines.append(rollback_text(name, section, back))
+        lines += ['[%s] %s changed after the save: the save wrote %s, the config has %s. The '
+                  'rollback still puts back %s'
+                  % (section, option, options[option]['saved'],
+                     ', '.join(now[option]) or 'no such line',
+                     ', '.join(option_values(back[option])) or "Klipper's default")
+                  for option in back if now[option] != [options[option]['saved']]]
+    if not edited:
+        # the first rollback of a save restarts the plan even when a hand already put its
+        # lines back; a repeated one keeps what was measured after the first
+        if last_restore() < record['time']:
+            _record_restore()
+        nothing = ('Nothing to put back from the last save, made %s. Klipper keeps running' if gone
+                   else 'Nothing to put back from the last save, made %s: the lines it wrote '
+                        'already have the values they had before it. Klipper keeps running')
+        tell(mk, lines + [nothing % when])
+        return 0
+    tell(mk, ['Rolling back the last save, made %s:' % when] + lines
+         + ['The rest of the config stays as it is, including what SAVE_CONFIG wrote. '
+            'Klipper restarts now'])
+    for name in edited:
+        mk.upload_config(name, files[name])
+    _record_restore()
+    mk.gcode('RESTART')
+    return 0
+
+
+def restore_whole_files(mk) -> int:
+    """BACKUP=1 without a record of the last save (a save of an older version keeps none):
+    the copies go back over their files whole."""
+    backups = [name for name in mk.list_config_files() if name.endswith(BACKUP_SUFFIX)]
+    if not backups:
+        raise SystemExit('no %s copies found: this tool has not saved anything yet, or someone '
+                         'deleted the copies' % BACKUP_SUFFIX)
+    originals = {name: name[:-len(BACKUP_SUFFIX)] + '.cfg' for name in backups}
+    tell(mk, ['The last save left no record of the lines it changed, so whole files go back: '
+              + ', '.join('%s from %s' % (original, name) for name, original in originals.items()),
+              'This also undoes anything written to these files after the tool copied them, such '
+              'as the input shaper, bed mesh and Z offset from SAVE_CONFIG. Klipper restarts now'])
+    for name, original in originals.items():
+        mk.upload_config(original, mk.download_config(name))
+    _record_restore()
+    mk.gcode('RESTART')
+    return 0
+
+
 def run_restore_config(args) -> int:
     """The panel's undo: DEFAULTS=1 writes the stock chopper registers into every
     tuned TMC section (run_current stays — it is a measured safety setting);
-    BACKUP=1 puts back the pre-save snapshots wholesale, currents included."""
+    BACKUP=1 puts back the lines the last save wrote, currents included."""
     mk = Moonraker(args.url)
     if args.defaults == args.backup:
-        raise SystemExit('pick one: DEFAULTS=1 (stock chopper registers) or '
-                         'BACKUP=1 (the pre-save %s snapshots)' % BACKUP_SUFFIX)
+        raise SystemExit('pick one: DEFAULTS=1 (stock chopper registers) or BACKUP=1 (the old '
+                         'values of the registers and currents that the last save changed)')
     if args.backup:
         if mk.is_printing():
             raise SystemExit('printer is busy printing, not touching the config')
-        backups = [name for name in mk.list_config_files() if name.endswith(BACKUP_SUFFIX)]
-        if not backups:
-            raise SystemExit('no %s snapshots found — this tool has not saved anything yet'
-                             % BACKUP_SUFFIX)
-        for name in backups:
-            original = name[:-len(BACKUP_SUFFIX)] + '.cfg'
-            mk.upload_config(original, mk.download_config(name))
-            print('restored %s from %s' % (original, name))
-        _record_restore()
-        mk.gcode('RESTART')
-        print('Klipper is restarting on the pre-save config (registers AND currents)')
-        return 0
+        record = json.loads(mk.download_config(LAST_SAVE, missing_ok=True) or 'null')
+        if record and record['copies'] == copies_digest(mk):
+            return restore_last_save(mk, record)
+        return restore_whole_files(mk)
 
-    files = {name: content for name, content in active_config_files(mk).items()
-             if not name.endswith(BACKUP_SUFFIX)}
+    files = live_config_files(mk)
     sections = tuned_tmc_sections(files)
     if not sections:
         raise SystemExit('no tuned TMC sections found — the config already runs stock registers')
@@ -496,8 +608,7 @@ def run_restore_config(args) -> int:
     defaults = {section: tmc.driver_default(section.split()[0]) for section in sections}
     print('Writing Klipper default registers into: %s (run_current untouched)'
           % ', '.join('%s (%s)' % (s, d.label()) for s, d in defaults.items()))
-    _persist(mk, [(section,
-                   lambda text, s, d=default: updated_config(text, s, d.fields()))
+    _persist(mk, [(section, register_options(default.fields()))
                   for section, default in defaults.items()], 'the Klipper default registers')
     _record_restore()
     return 0
