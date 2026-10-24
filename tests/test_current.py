@@ -1,6 +1,6 @@
 import pytest
 
-from chopper_autotune.analyze import updated_scalars
+from chopper_autotune.analyze import updated_options
 from chopper_autotune.current import (CREEP_START, Referee, bisect_threshold, referee_axis,
                                       stress_vector)
 
@@ -130,7 +130,7 @@ def test_referee_calibration_rejects_broken_endstop():
         Referee(kl, 'x', SETTINGS, park_other=130.0).calibrate()
 
 
-def test_updated_scalars_replaces_run_current():
+def test_updated_options_replaces_run_current():
     text = ('[tmc2209 stepper_x]\n'
             'uart_pin: PA1\n'
             'run_current: 1.8\n'
@@ -138,7 +138,7 @@ def test_updated_scalars_replaces_run_current():
             '\n'
             '[tmc2209 stepper_y]\n'
             'run_current: 1.8\n')
-    out = updated_scalars(text, 'tmc2209 stepper_x', {'run_current': '1.00'})
+    out = updated_options(text, 'tmc2209 stepper_x', {'run_current': '1.00'})
     assert 'run_current: 1.00' in out
     assert out.count('run_current: 1.8') == 1      # stepper_y untouched
     assert 'uart_pin: PA1' in out and 'interpolate: False' in out

@@ -282,7 +282,8 @@ def save_latest(monkeypatch, tmp_path, argv, extruder_state=None):
     if extruder_state:
         save_json(extruder.STATE, extruder_state)
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: SimpleNamespace(
-        settings=lambda: {}, accepted_commands=lambda: None, gcode=lambda script: None))
+        settings=lambda: {}, accepted_commands=lambda: None, gcode=lambda script: None,
+        list_config_files=lambda: []))
     saved = {}
     monkeypatch.setattr(analyze, 'run_save', lambda mk, items, extruder_state=None, lines=():
                         saved.update(items=items, extruder=extruder_state))
@@ -397,7 +398,8 @@ def test_the_extruder_tune_remembers_its_hearing_and_save_last_uses_it(monkeypat
     assert tmc.Hearing.of(recorded=extruder.load_winner_state()) == tmc.Hearing(31000)
     # SAVE_LAST hears as the tune did, at 31 kHz, not at the default 30
     monkeypatch.setattr('chopper_autotune.analyze.Moonraker', lambda url: SimpleNamespace(
-        settings=lambda: {}, accepted_commands=lambda: None, gcode=lambda script: None))
+        settings=lambda: {}, accepted_commands=lambda: None, gcode=lambda script: None,
+        list_config_files=lambda: []))
     monkeypatch.setattr('chopper_autotune.analyze._persist', lambda *args: pytest.fail('saved'))
     with pytest.raises(SystemExit, match=r'AUDIBLE_KHZ=31: .* runs below 31 kHz$'):
         extruder.extruder_tune(kl, build_parser().parse_args(['extruder', '--save-last',

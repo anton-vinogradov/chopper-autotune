@@ -346,14 +346,13 @@ def extruder_tune(kl: Klippy, args) -> int:
                      'E %s' % winner.compact())
 
         if args.save:
-            from .analyze import _persist, save_refusal, updated_config
+            from .analyze import _persist, register_options, save_refusal
             from .moonraker import Moonraker
             why = save_refusal(settings, driver_name, 'extruder', fields=winner.fields())
             if why:
                 raise SystemExit(why)
             _persist(Moonraker(args.url),
-                     [('tmc%s extruder' % driver_name,
-                       lambda text, section: updated_config(text, section, winner.fields()))],
+                     [('tmc%s extruder' % driver_name, register_options(winner.fields()))],
                      'the extruder registers')
         elif autotune_goal(settings, 'extruder') is not None:
             print(autotune_advice(settings, driver_name, 'extruder'))

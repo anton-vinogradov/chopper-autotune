@@ -944,7 +944,8 @@ def test_tune_save_writes_each_rails_winner_into_every_section_with_one_restart(
     mk = klipper_front.FrontMoonraker(source, awd_cfg(printer))
     resonance_at(monkeypatch)
     assert_clean(tune_through(mk, monkeypatch, ['--no-raw', '--save']))
-    assert mk.restarts == 1 and mk.uploads == ['printer.chopper-backup.cfg', 'printer.cfg']
+    assert mk.restarts == 1 and mk.uploads == ['chopper-autotune/backups/printer.cfg.bak',
+                                               'chopper-autotune/last-save.json', 'printer.cfg']
     winners = {}
     for root in (collect.RESULTS_HOME / 'datasets').iterdir():
         manifest = Dataset.open(root).manifest()
@@ -974,7 +975,8 @@ def test_chopper_save_writes_each_rail_whole_and_restore_puts_every_driver_back_
     monkeypatch.setattr(analyze, 'dataset_dirs', lambda: roots)
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
     assert analyze.run_save_latest(build_parser().parse_args(['save'])) == 0
-    assert mk.restarts == 1 and mk.uploads == ['printer.chopper-backup.cfg', 'printer.cfg']
+    assert mk.restarts == 1 and mk.uploads == ['chopper-autotune/backups/printer.cfg.bak',
+                                               'chopper-autotune/last-save.json', 'printer.cfg']
     for axis in 'xy':
         for section in rail_sections(printer, axis):
             assert held(mk.front.chips[section], GRID_WINNER) == GRID_WINNER

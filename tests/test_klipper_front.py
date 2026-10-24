@@ -586,7 +586,8 @@ def test_a_saved_winner_is_what_the_driver_holds_after_the_restart(source):
     stock = mk.front.chips['tmc2209 stepper_y'].chopper()
     winner = tmc.Chopper(1, 5, 4, 2)
     analyze.run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x'}, winner)])
-    assert mk.restarts == 1 and mk.uploads == ['printer.chopper-backup.cfg', 'printer.cfg']
+    assert mk.restarts == 1 and mk.uploads == ['chopper-autotune/backups/printer.cfg.bak',
+                                               'chopper-autotune/last-save.json', 'printer.cfg']
     chips = mk.front.chips
     assert {name: chips['tmc2209 stepper_x'].field(name) for name in winner.fields()} \
         == winner.fields()
