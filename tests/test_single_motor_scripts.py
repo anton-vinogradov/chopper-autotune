@@ -54,8 +54,7 @@ RUNS = {
     'demo-b': (demo.demo, ['demo', '--axis', 'y', '--speed', '40', '--report', '--iterations', '1']),
     'demo-live': (demo.demo, ['demo', '--axis', 'x', '--speed', '60', '--rounds', '1',
                               '--repeats', '1']),
-    'demo-ab': (demo.showcase_together, ['demo', '--speed', '60', '--rounds', '1',
-                                         '--repeats', '1']),
+    'demo-ab': (demo.showcase_together, ['demo', '--rounds', '1', '--repeats', '1']),
     'map': (resonance_map.resonance_map, ['map', '--axis', 'x', '--min-speed', '40', '--max-speed',
                                           '60', '--step', '10', '--yes', '--no-raw']),
     # both motors, B seeded by A's winner, each scan finding 60 mm/s (run); on one printer:
@@ -64,6 +63,8 @@ RUNS = {
 }
 PARK_INTERVAL = {'collect-rehome': 3}
 HOT_AFTER = {'collect-hot': 3}
+# the show of both motors takes no SPEED=: each motor plays at the speed of its last tune
+TUNED_AT = {'demo-ab': 60}
 PRINTERS = ('meijjaa', 'voron-2209', 'dual-y-voron-2209')
 # on the dual-Y Voron motor B is a rail, not a single motor, and the show of both runs it
 CASES = [(run, printer) for run in RUNS for printer in PRINTERS
@@ -114,6 +115,8 @@ def run(source: str, printer: str, case: str, tmp_path, monkeypatch, capsys) -> 
     monkeypatch.setattr(collect, 'PARK_INTERVAL_MOVES', PARK_INTERVAL.get(case, 400))
     if case in HOT_AFTER:
         warn_hot_after(front, HOT_AFTER[case])
+    if case in TUNED_AT:
+        monkeypatch.setattr(demo, 'known_speed', lambda axis: TUNED_AT[case])
     tool, argv = RUNS[case]
     capsys.readouterr()
     if tool is tune.run_tune:

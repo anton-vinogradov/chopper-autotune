@@ -218,10 +218,11 @@ def tune_at(axis: str, speed: int, args=None) -> str:
     return command_line('tune', args, axis=axis, speed=speed)
 
 
-def no_peak(motor: str, tune: str) -> str:
-    """The motor first: a 16-character LCD row shows 'FAIL A: no clear' (failure_display)."""
-    return '%s: no clear resonance peak. To tune motor %s at the speed it vibrates most: %s' % (
-        motor, motor, tune)
+def no_peak(motor: str, tune: str, first: str = '') -> str:
+    """The motor first: a 16-character LCD row shows 'FAIL A: no clear' (failure_display).
+    first: a sentence on what to do before the tune."""
+    return '%s: no clear resonance peak. %sTo tune motor %s at the speed it vibrates most: %s' % (
+        motor, first and first + ' ', motor, tune)
 
 
 def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None, int | None]':

@@ -287,6 +287,17 @@ class Space:
 SEARCH_SPACE = Space(Range(1, 3), Range(1, 8), Range(0, 7), Range(0, 15), TPFD_VALUES, 15)
 
 
+def default_edges(c: Chopper) -> 'list[str]':
+    """The edges of SEARCH_SPACE that c sits on, 'TBL 0' and 'effective hysteresis 16': a
+    run from before these defaults could record such a winner."""
+    edges = []
+    if c.tbl < SEARCH_SPACE.tbl.lo:
+        edges.append('TBL %d' % c.tbl)
+    if effective_hysteresis(c) > SEARCH_SPACE.max_hysteresis:
+        edges.append('effective hysteresis %d' % effective_hysteresis(c))
+    return edges
+
+
 def edge_penalty(c: Chopper, driver: Driver, hearing: Hearing) -> float:
     """A small preference — used as a tie-breaker in the score — for configs away from
     two edges: a chopper frequency comfortably above the audible band, and interior

@@ -740,6 +740,8 @@ def run_save_currents(mk, items: 'list[tuple[str, str, float]]', lines: 'list[st
 
 TUNED_FIELD_RE = re.compile(r'^\s*driver_(tbl|toff|hstrt|hend|tpfd)\s*[:=]',
                             re.IGNORECASE | re.MULTILINE)
+# the TMC sections of the tool's motors, X/Y twins included
+TMC_SECTION_RE = re.compile(r'^\[(tmc\w+ (?:stepper_[xy]\d*|extruder))\]', re.MULTILINE)
 
 
 def tuned_tmc_sections(files: 'dict[str, str]') -> 'list[str]':
@@ -750,8 +752,7 @@ def tuned_tmc_sections(files: 'dict[str, str]') -> 'list[str]':
     found = []
     for text in files.values():
         lines = text.splitlines(keepends=True)
-        for match in re.finditer(r'^\[(tmc\w+ (?:stepper_[xy]\d*|extruder))\]',
-                                 text, re.MULTILINE):
+        for match in TMC_SECTION_RE.finditer(text):
             section = match.group(1)
             start, end = _section_span(lines, section)
             if TUNED_FIELD_RE.search(''.join(lines[start + 1:end])):
@@ -759,27 +760,36 @@ def tuned_tmc_sections(files: 'dict[str, str]') -> 'list[str]':
     return found
 
 
-# a rollback restarts the plan: the panel's step marks and Results read these files,
-# and their numbers were measured against the registers being rolled away (the skip
-# threshold, the envelope ceilings and the map are chopper properties). The runs stay:
-# the datasets and the extruder winner (extruder.json); a save skips them by RESTORED.
+# a rollback of motor A or B restarts the plan: the panel's step marks and Results read
+# these files, and their numbers were measured on these motors against the registers being
+# rolled away (the skip threshold, the envelope ceilings and the map are chopper
+# properties). The runs stay: the datasets and the extruder winner (extruder.json); a save
+# skips them by RESTORED.
 STALE_ON_RESTORE = ('belts.json', 'current.json', 'envelope.json', 'map.json', 'state.json')
 RESTORED = 'restored.json'
 
 
-def _record_restore():
-    for name in STALE_ON_RESTORE:
-        try:
-            os.remove(RESULTS_HOME / name)
-        except OSError:
-            pass
-    save_json(RESULTS_HOME / RESTORED, {'time': time.time()})
+def _record_restore(sections: 'list[str]'):
+    """Note the rollback of the motors of these TMC sections (last_restore); one of motor A
+    or B restarts the plan."""
+    motors = {section_motor(section) for section in sections}
+    if motors & set('AB'):
+        for name in STALE_ON_RESTORE:
+            try:
+                os.remove(RESULTS_HOME / name)
+            except OSError:
+                pass
+    now = time.time()
+    save_json(RESULTS_HOME / RESTORED, {motor: now if motor in motors else last_restore(motor)
+                                        for motor in 'ABE'})
 
 
-def last_restore() -> float:
-    """When CHOPPER_RESTORE last rolled the config back, 0 if never. A run measured before
-    it is not saved: the next CHOPPER_SAVE would write the rolled-back registers again."""
-    return load_json(RESULTS_HOME / RESTORED).get('time', 0.0)
+def last_restore(motor: str) -> float:
+    """When CHOPPER_RESTORE last rolled back this motor (A, B or E), 0 if never; an older
+    version kept one time for all motors. A run of the motor measured before it is not
+    saved: the next CHOPPER_SAVE would write the rolled-back registers again."""
+    restored = load_json(RESULTS_HOME / RESTORED)
+    return restored.get(motor, restored.get('time', 0.0))
 
 
 def rollback_text(name: str, section: str, back: 'dict[str, list[str]]') -> str:
@@ -822,11 +832,14 @@ def restore_last_save(mk, record: dict) -> int:
                      ', '.join(now[option]) or 'no such line',
                      ', '.join(option_values(back[option])) or "Klipper's default")
                   for option in back if now[option] != [options[option]['saved']]]
+    # a section a hand already put back counts too: a run of its motor from before the
+    # rollback would write the save's registers again
+    rolled = [section for section in record['sections'] if section not in gone]
     if not edited:
         # the first rollback of a save restarts the plan even when a hand already put its
         # lines back; a repeated one keeps what was measured after the first
-        if last_restore() < record['time']:
-            _record_restore()
+        if any(last_restore(section_motor(section)) < record['time'] for section in rolled):
+            _record_restore(rolled)
         nothing = ('Nothing to put back from the last save, made %s. Klipper keeps running' if gone
                    else 'Nothing to put back from the last save, made %s: the lines it wrote '
                         'already have the values they had before it. Klipper keeps running')
@@ -837,7 +850,7 @@ def restore_last_save(mk, record: dict) -> int:
             'Klipper restarts now'])
     for name in edited:
         mk.upload_config(name, files[name])
-    _record_restore()
+    _record_restore(rolled)
     mk.gcode('RESTART')
     return 0
 
@@ -889,7 +902,8 @@ def restore_whole_files(mk) -> int:
          + rails_apart(mk, copies))
     for copy, text in copies.items():
         mk.upload_config(backed_up(copy), text)
-    _record_restore()
+    _record_restore([match.group(1) for text in copies.values()
+                     for match in TMC_SECTION_RE.finditer(text)])
     mk.gcode('RESTART')
     return 0
 
@@ -902,6 +916,10 @@ def run_restore_config(args) -> int:
     if args.defaults == args.backup:
         raise SystemExit('pick one: DEFAULTS=1 (stock chopper registers) or BACKUP=1 (the old '
                          'values of the registers and currents that the last save changed)')
+    if args.backup and args.motor:
+        raise SystemExit('leave MOTOR out: BACKUP=1 puts back the whole last save, every motor '
+                         'in it. To set only %s to Klipper\'s default registers: CHOPPER_RESTORE '
+                         'DEFAULTS=1 MOTOR=%s' % (motors_text(args.motor), args.motor))
     if mk.is_printing():
         raise SystemExit('printer is busy printing, not touching the config')
     move_old_copies(mk)
@@ -911,10 +929,13 @@ def run_restore_config(args) -> int:
             return restore_last_save(mk, record)
         return restore_whole_files(mk)
 
+    motors = args.motor or 'ABE'
     files = active_config_files(mk)
-    sections = tuned_tmc_sections(files)
+    sections = [section for section in tuned_tmc_sections(files) if section_motor(section) in motors]
     if not sections:
-        raise SystemExit('no tuned TMC sections found — the config already runs stock registers')
+        raise SystemExit('no tuned TMC sections found for %s: %s Klipper\'s default registers'
+                         % (motors_text(motors), 'it already runs' if len(motors) == 1
+                            else 'they already run'))
     # stock registers are a property of the driver: a 2240 restored to the 2209 values
     # would sit in a third state that is neither stock nor tuned
     defaults = {section: tmc.driver_default(section.split()[0]) for section in sections}
@@ -922,8 +943,23 @@ def run_restore_config(args) -> int:
           % ', '.join('%s (%s)' % (s, d.label()) for s, d in defaults.items()))
     _persist(mk, [(section, register_options(default.fields()))
                   for section, default in defaults.items()], 'the Klipper default registers')
-    _record_restore()
+    _record_restore(sections)
     return 0
+
+
+def section_motor(section: str) -> str:
+    """The motor of a section TMC_SECTION_RE finds: A for stepper_x and its twins on the
+    axis, B for stepper_y and its twins, E for the extruder."""
+    from .collect import motor_label
+    stepper = section.split()[1]
+    return 'E' if stepper == 'extruder' else motor_label(stepper[len('stepper_')])
+
+
+def motors_text(motors: str) -> str:
+    """'motor B', 'motors A and E', 'motors A, B and E'."""
+    if len(motors) == 1:
+        return 'motor ' + motors
+    return 'motors %s and %s' % (', '.join(motors[:-1]), motors[-1])
 
 
 MOTOR_AXES = {'A': 'x', 'B': 'y'}
@@ -955,15 +991,12 @@ def axis_choice(args, axis: str, settings: dict, since: float, runs: 'list[Path]
     its newest tuning dataset among runs (all of them when None); one stopped before its
     first measurement does not count. settings: the config as Klipper reads it once the
     old copies are gone; loaded: Klipper's settings, what it runs; mk: the files (stays)."""
+    from .cli import command_line
     from .collect import BACK_TO_BACK_ROUNDS, motor_label, tmc_sections
     from .tune import winner_of
     motor = 'motor ' + motor_label(axis)
     for path, manifest in motor_runs(axis, runs):
         winner = manifest.get('winner')
-        if written(path) < since:
-            return ('%s: not saving run %s: it is older than the last CHOPPER_RESTORE. Saving it '
-                    'would undo that rollback. To save it anyway: CHOPPER_ANALYZE DATASET=%s SAVE=1'
-                    % (motor, path.name, path)), None, False
         driver_name, steppers = manifest.get('driver', 'XXXX'), measured_steppers(manifest)
         why = save_refusal(settings, driver_name, *steppers, autotune=manifest.get('autotune'))
         if why:
@@ -989,34 +1022,63 @@ def axis_choice(args, axis: str, settings: dict, since: float, runs: 'list[Path]
             manifest, combo = winner_of(str(path), args)
         except SystemExit as reason:
             return '%s: %s' % (motor, reason), None, True
-        if sections and stay(combo.fields()):
-            return ('%s: your registers %s stay in %s. Run %s ended on them, so there is nothing '
-                    'to write' % (motor, combo.label(), sections, path.name)), None, False
-        return ('%s: %s %s%s from run %s' % (motor, 'would save' if args.dry_run else 'saving',
-                                             combo.label(), ' into ' + sections if sections else '',
-                                             path.name)), (manifest, combo), False
+        if stay(combo.fields()):
+            return ('%s: the config already has %s, the result of run %s%s, so there is nothing '
+                    'to write' % (motor, combo.label(), path.name,
+                                  ', in ' + sections if sections else '')), None, False
+        if written(path) < since:
+            return ('%s: not saving run %s: it is older than the last CHOPPER_RESTORE that rolled '
+                    'this motor back. Saving it would undo that rollback. To save it anyway: '
+                    'CHOPPER_ANALYZE DATASET=%s SAVE=1'
+                    % (motor, path.name, path)), None, False
+        return save_line(motor, combo, 'run ' + path.name, args.dry_run,
+                         command_line('tune', axis=axis), sections), (manifest, combo), False
     return '%s: no tuning run to save' % motor, None, False
 
 
 def extruder_choice(args, settings: dict, since: float) -> 'tuple[str, dict | None, bool]':
     """As axis_choice for the extruder, whose run is the winner CHOPPER_EXTRUDER stored."""
+    from .cli import command_line
     from .extruder import STATE, load_winner_state
     state = load_winner_state()
     if not state:
         return 'motor E: no CHOPPER_EXTRUDER run to save', None, False
     taken = os.path.getmtime(STATE)
-    if taken < since:
-        return ('motor E: not saving the last CHOPPER_EXTRUDER run: it is older than the last '
-                'CHOPPER_RESTORE. Saving it would undo that rollback', None, False)
     why = save_refusal(settings, state['driver'], 'extruder', fields=state['fields'],
                        autotune=state.get('autotune')) \
         or inaudible_refusal(state, tmc.Hearing.of(args, state))
     if why:
         return 'motor E: ' + why, None, True
-    return ('motor E: %s %s from the CHOPPER_EXTRUDER run of %s'
-            % ('would save' if args.dry_run else 'saving',
-               tmc.Chopper(**state['fields']).label(),
-               datetime.fromtimestamp(taken).strftime('%Y-%m-%d %H:%M')), state, False)
+    combo, run = tmc.Chopper(**state['fields']), datetime.fromtimestamp(taken).strftime('%Y-%m-%d %H:%M')
+    if configured(settings, state['driver'], 'extruder', state['fields']):
+        return ('motor E: the config already has %s, the result of the CHOPPER_EXTRUDER run of %s, '
+                'so there is nothing to write' % (combo.label(), run)), None, False
+    if taken < since:
+        return ('motor E: not saving the last CHOPPER_EXTRUDER run: it is older than the last '
+                'CHOPPER_RESTORE that rolled this motor back. Saving it would undo that rollback'), \
+            None, False
+    return save_line('motor E', combo, 'the CHOPPER_EXTRUDER run of ' + run, args.dry_run,
+                     command_line('extruder')), state, False
+
+
+def save_line(motor: str, combo: tmc.Chopper, run: str, dry_run: bool, search: str,
+              sections: str = '') -> str:
+    """The console line of a save that writes `combo`, the result of `run`, for `motor`
+    ('motor A'); sections: a rail's, each of which gets it. Registers on an edge the default
+    search leaves out (tmc.default_edges) get a warning with `search`, the command that
+    searches again without the edges."""
+    line = '%s: %s %s%s from %s' % (motor, 'would save' if dry_run else 'saving', combo.label(),
+                                    ' into ' + sections if sections else '', run)
+    edges = tmc.default_edges(combo)
+    if not edges:
+        return line
+    these = 'these edges' if len(edges) > 1 else 'this edge'
+    both = 'both edges' if len(edges) > 1 else 'both TBL 0 and effective hysteresis 16'
+    return line + ('. These registers have %s, %s the search leaves out by default. On two '
+                   'printers, registers with %s were noisy at 5 and 10 mm/s. We do not know which '
+                   'of the two makes the noise. To search without %s: %s'
+                   % (' and '.join(edges), 'edges' if len(edges) > 1 else 'an edge', both, these,
+                      search))
 
 
 def tell(mk, lines: 'list[str]'):
@@ -1047,9 +1109,9 @@ def run_save_latest(args, motors: 'str | None' = None, runs: 'list[Path] | None'
     # Klipper read the old copies at its last start: each motor is weighed against the
     # config as Klipper reads it once they are gone
     settings = settings_without(loaded, move_old_copies(mk, args.dry_run))
-    since = 0.0 if runs else last_restore()
     lines, refusals, items, extruder_state = [], [], [], None
     for motor in motors or args.motor:
+        since = 0.0 if runs else last_restore(motor)
         if motor == 'E':
             line, extruder_state, refused = extruder_choice(args, settings, since)
         else:
@@ -1305,5 +1367,11 @@ def run_analyze(args) -> int:
             print('\nApplied via SET_TMC_FIELD (runtime only%s)'
                   % ('' if manifest.get('autotune') else ', use SAVE=1 to persist'))
     if args.save:
-        run_save(Moonraker(args.url), [(manifest, best['chopper'])])
+        from .cli import command_line
+        from .collect import motor_label, tmc_sections
+        axis = manifest['stepper'].rsplit('_', 1)[-1]
+        run_save(Moonraker(args.url), [(manifest, best['chopper'])], lines=[save_line(
+            'motor ' + motor_label(axis), best['chopper'], 'run ' + Path(dataset).name, False,
+            command_line('tune', axis=axis),
+            tmc_sections(driver.name, *steppers) if len(steppers) > 1 else '')])
     return 0

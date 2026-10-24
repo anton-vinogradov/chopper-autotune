@@ -168,6 +168,17 @@ def rails_first(settings: dict, axes: 'list[str]', run: str) -> 'list[str]':
     return ordered
 
 
+def resync_first(settings: dict, axes: 'list[str]', axis: str) -> str:
+    """What a later run of the rail on `axis` needs first, after a run of `axes` (in
+    rails_first's order) went on from it to a motor alone: that one ran with every X/Y
+    motor off, and a [motors_sync] lost its sync; '' otherwise."""
+    alone = [later for later in axes[axes.index(axis) + 1:] if not rail_twins(settings, later)]
+    if not alone or not rail_twins(settings, axis) or 'motors_sync' not in settings:
+        return ''
+    return ('Motor %s then ran alone, with every X/Y motor off, so the motors of %s lost their '
+            'sync. Run G28 and SYNC_MOTORS first.' % (motor_label(alone[0]), motor_label(axis)))
+
+
 def motion_for(kl: Klippy, hw: Hardware, args):
     """How the run moves the motor: a rail when it has twins (rail_of), else FORCE_MOVE."""
     return RailMove(kl, hw, args) if hw.twins else ForceMove(kl, hw)

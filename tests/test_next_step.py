@@ -120,49 +120,82 @@ def test_the_tune_a_failed_scan_names_reaches_the_display_whole(argv, speed):
     assert shown[:collect.LCD_WIDTH] == 'FAIL A: no clear' and shown.endswith(': ' + tune_there)
 
 
-@pytest.mark.parametrize('argv, undone', [
-    # no peak on motor A: the run stops before motor B
-    (['tune'], 'The run did not reach motor B. To tune it: CHOPPER_TUNE MOTOR=B'),
-    (['tune', '--save', '--skip-audible'],
-     'The run did not reach motor B. To tune it: CHOPPER_TUNE MOTOR=B SAVE=1 SKIP_AUDIBLE=1'),
-])
-def test_a_tune_that_stops_before_motor_b_names_the_tune_of_motor_b(
-        stub_printer, monkeypatch, capsys, argv, undone):
+def peak_on(*motors: str):
+    """A scan that finds the resonance at 60 mm/s on `motors` and no clear peak on the rest."""
+    return lambda speed, motor: 2000.0 - 30 * abs(speed - 60) if motor in motors \
+        else without_peak(speed)
+
+
+@pytest.mark.parametrize('tuned, unpeaked', [('A', 'B'), ('B', 'A')])
+@pytest.mark.parametrize('argv, more', [(['tune'], ''), (['tune', '--skip-audible'], ' SKIP_AUDIBLE=1')])
+def test_a_tune_of_both_motors_tunes_the_one_with_a_peak(stub_printer, monkeypatch, capsys,
+                                                          tuned, unpeaked, argv, more):
+    scanned(monkeypatch, peak_on(tuned))
+    assert tune.run_tune(build_parser().parse_args(argv)) == 0
+    searched = [Dataset.open(root).manifest() for root in stub_printer.roots]
+    assert [manifest['axis'] for manifest in searched if 'search' in manifest] \
+        == [{'A': 'x', 'B': 'y'}[tuned]]
+    advice = ('%s: no clear resonance peak. To tune motor %s at the speed it vibrates most: '
+              'CHOPPER_TUNE MOTOR=%s SPEED=20%s' % (unpeaked, unpeaked, unpeaked, more))
+    # the verdict and the save name the tuned motor alone; the other's tune comes after
+    said = [line for line in console(stub_printer) if 'CHOPPER_' in line]
+    assert len(said) == 2 and said[1] == advice
+    assert said[0].startswith('Tune done: %s ' % tuned) and ' %s ' % unpeaked not in said[0]
+    assert said[0].endswith(' — to save: CHOPPER_SAVE MOTOR=%s' % tuned)
+    out = capsys.readouterr().out
+    assert advice in out.splitlines() and out.splitlines()[-1] == 'To save: CHOPPER_SAVE MOTOR=' + tuned
+    # pasted, it tunes the other motor as the run would have, at the speed it vibrates most
+    assert vars(pasted(advice)) == dict(vars(build_parser().parse_args(argv)),
+                                        axis={'A': 'x', 'B': 'y'}[unpeaked], speed=20)
+
+
+def test_a_tune_with_save_saves_only_the_motor_it_tuned(stub_printer, monkeypatch):
+    from chopper_autotune import analyze
+    scanned(monkeypatch, peak_on('B'))
+    saves = []
+    monkeypatch.setattr(analyze, 'run_save_latest',
+                        lambda args, motors=None, runs=None: saves.append((motors, runs)))
+    assert tune.run_tune(build_parser().parse_args(['tune', '--save'])) == 0
+    assert [(motors, [str(root) for root in runs]) for motors, runs in saves] \
+        == [('B', [str(stub_printer.roots[-1])])]
+    said = console(stub_printer)
+    verdict = next(index for index, line in enumerate(said) if line.startswith('Tune done: '))
+    assert said[verdict].startswith('Tune done: B ') and said[verdict].endswith(' — saving')
+    assert said[verdict + 1:] == ['A: no clear resonance peak. To tune motor A at the speed it '
+                                  'vibrates most: CHOPPER_TUNE MOTOR=A SPEED=20 SAVE=1']
+
+
+def test_a_tune_where_no_motor_has_a_peak_fails_naming_the_tune_of_each(stub_printer, monkeypatch,
+                                                                         capsys):
     falling(monkeypatch)
-    with pytest.raises(SystemExit, match='^A: no clear resonance peak'):
+    with pytest.raises(SystemExit) as failed:
+        tune.run_tune(build_parser().parse_args(['tune', '--save']))
+    advice = '%s: no clear resonance peak. To tune motor %s at the speed it vibrates most: ' \
+             'CHOPPER_TUNE MOTOR=%s SPEED=20 SAVE=1'
+    # the failure on the display, the other motor's tune in the console before it
+    assert failed.value.code == advice % ('B', 'B', 'B')
+    assert [line for line in console(stub_printer) if 'CHOPPER_' in line] == [advice % ('A', 'A', 'A')]
+    assert not [manifest for manifest in map(lambda root: Dataset.open(root).manifest(),
+                                              stub_printer.roots) if 'search' in manifest]
+    assert 'Tune done' not in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('argv, more', [(['tune'], ''), (['tune', '--save'], ' SAVE=1')])
+def test_a_tune_that_fails_on_motor_b_names_the_tune_of_motor_a_without_a_peak(
+        stub_printer, monkeypatch, capsys, argv, more):
+    # the failure of motor B tells nothing of motor A, and a new run would scan it again
+    scanned(monkeypatch, peak_on('B'))
+
+    def overheated(kl, args, popup=True):
+        raise SystemExit('motor B: driver over temperature, stopping')
+    monkeypatch.setattr(tune, 'collect', overheated)
+    with pytest.raises(SystemExit) as failed:
         tune.run_tune(build_parser().parse_args(argv))
-    assert capsys.readouterr().out.splitlines()[-1] == undone
-    assert [line for line in console(stub_printer) if 'CHOPPER_' in line] == [undone]
-    # pasted, it tunes motor B as the run would have
-    assert vars(pasted(undone)) == dict(vars(build_parser().parse_args(argv)), axis='y')
-
-
-@pytest.mark.parametrize('argv', [['tune'], ['tune', '--save']])
-def test_a_tune_that_stops_at_motor_b_names_the_save_of_motor_a(stub_printer, monkeypatch,
-                                                                  capsys, argv):
-    # motor A has its peak at 60 mm/s and is tuned; motor B has none
-    scanned(monkeypatch, lambda speed, motor: without_peak(speed) if motor == 'B'
-            else 2000.0 - 30 * abs(speed - 60))
-    with pytest.raises(SystemExit, match='^B: no clear resonance peak'):
-        tune.run_tune(build_parser().parse_args(argv))
-    undone = 'The run tuned motor A. To save it: CHOPPER_SAVE MOTOR=A'
-    assert capsys.readouterr().out.splitlines()[-1] == undone
-    assert [line for line in console(stub_printer) if 'CHOPPER_' in line] == [undone]
-    assert pasted(undone).motor == 'A'
-    assert Dataset.open(stub_printer.roots[1]).manifest()['winner']     # motor A's search
-
-
-def test_a_tune_that_stops_names_no_save_of_what_has_nothing_to_save():
-    args = build_parser().parse_args(['tune'])
-    tuned = [(search(axis='x', stepper='stepper_x'), None)]
-    assert tune.left_undone(args, {}, ['x', 'y'], 'y', tuned) == [
-        'The run tuned motor A. To save it: CHOPPER_SAVE MOTOR=A']
-    # the motor kept its own registers, or klipper_tmc_autotune writes its own at start
-    kept = [(dict(tuned[0][0], kept=True), None)]
-    assert tune.left_undone(args, {}, ['x', 'y'], 'y', kept) == []
-    assert tune.left_undone(args, {'autotune_tmc stepper_x': {}}, ['x', 'y'], 'y', tuned) == []
-    # one motor: nothing else to do
-    assert tune.left_undone(args, {}, ['y'], 'y', []) == []
+    advice = ('A: no clear resonance peak. To tune motor A at the speed it vibrates most: '
+              'CHOPPER_TUNE MOTOR=A SPEED=20' + more)
+    assert failed.value.code == 'motor B: driver over temperature, stopping'
+    assert [line for line in console(stub_printer) if 'CHOPPER_' in line] == [advice]
+    assert advice in capsys.readouterr().out.splitlines()
 
 
 def test_a_tune_names_one_next_step_its_own(stub_printer, capsys):
@@ -262,12 +295,26 @@ def test_a_register_search_names_no_next_step_where_there_is_nothing_to_hear_or_
         'CHOPPER_SAVE MOTOR=B')
     # the motor keeps its own registers: nothing new to hear or write
     assert collect.hear_and_save({}, searched(tmp_path / 'kept', winner=winner, kept=True), None) == []
+    # the run ended on the registers the config already gives the motor
+    holding = {'tmc2209 stepper_y': {'driver_' + field: value for field, value in winner.items()}}
+    assert collect.hear_and_save(holding, searched(tmp_path / 'configured', winner=winner),
+                                 None) == []
     # klipper_tmc_autotune writes its own chopper at every start
     assert collect.hear_and_save({'autotune_tmc stepper_y': {}},
                                    searched(tmp_path / 'autotune', winner=winner), None) == []
     empty = Dataset.create(tmp_path / 'empty', {'axis': 'y', 'stepper': 'stepper_y'})
     empty.append({'id': 'a', 'kind': 'move', 'status': 'failed'})
     assert collect.hear_and_save({}, empty, None) == []
+
+
+@pytest.mark.parametrize('field', ['tbl', 'toff', 'hstrt', 'hend', 'tpfd'])
+def test_a_register_search_names_the_save_of_a_winner_one_register_away_from_the_config(tmp_path,
+                                                                                       field):
+    winner = tmc.Chopper(1, 5, 0, 6, 8).fields()
+    config = {'driver_' + name: value + (name == field) for name, value in winner.items()}
+    ds = searched(tmp_path, driver='5160', winner=winner)
+    assert collect.hear_and_save({'tmc5160 stepper_y': config}, ds, None)[-1] \
+        == 'To save the registers this run found: CHOPPER_SAVE MOTOR=B'
 
 
 class Guard:

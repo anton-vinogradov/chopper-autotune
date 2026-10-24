@@ -633,7 +633,7 @@ def test_a_backup_keeps_what_save_config_wrote_after_the_save(source, tmp_path, 
     autosave.cmd_SAVE_CONFIG(types.SimpleNamespace(error=Exception))
     calibrated = path.read_text()
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
-    analyze.run_restore_config(types.SimpleNamespace(defaults=False, backup=True, url=''))
+    analyze.run_restore_config(types.SimpleNamespace(defaults=False, backup=True, motor=None, url=''))
     assert path.read_text() == calibrated.replace(
         'driver_TBL: 1\ndriver_TOFF: 8\ndriver_HSTRT: 2\ndriver_HEND: 5\n', 'driver_TOFF: 3\n')
     config, _ = config_autosave(source, str(path)).load_main_config()
@@ -688,7 +688,7 @@ def test_klipper_reads_the_saved_registers_whatever_folder_a_cfg_include_takes(s
     # and CHOPPER_RESTORE finds them: without a record, whole files go back from them
     (tmp_path / analyze.LAST_SAVE).unlink()
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
-    analyze.run_restore_config(types.SimpleNamespace(defaults=False, backup=True, url=''))
+    analyze.run_restore_config(types.SimpleNamespace(defaults=False, backup=True, motor=None, url=''))
     assert (tmp_path / 'config/steppers.cfg').read_text() == STEPPERS
 
 

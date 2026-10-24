@@ -1805,13 +1805,15 @@ def hear_and_save(settings: dict, ds: Dataset, mk) -> 'list[str]':
 
 def worth_saving(settings: dict, manifests: 'list[dict]', mk) -> 'list[dict]':
     """The runs whose registers a save would write and the driver would keep: not on a motor
-    klipper_tmc_autotune rewrites at start, not one motor's own registers kept, not a
-    rail's winner that stays on every driver of it (configured_rail). One motor keeps
-    main's hints and save (decision 19)."""
+    klipper_tmc_autotune rewrites at start, not one motor's own registers kept or a winner
+    the config already gives it, not a rail's winner that stays on every driver of it
+    (configured_rail). One motor keeps main's hints and save (decision 19)."""
+    from .analyze import configured
     return [manifest for manifest in manifests
             if not autotune_manages(settings, manifest)
             and not (configured_rail(settings, manifest, mk) if len(measured_steppers(manifest)) > 1
-                     else manifest.get('kept'))]
+                     else manifest.get('kept') or (manifest.get('winner') and configured(
+                         settings, manifest['driver'], manifest['stepper'], manifest['winner'])))]
 
 
 def configured_rail(settings: dict, manifest: dict, mk) -> bool:

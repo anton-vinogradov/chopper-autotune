@@ -60,6 +60,48 @@ def test_motor_alias_maps_to_axis():
     assert parser.parse_args(_gcode_args(['collect', 'AXIS=Y', 'SPEED=55'], FLAGS)).axis == 'y'
 
 
+ONE_MOTOR = ('collect', 'find-speed', 'map')
+BOTH_MOTORS = ('tune', 'demo', 'current', 'envelope')
+
+
+@pytest.mark.parametrize('command', ONE_MOTOR + BOTH_MOTORS)
+def test_motor_takes_a_and_b_and_ab_where_the_command_runs_both(command):
+    parser = build_parser()
+    for value, axis in (('A', 'x'), ('b', 'y'), ('x', 'x'), ('Y', 'y')) \
+            + ((('AB', 'xy'), ('xy', 'xy')) if command in BOTH_MOTORS else ()):
+        assert parser.parse_args(_gcode_args([command, 'MOTOR=' + value, 'SPEED=55'], FLAGS)
+                                 if command == 'collect' else [command, '--motor', value]).axis == axis
+    assert parser.parse_args([command] + (['--speed', '55'] if command == 'collect' else [])).axis \
+        == ('xy' if command in BOTH_MOTORS else 'x')
+
+
+@pytest.mark.parametrize('command, value', [(command, value) for command in ONE_MOTOR
+                                            for value in ('AB', 'ab', 'xy', 'BA', 'C')]
+                         + [(command, value) for command in BOTH_MOTORS for value in ('C', 'BA', 'ABE')])
+def test_a_wrong_motor_is_named_in_motors_with_the_right_form(command, value, capsys):
+    # 'invalid choice: 'xy' (choose from 'x', 'y')' names the stepper axes the person never typed
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(_gcode_args([command, 'MOTOR=' + value], FLAGS))
+    err = capsys.readouterr().err
+    if command in ONE_MOTOR:
+        assert "argument --motor/--axis: expected MOTOR=A or MOTOR=B, one motor per run; got %r\n" \
+            % value in err
+    else:
+        assert "argument --motor/--axis: expected MOTOR=A, MOTOR=B or MOTOR=AB for both; got %r\n" \
+            % value in err
+    assert '--motor MOTOR' in err and "'x'" not in err and '{x' not in err
+
+
+def test_analyze_takes_one_motor_or_none(capsys):
+    # without MOTOR, ANALYZE takes the newest run of any motor
+    parser = build_parser()
+    assert parser.parse_args(['analyze']).axis is None
+    assert parser.parse_args(_gcode_args(['analyze', 'MOTOR=B', 'APPLY=1'], FLAGS)).axis == 'y'
+    with pytest.raises(SystemExit):
+        parser.parse_args(_gcode_args(['analyze', 'MOTOR=AB'], FLAGS))
+    assert "expected MOTOR=A or MOTOR=B, one motor per run; got 'AB'\n" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize('value, motors', [('A', 'A'), ('ab', 'AB'), ('EA', 'AE'), ('bea', 'ABE')])
 def test_save_takes_motors_a_b_and_e_in_any_combination(value, motors):
     parser = build_parser()

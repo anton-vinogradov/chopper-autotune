@@ -51,11 +51,17 @@ def played_sets(driver: str) -> dict:
 
 
 def run_demo(front, monkeypatch, argv: 'list[str]', kl=None) -> int:
-    """CHOPPER_DEMO through its entry, on our client (`kl`) on the printer."""
+    """CHOPPER_DEMO through its entry, on our client (`kl`) on the printer. On both motors
+    the --speed of argv is the speed each motor's last tune recorded (known_speed):
+    CHOPPER_DEMO takes SPEED= only with MOTOR=A or MOTOR=B."""
     kl = kl or front.connect()
     monkeypatch.setattr(demo, 'Klippy', lambda path: types.SimpleNamespace(connect=lambda: kl))
     monkeypatch.setattr(demo, 'find_socket', lambda explicit=None: '<front>')
-    return demo.run_demo(build_parser().parse_args(['demo'] + argv))
+    args = build_parser().parse_args(['demo'] + argv)
+    if args.axis == 'xy' and args.speed is not None:
+        recorded, args.speed = args.speed, None
+        monkeypatch.setattr(demo, 'known_speed', lambda axis: recorded)
+    return demo.run_demo(args)
 
 
 def demo_root():
@@ -169,7 +175,7 @@ def test_a_demo_of_a_rail_plays_both_sets_on_every_driver_and_puts_the_printer_b
 @pytest.mark.parametrize('source', SOURCES)
 @pytest.mark.parametrize('printer', list(AWD) + ['dual-y-meijjaa'])
 @pytest.mark.parametrize('speeds', [{'x': 60, 'y': 60}, {'x': 60, 'y': 40}],
-                         ids=['SPEED=60', 'known'])
+                         ids=['one speed', 'own speeds'])
 def test_the_show_runs_each_rail_on_its_own_set_and_puts_the_printer_back(source, printer, speeds,
                                                                          monkeypatch):
     # one G1 of the head runs each belt at its speed; every round both rails play the same
@@ -181,12 +187,8 @@ def test_the_show_runs_each_rail_on_its_own_set_and_puts_the_printer_back(source
                                                   else awd_cfg(base), driver))
     front.run('SET_GCODE_OFFSET X=5 Y=-3')
     configured, limits = chips(front), limits_in_force(front)
-    argv = ['--rounds', '2', '--repeats', '1']
-    if speeds['y'] == speeds['x']:
-        argv += ['--speed', str(speeds['x'])]
-    else:
-        monkeypatch.setattr(demo, 'known_speed', lambda axis: speeds[axis])
-    assert run_demo(front, monkeypatch, argv) == 0
+    monkeypatch.setattr(demo, 'known_speed', lambda axis: speeds[axis])
+    assert run_demo(front, monkeypatch, ['--rounds', '2', '--repeats', '1']) == 0
     assert_clean(front)
     strokes = show_moves(front, speeds)
     assert len(strokes) == 8
@@ -362,7 +364,7 @@ def test_what_would_spoil_a_rail_demo_is_refused_before_any_gcode(source, case, 
                                 'restart Klipper. Or run CHOPPER_SAVE MOTOR=A: it writes the '
                                 'latest tuning result of motor A into the section of each '
                                 'driver. It does not save a result older than the last '
-                                'CHOPPER_RESTORE. Nothing was moved')
+                                'CHOPPER_RESTORE that rolled this motor back. Nothing was moved')
 
 
 @pytest.mark.parametrize('source', SOURCES)

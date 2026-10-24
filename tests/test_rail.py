@@ -333,6 +333,42 @@ def test_a_tune_of_both_motors_runs_the_pair_before_the_motor_alone(source, sync
 
 
 @pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('printer', ['dual Y', 'AWD'])
+@pytest.mark.parametrize('sync', [False, True])
+@pytest.mark.parametrize('unpeaked', ['y', 'x'], ids=['motor B', 'motor A'])
+def test_a_tune_of_both_motors_goes_on_past_the_one_without_a_peak(source, printer, sync,
+                                                                    unpeaked, monkeypatch, capsys):
+    # without a peak on one motor the other still gets its tune, and the console names the
+    # tune of the one without. On dual Y the pair runs first: motor A then runs alone with
+    # every X/Y motor off, so a [motors_sync] has to sync the pair before its tune
+    from chopper_autotune import tune
+    require(source)
+    config = dual_y('meijjaa') if printer == 'dual Y' else awd_cfg('meijjaa')
+    front = klipper_front.Front(source, config + '\n[motors_sync]\naxes: x,y\n' * sync)
+    kl = front.connect()
+    monkeypatch.setattr(tune, 'Klippy', lambda path: types.SimpleNamespace(connect=lambda: kl))
+    monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<front>')
+    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup=True: (
+        0, None if args.axis == unpeaked else 60, 30))
+    assert tune.run_tune(build_parser().parse_args(['tune', '--no-raw'])) == 0
+    assert_clean(front)
+    tuned, other = ('A', 'B') if unpeaked == 'y' else ('B', 'A')
+    assert [Dataset.open(root).manifest()['axis'] for root in
+            (collect.RESULTS_HOME / 'datasets').iterdir()] == ['x' if unpeaked == 'y' else 'y']
+    said = [line for line in front.console if 'CHOPPER_' in line]
+    assert said[0].startswith('echo: Tune done: %s ' % tuned)
+    assert said[0].endswith(' — to save: CHOPPER_SAVE MOTOR=%s' % tuned)
+    pair_off = any(re.search(r'STEPPER="stepper_y1?" ENABLE=0', script) for script in front.scripts)
+    assert pair_off == (printer == 'dual Y' and unpeaked == 'y')
+    first = ('Motor A then ran alone, with every X/Y motor off, so the motors of B lost their '
+             'sync. Run G28 and SYNC_MOTORS first. ' if pair_off and sync else '')
+    assert said[1:] == ['Chopper: %s: no clear resonance peak. %sTo tune motor %s at the speed it '
+                        'vibrates most: CHOPPER_TUNE MOTOR=%s SPEED=30 NO_RAW=1'
+                        % (other, first, other, other)]
+    assert capsys.readouterr().out.splitlines()[-1] == 'To save: CHOPPER_SAVE MOTOR=' + tuned
+
+
+@pytest.mark.parametrize('source', SOURCES)
 @pytest.mark.parametrize('printer', ['meijjaa', 'voron-2209'])
 def test_a_twin_without_its_own_enable_pin_keeps_each_candidate(source, printer, tmp_path):
     # enabling such a driver puts the config's toff back: the rail stays on the whole run
@@ -1014,10 +1050,15 @@ def test_analyze_applies_and_saves_a_rails_winner_to_each_of_its_drivers(source,
             assert mk.front.chips[section].chopper() == stock[section]
     assert mk.restarts == 0
     motor_a_on_the_winner()
+    front = mk.front                    # the save restarts Klipper: a new console
     assert analyze.run_analyze(build_parser().parse_args(['analyze', str(root), '--no-html',
                                                           '--save'])) == 0
     assert mk.restarts == 1
     motor_a_on_the_winner()
+    sections = ' and '.join('[%s]' % section for section in rail_sections(printer, 'x'))
+    assert [line for line in front.console if line.startswith('Chopper: motor A: ')] == [
+        'Chopper: motor A: saving %s into %s from run x' % (tmc.Chopper(**GRID_WINNER).label(),
+                                                            sections)]
 
 
 @pytest.mark.parametrize('source', SOURCES)
@@ -1398,11 +1439,12 @@ def test_a_rail_run_ending_on_the_registers_of_the_config_offers_nothing_to_hear
     assert mk.restarts == 0
     name = root.rsplit('/', 1)[-1]
     said = [line for line in mk.front.console if line.startswith('Chopper: motor B: ')]
-    assert said == ['Chopper: motor B: your registers tbl2_toff3_hstrt5_hend2 stay in '
-                    '[tmc5160 stepper_y] and [tmc5160 stepper_y1]' + (
-                        '. In run %s, neither the winner nor Klipper defaults was quieter than '
-                        'them in all 4 rounds' if kept else
-                        '. Run %s ended on them, so there is nothing to write') % name]
+    sections = '[tmc5160 stepper_y] and [tmc5160 stepper_y1]'
+    assert said == ['Chopper: motor B: your registers tbl2_toff3_hstrt5_hend2 stay in %s. In run '
+                    '%s, neither the winner nor Klipper defaults was quieter than them in all 4 '
+                    'rounds' % (sections, name) if kept else
+                    'Chopper: motor B: the config already has tbl2_toff3_hstrt5_hend2, the result '
+                    'of run %s, in %s, so there is nothing to write' % (name, sections)]
     told = analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE MOTOR=B APPLY=1')
     assert told == ['Chopper: Motor B: tbl2_toff3_hstrt5_hend2 from run %s is set on stepper_y and '
                     'stepper_y1. These are the registers Klipper loaded from its config at its '
@@ -1535,18 +1577,16 @@ def test_one_motor_ending_on_the_registers_of_the_config_keeps_the_hints_and_the
     assert Dataset.open(root).manifest()['winner'] == STOCK_5160
     before = len(mk.front.console)
     collect.what_next(mk.front.connect(), Dataset.open(root), mk)
-    assert mk.front.console[before:] == [
-        'Chopper: To hear the registers this run found, set them live: CHOPPER_ANALYZE APPLY=1',
-        'Chopper: To save the registers this run found: CHOPPER_SAVE MOTOR=B']
+    assert not [line for line in mk.front.console[before:] if 'CHOPPER_' in line]
     capsys.readouterr()
     assert analyze_through(mk, monkeypatch, 'CHOPPER_ANALYZE APPLY=1') == []
     assert 'Applied via SET_TMC_FIELD (runtime only, use SAVE=1 to persist)' in capsys.readouterr().out
-    front = mk.front                    # the save restarts Klipper: a new console
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
     assert analyze.run_save_latest(build_parser().parse_args(['save', '--motor', 'b'])) == 0
-    assert mk.restarts == 1
-    assert [line for line in front.console if line.startswith('Chopper: motor B: ')] == [
-        'Chopper: motor B: saving tbl2_toff3_hstrt5_hend2 from run %s' % root.rsplit('/', 1)[-1]]
+    assert mk.restarts == 0
+    assert [line for line in mk.front.console if line.startswith('Chopper: motor B: ')] == [
+        'Chopper: motor B: the config already has tbl2_toff3_hstrt5_hend2, the result of run %s, '
+        'so there is nothing to write' % root.rsplit('/', 1)[-1]]
 
 
 @pytest.mark.parametrize('source', SOURCES)

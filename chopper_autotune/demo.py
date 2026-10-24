@@ -34,9 +34,16 @@ def bar(value: float, scale: float) -> str:
 
 def run_demo(args) -> int:
     from argparse import Namespace
+
+    from .cli import command_line
     if getattr(args, 'live', False) and args.report:
         raise SystemExit('LIVE=1 and REPORT=1 contradict — REPORT measures the numbers, '
                          'LIVE plays the audible showcase (the default)')
+    if args.speed is not None and args.axis == 'xy':
+        raise SystemExit('add MOTOR=A or B, or leave SPEED out: each motor has its own resonance '
+                         'speed. Without SPEED, each motor plays at the speed of its last tune. '
+                         'To play motor A alone at this speed: %s'
+                         % command_line('demo', args, axis='x'))
     kl = Klippy(find_socket(args.socket)).connect()
     try:
         settings = kl.settings()
@@ -100,7 +107,7 @@ def rail_registers(hw: Hardware) -> tmc.Chopper:
                      'Copy the driver_* lines of one section into the others and restart Klipper. '
                      'Or run %s: it writes the latest tuning result of motor %s into the section '
                      'of each driver. It does not save a result older than the last '
-                     'CHOPPER_RESTORE. Nothing was moved'
+                     'CHOPPER_RESTORE that rolled this motor back. Nothing was moved'
                      % (hw.motor, ', '.join('%s %s' % pair for pair in sets),
                         command_line('save', motor=hw.motor), hw.motor))
 
@@ -175,6 +182,7 @@ def showcase_together(kl, args) -> int:
     diagonal on CoreXY, so the head moves in X and Y and the gantry moves too, like printing),
     so a listener hears the whole machine change, not one motor at a time. Reports the combined
     drop in vibration."""
+    from .cli import command_line
     hw = {axis: rail_of(detect_hardware(kl, axis)) for axis in MOTORS}
     tuned = {axis: rail_registers(hw[axis]) for axis in MOTORS}
     default = {axis: before_registers(args, hw[axis].driver) for axis in MOTORS}
@@ -189,11 +197,17 @@ def showcase_together(kl, args) -> int:
 
     speed = {}
     for axis in MOTORS:
-        speed[axis] = args.speed if args.speed is not None else known_speed(axis)
+        speed[axis] = known_speed(axis)
         if speed[axis] is None:
-            # a silent fallback speed would play the show off resonance and prove nothing
-            raise SystemExit('no tuned speed recorded for motor %s — run CHOPPER_TUNE '
-                             'or pass SPEED=' % motor_label(axis))
+            # a silent fallback speed would play the show off resonance and prove nothing.
+            # Alone, a motor whose registers equal the defaults has nothing to demo (demo)
+            if hw[axis].autotune is None and tuned[axis] == default[axis]:
+                raise SystemExit('no tuned speed recorded for motor %s. Its registers equal the '
+                                 'defaults, so it has nothing to show. To tune it: %s'
+                                 % (motor_label(axis), command_line('tune', axis=axis)))
+            raise SystemExit('no tuned speed recorded for motor %s. The command that plays it '
+                             'alone scans for its resonance speed first: %s'
+                             % (motor_label(axis), command_line('demo', args, axis=axis)))
     print('Show on both motors together — diagonal move running motor A at %d and motor B at %d '
           'mm/s at once (both at resonance; head moves in X and Y): defaults vs tuned %s / %s'
           % (speed['x'], speed['y'], tuned['x'].label(), tuned['y'].label()))
