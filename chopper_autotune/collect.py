@@ -1623,9 +1623,13 @@ def hear_and_save(settings: dict, ds: Dataset) -> 'list[str]':
 
 def worth_saving(settings: dict, manifests: 'list[dict]') -> 'list[dict]':
     """The runs whose registers a save would write and the driver would keep: not the
-    motor's own registers kept, not on a motor klipper_tmc_autotune rewrites at start."""
+    motor's own registers kept, not a winner the config already gives the motor, not on a
+    motor klipper_tmc_autotune rewrites at start."""
+    from .analyze import configured
     return [manifest for manifest in manifests
-            if not manifest.get('kept') and autotune_goal(settings, manifest['stepper']) is None]
+            if not manifest.get('kept') and autotune_goal(settings, manifest['stepper']) is None
+            and not (manifest.get('winner') and configured(settings, manifest['driver'],
+                                                           manifest['stepper'], manifest['winner']))]
 
 
 def run_motors(manifests: 'list[dict]') -> str:

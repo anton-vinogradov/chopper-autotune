@@ -398,7 +398,7 @@ def test_a_stop_mid_rung_puts_the_exact_current_back(source):
 
 
 @pytest.mark.parametrize('source', SOURCES)
-def test_the_show_on_both_motors_puts_back_the_printer_it_found(source):
+def test_the_show_on_both_motors_puts_back_the_printer_it_found(source, monkeypatch):
     from chopper_autotune import demo
     require(source)
     front = klipper_front.Front(source, printer_cfg().replace(*TUNED).replace(
@@ -406,8 +406,9 @@ def test_the_show_on_both_motors_puts_back_the_printer_it_found(source):
     front.run(AT_RUNTIME)
     chips = {section: chip.chopper() for section, chip in front.chips.items()}
     limits = limits_in_force(front)
-    assert run_tool(front, demo.showcase_together, ['demo', '--speed', '60', '--rounds', '1',
-                                                    '--repeats', '1']) == 0
+    # each motor at the speed of its last tune: SPEED= plays one motor
+    monkeypatch.setattr(demo, 'known_speed', lambda axis: 60)
+    assert run_tool(front, demo.showcase_together, ['demo', '--rounds', '1', '--repeats', '1']) == 0
     assert_clean(front)
     assert {section: chip.chopper() for section, chip in front.chips.items()} == chips
     assert limits_in_force(front) == limits

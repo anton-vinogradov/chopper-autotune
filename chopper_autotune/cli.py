@@ -26,10 +26,22 @@ def _chopper(text: str) -> tmc.Chopper:
     return chopper
 
 
-def _motor(text: str) -> str:
-    """A/B name the motors we tune; map them to the underlying stepper axes (a=stepper_x,
-    b=stepper_y). x/y are accepted too so old scripts keep working."""
-    return {'a': 'x', 'b': 'y', 'ab': 'xy'}.get(text.lower(), text.lower())
+def add_motor(parser: argparse.ArgumentParser, both: bool, help_text: str):
+    """MOTOR of a command that runs motor A or B, or, with `both`, both of them by default.
+    The command gets the stepper axis (a=stepper_x, b=stepper_y), an error names the motors.
+    x/y/xy are accepted too, so old scripts keep working."""
+    axes = {'a': 'x', 'b': 'y', 'x': 'x', 'y': 'y'}
+    if both:
+        axes.update(ab='xy', xy='xy')
+    expected = ('expected MOTOR=A, MOTOR=B or MOTOR=AB for both; got %r' if both
+                else 'expected MOTOR=A or MOTOR=B, one motor per run; got %r')
+
+    def motor(value: str) -> str:
+        if value.lower() not in axes:
+            raise argparse.ArgumentTypeError(expected % value)
+        return axes[value.lower()]
+    parser.add_argument('--motor', '--axis', dest='axis', metavar='MOTOR', type=motor,
+                        default='xy' if both else 'x', help=help_text)
 
 
 def _save_motors(text: str) -> str:
@@ -178,6 +190,8 @@ def command_line(command: str, args=None, **changes) -> str:
             value = int(value)
         elif isinstance(value, Range):
             value = value.text()
+        elif isinstance(value, tmc.Chopper):
+            value = ','.join(str(field) for field in (value.tbl, value.toff, value.hstrt, value.hend))
         elif action.dest == 'axis':
             value = ''.join(motor_label(axis) for axis in value)
         params.append('%s=%s' % (action.option_strings[0][2:].replace('-', '_').upper(),
@@ -200,9 +214,8 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest='command', required=True)
 
     u = sub.add_parser('tune', help='the whole pipeline in one command: resonance speed + descent per motor')
-    u.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y', 'xy'), default='xy',
-                   help='motor a/b/ab (a=stepper_x, b=stepper_y); default ab: both motors, '
-                        'the second seeded with the first winner (x/y/xy also accepted)')
+    add_motor(u, True, 'motor a/b/ab (a=stepper_x, b=stepper_y); default ab: both motors, '
+                       'the second seeded with the first winner (x/y/xy also accepted)')
     u.add_argument('--speed', type=_speed, default=None,
                    help='skip the resonance scan and tune at this speed (mm/s); needs --motor a or b')
     u.add_argument('--save', action='store_true',
@@ -224,8 +237,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help='klippy unix socket path, default: auto-detect (printer_data/comms, /tmp/klippy_uds)')
     c.add_argument('--csv', action='store_true',
                    help='fallback capture via ACCELEROMETER_MEASURE and its CSV instead of streaming')
-    c.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y'), default='x',
-                   help='motor a or b (a=stepper_x, b=stepper_y); x/y also accepted')
+    add_motor(c, False, 'motor a or b, one per run (a=stepper_x, b=stepper_y); x/y also accepted')
     c.add_argument('--speed', type=Range.parse, required=True,
                    help='speed or range in mm/s, e.g. 55 or 40:70 (resonance speed of the axis)')
     add_ranges(c)
@@ -256,8 +268,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help='klippy unix socket path, default: auto-detect')
     f.add_argument('--csv', action='store_true',
                    help='fallback capture via ACCELEROMETER_MEASURE and its CSV instead of streaming')
-    f.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y'), default='x',
-                   help='motor a or b (a=stepper_x, b=stepper_y); x/y also accepted')
+    add_motor(f, False, 'motor a or b, one per run (a=stepper_x, b=stepper_y); x/y also accepted')
     f.add_argument('--min-speed', type=int, default=20)
     f.add_argument('--max-speed', type=int, default=120)
     f.add_argument('--step', type=int, default=2, help='speed increment in mm/s, default 2')
@@ -276,8 +287,7 @@ def build_parser() -> argparse.ArgumentParser:
     mp.add_argument('--socket', default=None, help='klippy unix socket path, default: auto-detect')
     mp.add_argument('--csv', action='store_true',
                     help='fallback capture via ACCELEROMETER_MEASURE and its CSV instead of streaming')
-    mp.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y'), default='x',
-                    help='motor a or b (a=stepper_x, b=stepper_y); x/y also accepted')
+    add_motor(mp, False, 'motor a or b, one per run (a=stepper_x, b=stepper_y); x/y also accepted')
     mp.add_argument('--min-speed', type=int, default=20)
     mp.add_argument('--max-speed', type=int, default=250)
     mp.add_argument('--step', type=int, default=10, help='speed increment in mm/s, default 10')
@@ -322,10 +332,10 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument('-y', '--yes', action='store_true')
 
     d = sub.add_parser('demo', help='play the driver defaults against the tuned registers so you can hear the gain')
-    d.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y', 'xy'), default='xy',
-                   help='motor a/b/ab (a=stepper_x, b=stepper_y); default ab = both; x/y/xy also accepted')
+    add_motor(d, True, 'motor a/b/ab (a=stepper_x, b=stepper_y); default ab = both; x/y/xy also accepted')
     d.add_argument('--speed', type=_speed, default=None,
-                   help='resonance speed (mm/s); auto-detected if omitted')
+                   help='play at this speed (mm/s); needs --motor a or b, since each motor has its '
+                        'own resonance speed; default: each motor at the speed of its last tune')
     d.add_argument('--default', type=_chopper, default=None,
                    help='the "before" config as tbl,toff,hstrt,hend (default: the driver\'s Klipper stock registers)')
     d.add_argument('--report', action='store_true',
@@ -386,6 +396,10 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument('--defaults', action='store_true',
                     help='write each driver\'s stock (Klipper default) chopper registers into every '
                          'tuned TMC section; run_current stays as saved')
+    rs.add_argument('--motor', type=_save_motors, default=None,
+                    help='with --defaults: the motors to reset, a, b, e (the extruder) or several, '
+                         'e.g. ab; on an axis with two motors, a or b resets both drivers of the axis; '
+                         'default all three')
     rs.add_argument('--backup', action='store_true',
                     help='undo the last save: the driver_* and run_current lines it wrote get '
                          'back the values they had before it. The rest of the config stays. '
@@ -397,8 +411,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     cur = sub.add_parser('current', help='find the minimal safe run current per motor '
                                          '(worst-case stress, endstop referee)')
-    cur.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y', 'xy'),
-                     default='xy', help='motor a/b/ab (a=stepper_x, b=stepper_y); default ab')
+    add_motor(cur, True, 'motor a/b/ab (a=stepper_x, b=stepper_y); default ab')
     cur.add_argument('--margin', type=float, default=2.0,
                      help='recommended current = skip threshold x this margin, default 2.0')
     cur.add_argument('--per-motor', action='store_true',
@@ -443,8 +456,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     env = sub.add_parser('envelope', help='motor torque ceiling: top speed and acceleration '
                                           'before skipped steps, at the configured run current')
-    env.add_argument('--motor', '--axis', dest='axis', type=_motor, choices=('x', 'y', 'xy'),
-                     default='xy', help='motor a/b/ab (a=stepper_x, b=stepper_y); default ab')
+    add_motor(env, True, 'motor a/b/ab (a=stepper_x, b=stepper_y); default ab')
     env.add_argument('--min-speed', type=int, default=150, help='speed ladder start in mm/s, default 150')
     env.add_argument('--max-speed', type=int, default=350, help='speed ladder end in mm/s, default 350')
     env.add_argument('--step', type=int, default=50, help='speed ladder increment in mm/s, default 50')

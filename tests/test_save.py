@@ -198,7 +198,7 @@ def test_restore_defaults_rewrites_tuned_sections_only(monkeypatch):
     import chopper_autotune.analyze as analyze
     mk = FakeMoonraker({'printer.cfg': CONFIG_WITH_TUNING})
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
-    analyze.run_restore_config(SimpleNamespace(defaults=True, backup=False, url=''))
+    analyze.run_restore_config(SimpleNamespace(defaults=True, backup=False, motor=None, url=''))
     text = mk.files['printer.cfg']
     x = text[text.index('[tmc2209 stepper_x]'):text.index('[tmc2209 stepper_y]')]
     assert 'driver_TBL: 2' in x and 'driver_HEND: 0' in x    # stock registers written
@@ -215,7 +215,7 @@ def test_restore_needs_exactly_one_mode(monkeypatch):
     import chopper_autotune.analyze as analyze
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: FakeMoonraker({}))
     with pytest.raises(SystemExit, match='pick one'):
-        analyze.run_restore_config(SimpleNamespace(defaults=False, backup=False, url=''))
+        analyze.run_restore_config(SimpleNamespace(defaults=False, backup=False, motor=None, url=''))
 
 
 def test_restore_resets_the_plan_marks(tmp_path, monkeypatch):
@@ -228,7 +228,7 @@ def test_restore_resets_the_plan_marks(tmp_path, monkeypatch):
         (tmp_path / name).write_text('{}')
     mk = FakeMoonraker({'printer.cfg': CONFIG_WITH_TUNING})
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
-    analyze.run_restore_config(SimpleNamespace(defaults=True, backup=False, url=''))
+    analyze.run_restore_config(SimpleNamespace(defaults=True, backup=False, motor=None, url=''))
     # thresholds/ceilings/map were measured against the rolled-away registers
     for name in ('belts.json', 'current.json', 'envelope.json', 'map.json', 'state.json'):
         assert not (tmp_path / name).exists(), name
@@ -258,7 +258,7 @@ def test_restore_defaults_writes_the_drivers_own_stock_registers(monkeypatch):
     import chopper_autotune.analyze as analyze
     mk = FakeMoonraker({'printer.cfg': CONFIG_2240_TUNED})
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
-    analyze.run_restore_config(SimpleNamespace(defaults=True, backup=False, url=''))
+    analyze.run_restore_config(SimpleNamespace(defaults=True, backup=False, motor=None, url=''))
     text = mk.files['printer.cfg']
     x = text[text.index('[tmc2240 stepper_x]'):text.index('[tmc2240 stepper_y]')]
     # the 2240 stock is hend 2 / tpfd 4, not the 2209's hend 0 — and the tuned TPFD
@@ -432,6 +432,10 @@ driver_TOFF: 3
 """
 
 A, B, E = tmc.Chopper(0, 8, 7, 5), tmc.Chopper(1, 6, 4, 2), tmc.Chopper(3, 7, 6, 0)
+# what the line of a save of motor A adds for TBL 0, an edge the default search leaves out
+TBL0_A = ('. These registers have TBL 0, an edge the search leaves out by default. On two printers, '
+          'registers with both TBL 0 and effective hysteresis 16 were noisy at 5 and 10 mm/s. We do '
+          'not know which of the two makes the noise. To search without this edge: CHOPPER_TUNE MOTOR=A')
 X, Y = {'driver': '2209', 'stepper': 'stepper_x'}, {'driver': '2209', 'stepper': 'stepper_y'}
 
 
@@ -527,7 +531,7 @@ def test_the_console_names_the_registers_and_the_run_of_each_motor_before_the_re
     extruder_run(E, age=30)
     mk = save()
     when = datetime.fromtimestamp(os.path.getmtime(extruder.STATE)).strftime('%Y-%m-%d %H:%M')
-    assert console(mk) == ['motor A: saving %s from run 02_x' % A.label(),
+    assert console(mk) == ['motor A: saving %s from run 02_x%s' % (A.label(), TBL0_A),
                            'motor B: saving %s from run 01_y' % B.label(),
                            'motor E: saving %s from the CHOPPER_EXTRUDER run of %s' % (E.label(), when)]
     assert mk.scripts[-1] == 'RESTART' and 'RESPOND' in mk.scripts[0]
@@ -578,7 +582,7 @@ def test_registers_a_run_kept_are_saved_once_the_config_holds_others(runs, save)
     mk = save('MOTOR=A', mk=FakeMoonraker({'printer.cfg': CFG_ABE},
                                           settings={'tmc2209 stepper_x': {'driver_toff': 3}}))
     assert 'driver_TOFF: 2' in mk.files['printer.cfg'].split('[tmc2209 stepper_y]')[0]
-    assert console(mk) == ['motor A: saving %s from run 01_x' % own.label()]
+    assert console(mk) == ['motor A: saving %s from run 01_x%s' % (own.label(), TBL0_A)]
 
 
 @pytest.mark.parametrize('manifest', [{}, {'search': 'grid', 'validate': 0}])
@@ -622,7 +626,7 @@ def test_only_a_tuning_run_is_the_run_of_a_motor(runs, save):
         ds.append({'id': B.label(), 'kind': 'move', 'status': 'ok', **B.fields(),
                    'score': {'median_magnitude': 500.0}})
     mk = save('MOTOR=A')
-    assert console(mk) == ['motor A: saving %s from run 01_x' % A.label()]
+    assert console(mk) == ['motor A: saving %s from run 01_x%s' % (A.label(), TBL0_A)]
 
 
 @pytest.mark.parametrize('backup, record', [(False, False), (True, False), (True, True)])
@@ -635,16 +639,17 @@ def test_runs_from_before_the_last_restore_are_not_saved(runs, save, monkeypatch
     extruder_run(E, age=60)
     mk = FakeMoonraker({'printer.cfg': CFG_ABE, 'printer.chopper-backup.cfg': CFG_ABE})
     if record:
-        run_save(mk, [(X, A)])
+        run_save(mk, [(X, A)], {'driver': '2209', 'fields': E.fields()})
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
-    analyze.run_restore_config(SimpleNamespace(defaults=not backup, backup=backup, url=''))
+    analyze.run_restore_config(SimpleNamespace(defaults=not backup, backup=backup, motor=None, url=''))
     mk = save()
-    assert console(mk) == ['motor A: not saving run 01_x: it is older than the last CHOPPER_RESTORE. '
-                           'Saving it would undo that rollback. To save it anyway: '
-                           'CHOPPER_ANALYZE DATASET=%s SAVE=1' % old,
+    assert console(mk) == ['motor A: not saving run 01_x: it is older than the last CHOPPER_RESTORE '
+                           'that rolled this motor back. Saving it would undo that rollback. To save '
+                           'it anyway: CHOPPER_ANALYZE DATASET=%s SAVE=1' % old,
                            'motor B: no tuning run to save',
                            'motor E: not saving the last CHOPPER_EXTRUDER run: it is older than the '
-                           'last CHOPPER_RESTORE. Saving it would undo that rollback',
+                           'last CHOPPER_RESTORE that rolled this motor back. Saving it would undo '
+                           'that rollback',
                            'Nothing to save, Klipper keeps running']
     assert mk.uploads == [] and 'RESTART' not in mk.scripts
     runs('02_x', 'x', B, age=-60)
@@ -873,7 +878,7 @@ def test_a_backup_after_defaults_puts_back_the_registers_it_replaced(monkeypatch
     mk = saved_registers()
     tuned = read(mk.files['printer.cfg'])
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
-    analyze.run_restore_config(SimpleNamespace(defaults=True, backup=False, url=''))
+    analyze.run_restore_config(SimpleNamespace(defaults=True, backup=False, motor=None, url=''))
     assert read(mk.files['printer.cfg'])['tmc2209 stepper_x']['driver_tbl'] == '2'
     mk.files['printer.cfg'] += AUTOSAVE
     backup(mk, monkeypatch)
@@ -967,6 +972,9 @@ def test_a_section_gone_since_the_save_is_named_and_the_rest_goes_back(monkeypat
     assert '[tmc2209 stepper_y] is not in the config any more: nothing to put back there' \
         in console(mk)
     assert read(mk.files['printer.cfg'])['tmc2209 stepper_x']['driver_toff'] == '3'
+    # the rollback did not reach motor B
+    from chopper_autotune.analyze import last_restore
+    assert last_restore('A') > 0 and last_restore('B') == 0
 
 
 def test_with_every_section_of_the_save_gone_nothing_goes_back(monkeypatch):
@@ -1056,13 +1064,13 @@ def test_a_save_moves_the_old_copies_before_it_writes():
     assert read(mk.files['config/steppers.cfg'])['tmc2209 stepper_x']['driver_toff'] == '8'
 
 
-def restore(mk, monkeypatch, mode):
-    """CHOPPER_RESTORE <mode>=1 against mk."""
+def restore(mk, monkeypatch, mode, *params):
+    """CHOPPER_RESTORE <mode>=1 with the macro's other `params` against mk."""
     from chopper_autotune import analyze
     from chopper_autotune.cli import _gcode_args, boolean_flags, build_parser
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
     parser = build_parser()
-    analyze.run_restore_config(parser.parse_args(_gcode_args(['restore', mode + '=1'],
+    analyze.run_restore_config(parser.parse_args(_gcode_args(['restore', mode + '=1', *params],
                                                              boolean_flags(parser))))
 
 
@@ -1163,7 +1171,7 @@ def test_registers_a_run_kept_from_an_old_copy_go_into_the_config(runs, save):
     mk.config_settings = {'tmc2209 stepper_x': {'driver_' + field: value
                                                 for field, value in own.fields().items()}}
     save('MOTOR=A', mk=mk)
-    assert console(mk) == [STEPPERS_COPY, 'motor A: saving %s from run 01_x' % own.label()]
+    assert console(mk) == [STEPPERS_COPY, 'motor A: saving %s from run 01_x%s' % (own.label(), TBL0_A)]
     assert read(mk.files['config/steppers.cfg'])['tmc2209 stepper_x']['driver_toff'] == '2'
 
 
@@ -1471,3 +1479,288 @@ def test_an_include_counts_as_klipper_reads_it():
                             '[gcode_macro HOME]\ngcode:\n  [include indented.cfg]\n',
              'config/a.cfg': '[tmc2209 stepper_x]\n', 'old.cfg': '', 'indented.cfg': ''}
     assert list(active_config_files(FakeMoonraker(files))) == ['printer.cfg', 'config/a.cfg']
+
+
+def holding(**sections) -> dict:
+    """Klipper's settings of a config whose TMC2209 sections (stepper_x=A...) hold these
+    registers."""
+    return {'tmc2209 ' + name: {'driver_' + field: value for field, value in combo.fields().items()}
+            for name, combo in sections.items()}
+
+
+def test_a_motor_whose_winner_the_config_already_has_is_not_rewritten(runs, save):
+    # the run ended on the config's registers without marking them kept: rewriting them
+    # would replace the copy of the config and restart Klipper for nothing
+    from chopper_autotune import extruder
+    runs('01_x', 'x', A)
+    runs('02_y', 'y', B, age=60)
+    extruder_run(E)
+    when = datetime.fromtimestamp(os.path.getmtime(extruder.STATE)).strftime('%Y-%m-%d %H:%M')
+    config = holding(stepper_x=A, extruder=E)
+    mk = save(mk=FakeMoonraker({'printer.cfg': CFG_ABE}, settings=config))
+    assert changed(mk) == {'stepper_y'} and mk.scripts[-1] == 'RESTART'
+    assert console(mk) == [
+        'motor A: the config already has %s, the result of run 01_x, so there is nothing to write'
+        % A.label(),
+        'motor B: saving %s from run 02_y' % B.label(),
+        'motor E: the config already has %s, the result of the CHOPPER_EXTRUDER run of %s, so there '
+        'is nothing to write' % (E.label(), when)]
+    for params in (['MOTOR=AE'], ['MOTOR=AE', 'DRY_RUN=1']):
+        mk = save(*params, mk=FakeMoonraker({'printer.cfg': CFG_ABE}, settings=config))
+        assert mk.uploads == [] and 'RESTART' not in mk.scripts
+        assert console(mk)[:2] == [line for line in console(save(mk=FakeMoonraker(
+            {'printer.cfg': CFG_ABE}, settings=config))) if not line.startswith('motor B')]
+    # a register without its line runs at the driver's stock value: so do the winner's
+    runs('03_y', 'y', tmc.Chopper(2, 3, 5, 0))
+    mk = save('MOTOR=B', mk=FakeMoonraker({'printer.cfg': CFG_ABE}, settings={'tmc2209 stepper_y': {}}))
+    assert mk.uploads == [] and console(mk)[0].startswith('motor B: the config already has ')
+
+
+@pytest.mark.parametrize('combo, edges, both, these', [
+    (tmc.Chopper(0, 8, 7, 5), 'TBL 0, an edge', 'both TBL 0 and effective hysteresis 16', 'this edge'),
+    (tmc.Chopper(2, 4, 7, 11), 'effective hysteresis 16, an edge',
+     'both TBL 0 and effective hysteresis 16', 'this edge'),
+    (tmc.Chopper(0, 4, 7, 11), 'TBL 0 and effective hysteresis 16, edges', 'both edges',
+     'these edges')])
+def test_a_save_on_an_edge_the_search_leaves_out_warns_and_still_saves(runs, save, combo, edges,
+                                                                       both, these):
+    # a run from before these defaults could record such a winner; the person asked for the save
+    from chopper_autotune import extruder
+    runs('01_x', 'x', combo)
+    extruder_run(combo)
+    when = datetime.fromtimestamp(os.path.getmtime(extruder.STATE)).strftime('%Y-%m-%d %H:%M')
+    warning = ('. These registers have %s the search leaves out by default. On two printers, '
+               'registers with %s were noisy at 5 and 10 mm/s. We do not know which of the two '
+               'makes the noise. To search without %s: ' % (edges, both, these))
+    lines = ['motor A: saving %s from run 01_x%sCHOPPER_TUNE MOTOR=A' % (combo.label(), warning),
+             'motor E: saving %s from the CHOPPER_EXTRUDER run of %s%sCHOPPER_EXTRUDER'
+             % (combo.label(), when, warning)]
+    mk = save('MOTOR=AE')
+    assert console(mk) == lines and changed(mk) == {'stepper_x', 'extruder'}
+    assert console(save('MOTOR=AE', 'DRY_RUN=1'))[:2] == [line.replace(': saving ', ': would save ')
+                                                          for line in lines]
+    # the command named searches without the edge
+    from chopper_autotune.cli import _gcode_args, boolean_flags, build_parser
+    parser = build_parser()
+    for line in lines:
+        words = line.split(': ')[-1].split()
+        args = parser.parse_args(_gcode_args([words[0][len('CHOPPER_'):].lower()] + words[1:],
+                                             boolean_flags(parser)))
+        assert getattr(args, 'axis', 'x') == 'x' and tmc.Space.of(args).outside(combo)
+
+
+def test_analyze_save_names_what_it_saves_and_warns_of_an_edge(runs, monkeypatch):
+    # as CHOPPER_SAVE does before the restart: from the console the log is not seen
+    from chopper_autotune import analyze
+    from chopper_autotune.cli import build_parser
+    for root, line, stepper in (
+            (runs('01_x', 'x', A), 'motor A: saving %s from run 01_x%s' % (A.label(), TBL0_A), 'stepper_x'),
+            (runs('02_y', 'y', A), 'motor B: saving %s from run 02_y%s'
+             % (A.label(), TBL0_A.replace('MOTOR=A', 'MOTOR=B')), 'stepper_y'),
+            (runs('03_x', 'x', B), 'motor A: saving %s from run 03_x' % B.label(), 'stepper_x')):
+        mk = FakeMoonraker({'printer.cfg': CFG_ABE})
+        monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+        analyze.run_analyze(build_parser().parse_args(['analyze', str(root), '--save', '--no-html']))
+        assert console(mk) == [line] and changed(mk) == {stepper}
+        assert mk.scripts[-1] == 'RESTART'
+
+
+def test_registers_inside_the_default_search_get_no_warning(runs, save):
+    # TBL 1 and effective hysteresis 15 are the edges the search keeps: (7+1)+(10-3) = 15
+    combo = tmc.Chopper(1, 4, 7, 10)
+    assert tmc.effective_hysteresis(combo) == tmc.SEARCH_SPACE.max_hysteresis == 15
+    runs('01_x', 'x', combo)
+    assert console(save('MOTOR=A')) == ['motor A: saving %s from run 01_x' % combo.label()]
+
+
+CFG_5160 = """[tmc5160 stepper_x]
+cs_pin: PA1
+driver_TOFF: 3
+"""
+
+
+@pytest.mark.parametrize('field', ['tbl', 'toff', 'hstrt', 'hend', 'tpfd'])
+def test_a_winner_one_register_away_from_the_config_is_saved(runs, save, field):
+    # every register of the winner counts: with the config's TPFD 4 under a winner with
+    # TPFD 8, the motor keeps the noise the run measured away
+    winner = tmc.Chopper(1, 6, 4, 2, 8)
+    runs('01_x', 'x', winner, driver='5160')
+    same = {'tmc5160 stepper_x': {'driver_' + name: value for name, value in winner.fields().items()}}
+    other = {'tmc5160 stepper_x': dict(same['tmc5160 stepper_x'],
+                                       **{'driver_' + field: winner.fields()[field] + 1})}
+    mk = save('MOTOR=A', mk=FakeMoonraker({'printer.cfg': CFG_5160}, settings=other))
+    assert console(mk) == ['motor A: saving %s from run 01_x' % winner.label()]
+    assert mk.scripts[-1] == 'RESTART'
+    mk = save('MOTOR=A', mk=FakeMoonraker({'printer.cfg': CFG_5160}, settings=same))
+    assert console(mk)[0].startswith('motor A: the config already has ') and mk.uploads == []
+
+
+def test_registers_a_rollback_put_back_are_not_written_again(runs, save, monkeypatch):
+    # BACKUP=1 undid a reset to Klipper defaults: the config has the runs' registers again,
+    # so a save has nothing to write and no rollback to undo
+    from chopper_autotune import extruder
+    runs('01_x', 'x', B, age=60)
+    extruder_run(E, age=60)
+    when = datetime.fromtimestamp(os.path.getmtime(extruder.STATE)).strftime('%Y-%m-%d %H:%M')
+    mk = save('MOTOR=AE')
+    restore(mk, monkeypatch, 'DEFAULTS')
+    backup(mk, monkeypatch)
+    sections = read(mk.files['printer.cfg'])
+    for section, combo in (('tmc2209 stepper_x', B), ('tmc2209 extruder', E)):
+        assert {name: int(sections[section]['driver_' + name]) for name in combo.fields()} \
+            == combo.fields()
+    mk = save('MOTOR=AE', mk=FakeMoonraker(dict(mk.files), settings=holding(stepper_x=B, extruder=E)))
+    assert console(mk) == [
+        'motor A: the config already has %s, the result of run 01_x, so there is nothing to write'
+        % B.label(),
+        'motor E: the config already has %s, the result of the CHOPPER_EXTRUDER run of %s, so there '
+        'is nothing to write' % (E.label(), when),
+        'Nothing to save, Klipper keeps running']
+    assert mk.uploads == [] and 'RESTART' not in mk.scripts
+
+
+CFG_RAILS = """[tmc2209 stepper_x]
+uart_pin: PA1
+driver_TOFF: 5
+
+[tmc2209 stepper_x1]
+uart_pin: PA4
+driver_TOFF: 5
+
+[tmc2209 stepper_y]
+uart_pin: PA2
+driver_TOFF: 5
+
+[tmc2209 extruder]
+uart_pin: PA3
+driver_TOFF: 5
+"""
+
+
+def reset(mk) -> 'set[str]':
+    """The sections of CFG_RAILS that got Klipper's default registers."""
+    text = mk.files['printer.cfg']
+    return {name for name in ('stepper_x', 'stepper_x1', 'stepper_y', 'extruder')
+            if 'driver_TOFF: 3' in text.split('[tmc2209 %s]' % name)[1].split('[')[0]}
+
+
+@pytest.mark.parametrize('motor, sections', [
+    ('B', {'stepper_y'}), ('A', {'stepper_x', 'stepper_x1'}), ('E', {'extruder'}),
+    ('ea', {'stepper_x', 'stepper_x1', 'extruder'}),
+    (None, {'stepper_x', 'stepper_x1', 'stepper_y', 'extruder'})])
+def test_defaults_reset_only_the_motors_given_every_driver_of_an_axis(monkeypatch, motor, sections):
+    # "leave motor B on Klipper's defaults": one command, the other motors keep their tuning
+    mk = FakeMoonraker({'printer.cfg': CFG_RAILS})
+    restore(mk, monkeypatch, 'DEFAULTS', *(['MOTOR=' + motor] if motor else []))
+    assert reset(mk) == sections and mk.scripts[-1] == 'RESTART'
+    assert mk.files['printer.cfg'].count('driver_TOFF: 5') == 4 - len(sections)
+
+
+def test_defaults_of_a_motor_on_its_stock_registers_change_nothing(monkeypatch):
+    mk = FakeMoonraker({'printer.cfg': CFG_RAILS.replace('PA2\ndriver_TOFF: 5\n', 'PA2\n')})
+    with pytest.raises(SystemExit, match="^no tuned TMC sections found for motor B: it already runs "
+                                         "Klipper's default registers$"):
+        restore(mk, monkeypatch, 'DEFAULTS', 'MOTOR=B')
+    with pytest.raises(SystemExit, match='^no tuned TMC sections found for motors A, B and E: they'):
+        restore(FakeMoonraker({'printer.cfg': '[tmc2209 stepper_x]\nrun_current: 1.0\n'}),
+                monkeypatch, 'DEFAULTS')
+    assert mk.uploads == [] and mk.scripts == []
+
+
+def test_a_backup_puts_back_the_whole_save_and_takes_no_motor(monkeypatch):
+    mk = FakeMoonraker({'printer.cfg': CFG_RAILS})
+    run_save(mk, [(X, A)])
+    files = dict(mk.files)
+    with pytest.raises(SystemExit) as refused:
+        restore(mk, monkeypatch, 'BACKUP', 'MOTOR=B')
+    assert refused.value.code == ('leave MOTOR out: BACKUP=1 puts back the whole last save, every '
+                                  'motor in it. To set only motor B to Klipper\'s default '
+                                  'registers: CHOPPER_RESTORE DEFAULTS=1 MOTOR=B')
+    assert mk.files == files
+    # the command it names resets motor B
+    mode, motor = refused.value.code.split(': ')[-1].split()[1:]
+    restore(mk, monkeypatch, mode[:-len('=1')], motor)
+    assert reset(mk) == {'stepper_y'}
+
+
+def test_a_restore_of_one_motor_keeps_the_runs_of_the_others_to_save(runs, save, monkeypatch):
+    # a run of motor A was measured on the registers motor A still has
+    from chopper_autotune import analyze
+    runs('01_x', 'x', A, age=60)
+    runs('02_y', 'y', B, age=60)
+    extruder_run(E, age=60)
+    for name in analyze.STALE_ON_RESTORE:
+        state = analyze.RESULTS_HOME / name
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text('{}')
+    # the plan's XY marks and Results were not measured on the extruder
+    restore(FakeMoonraker({'printer.cfg': CFG_ABE}), monkeypatch, 'DEFAULTS', 'MOTOR=E')
+    assert all((analyze.RESULTS_HOME / name).exists() for name in analyze.STALE_ON_RESTORE)
+    restore(FakeMoonraker({'printer.cfg': CFG_ABE}), monkeypatch, 'DEFAULTS', 'MOTOR=B')
+    assert not any((analyze.RESULTS_HOME / name).exists() for name in analyze.STALE_ON_RESTORE)
+    mk = save()
+    assert changed(mk) == {'stepper_x'}
+    assert console(mk)[1:] == [
+        'motor B: not saving run 02_y: it is older than the last CHOPPER_RESTORE that rolled this '
+        'motor back. Saving it would undo that rollback. To save it anyway: CHOPPER_ANALYZE '
+        'DATASET=%s SAVE=1' % (analyze.dataset_dirs()[1]),
+        'motor E: not saving the last CHOPPER_EXTRUDER run: it is older than the last '
+        'CHOPPER_RESTORE that rolled this motor back. Saving it would undo that rollback']
+
+
+# printer.cfg with only the extruder tuned, and with only motor B on Klipper's defaults
+CFG_E = re.sub(r'(PA[12]\n)driver_TOFF: 3\n', r'\1', CFG_ABE)
+CFG_AE = re.sub(r'(PA2\n)driver_TOFF: 3\n', r'\1', CFG_ABE)
+# the extruder in a file of its own, and the copy an older version of the tool made of it
+SPLIT_ABE = {'printer.cfg': '[include extra.cfg]\n\n' + CFG_ABE[:CFG_ABE.index('[tmc2209 extruder]')],
+             'extra.cfg': CFG_ABE[CFG_ABE.index('[tmc2209 extruder]'):]}
+OLD_COPY_E = dict(SPLIT_ABE, **{'chopper-autotune/backups/extra.cfg.bak': SPLIT_ABE['extra.cfg']})
+
+
+@pytest.mark.parametrize('files, steps, rolled', [
+    # the last save wrote motor B alone
+    ({'printer.cfg': CFG_ABE}, [('save', 'MOTOR=B'), ('BACKUP',)], 'B'),
+    # motor B runs Klipper's defaults already: the reset changes motor A alone
+    ({'printer.cfg': CFG_AE}, [('DEFAULTS', 'MOTOR=AB')], 'A'),
+    # the panel's Klipper defaults where only the extruder is tuned
+    ({'printer.cfg': CFG_E}, [('DEFAULTS',)], 'E'),
+    # the undo of a reset of motor E
+    ({'printer.cfg': CFG_ABE}, [('DEFAULTS', 'MOTOR=E'), ('BACKUP',)], 'E'),
+    # whole files go back: the copy holds the extruder alone
+    (OLD_COPY_E, [('BACKUP',)], 'E')])
+def test_a_rollback_holds_back_the_runs_of_the_motors_it_rolled_back_alone(runs, save, monkeypatch,
+                                                                         files, steps, rolled):
+    # "older than the last CHOPPER_RESTORE that rolled this motor back" has to be true
+    from chopper_autotune import analyze
+    runs('01_x', 'x', A, age=60)
+    runs('02_y', 'y', B, age=60)
+    extruder_run(E, age=60)
+    for name in analyze.STALE_ON_RESTORE:
+        state = analyze.RESULTS_HOME / name
+        state.parent.mkdir(parents=True, exist_ok=True)
+        state.write_text('{}')
+    mk = FakeMoonraker(files)
+    for step in steps:
+        if step[0] == 'save':
+            save(*step[1:], mk=mk)
+        else:
+            restore(mk, monkeypatch, *step)
+    mk.scripts = []
+    save(mk=mk)
+    assert [line[len('motor ')] for line in console(mk) if 'rolled this motor back' in line] \
+        == list(rolled)
+    assert [line[len('motor ')] for line in console(mk) if ': saving ' in line] \
+        == [motor for motor in 'ABE' if motor not in rolled]
+    # the plan's marks and Results were measured on motors A and B
+    assert all((analyze.RESULTS_HOME / name).exists() for name in analyze.STALE_ON_RESTORE) \
+        == (rolled == 'E')
+
+
+def test_a_restore_recorded_by_an_older_version_holds_for_every_motor():
+    from chopper_autotune import analyze
+    from chopper_autotune.dataset import save_json
+    save_json(analyze.RESULTS_HOME / analyze.RESTORED, {'time': 100.0})
+    assert [analyze.last_restore(motor) for motor in 'ABE'] == [100.0] * 3
+    analyze._record_restore(['tmc2209 stepper_y'])
+    assert analyze.last_restore('A') == analyze.last_restore('E') == 100.0
+    assert analyze.last_restore('B') > 100.0

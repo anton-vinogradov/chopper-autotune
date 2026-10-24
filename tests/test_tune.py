@@ -88,9 +88,8 @@ def test_tune_save_saves_what_save_with_the_motors_of_the_run_saves(tmp_path, mo
     roots = {'x': make_dataset(tmp_path, 'x', 8), 'y': make_dataset(tmp_path, 'y', 6)}
     extruder.save_winner_state('2209', tmc.Chopper(3, 7, 6, 0))    # not a motor of these runs
     monkeypatch.setattr(analyze, 'dataset_dirs', lambda: [Path(roots[axis]) for axis in 'xy'])
-    # the config holds what the runs measured as the motors' own registers
-    settings = {'tmc2209 stepper_' + axis: {'driver_tbl': 0, 'driver_toff': toff, 'driver_hstrt': 7,
-                                            'driver_hend': 5} for axis, toff in (('x', 8), ('y', 6))}
+    # the config holds other registers than the runs found
+    settings = {'tmc2209 stepper_' + axis: {'driver_toff': 3} for axis in 'xy'}
     told = []
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: SimpleNamespace(
         settings=lambda: settings, accepted_commands=lambda: None, gcode=told.append,
@@ -110,7 +109,10 @@ def test_tune_save_saves_what_save_with_the_motors_of_the_run_saves(tmp_path, mo
         tune.run_tune(tune_args(axis=axis, save=True))
         analyze.run_save_latest(build_parser().parse_args(['save', '--motor', motor]))
         assert len(saved) == 2 and saved[0] == saved[1] and saved[0][:2] == (steppers, None)
-        assert saved[0][2][0].startswith('motor A: saving')
+        # the runs recorded TBL 0, an edge the default search leaves out
+        assert saved[0][2][0].startswith('motor A: saving tbl0_toff8_hstrt7_hend5 from run x. These '
+                                         'registers have TBL 0, an edge')
+        assert saved[0][2][0].endswith('To search without this edge: CHOPPER_TUNE MOTOR=A')
         saved.clear()
     # a clock set back since the last CHOPPER_RESTORE (a board without RTC or network):
     # the run just made is newer than it all the same
@@ -119,13 +121,56 @@ def test_tune_save_saves_what_save_with_the_motors_of_the_run_saves(tmp_path, mo
     assert [steppers for steppers, _, _ in saved] == [['stepper_x', 'stepper_y']]
     saved.clear()
     # a motor that keeps its own registers has nothing to write: no backup, no restart
+    settings['tmc2209 stepper_y'] = {'driver_tbl': 0, 'driver_toff': 6, 'driver_hstrt': 7, 'driver_hend': 5}
     Dataset.open(roots['y']).update_manifest(kept=True)
     tune.run_tune(tune_args(save=True))
     assert [steppers for steppers, _, _ in saved] == [['stepper_x']]
+    settings['tmc2209 stepper_x'] = {'driver_tbl': 0, 'driver_toff': 8, 'driver_hstrt': 7, 'driver_hend': 5}
     Dataset.open(roots['x']).update_manifest(kept=True)
     saved.clear()
     tune.run_tune(tune_args(save=True))
     assert saved == [] and told and 'Nothing to save' in told[-1]
+
+
+def test_a_tune_whose_winners_the_config_already_has_writes_nothing(tmp_path, monkeypatch, capsys):
+    # the run ended on the registers in the config without marking them kept: same lines,
+    # a copy of the config and a restart would buy nothing
+    from pathlib import Path
+    from types import SimpleNamespace
+
+    from chopper_autotune import analyze
+    roots = {'x': make_dataset(tmp_path, 'x', 8), 'y': make_dataset(tmp_path, 'y', 6)}
+    monkeypatch.setattr(analyze, 'dataset_dirs', lambda: [Path(roots[axis]) for axis in 'xy'])
+    settings = {'tmc2209 stepper_' + axis: {'driver_tbl': 0, 'driver_toff': toff, 'driver_hstrt': 7,
+                                            'driver_hend': 5} for axis, toff in (('x', 8), ('y', 6))}
+    monkeypatch.setattr(tune.Klippy, 'settings', lambda self: settings)
+    told = []
+    mk = SimpleNamespace(settings=lambda: settings, accepted_commands=lambda: None, gcode=told.append,
+                         list_config_files=lambda: [],
+                         upload_config=lambda *args: pytest.fail('nothing to write'))
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
+    monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
+    monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
+    monkeypatch.setattr(tune, 'scan', lambda kl, args, popup: (0, 58, 58))
+    monkeypatch.setattr(tune, 'collect', lambda kl, args, popup: (0, roots[args.axis]))
+    finals = []
+    monkeypatch.setattr(tune.Screen, 'final', lambda self, text, short=None: finals.append(text))
+    for save in (False, True):
+        capsys.readouterr()
+        assert tune.run_tune(tune_args(save=save)) == 0
+        assert finals[-1].endswith(' — your registers stay')
+        assert 'To save' not in capsys.readouterr().out
+    assert told == ['\n'.join('RESPOND PREFIX="Chopper:" MSG="%s"' % line for line in (
+        'motor A: the config already has tbl0_toff8_hstrt7_hend5, the result of run x, so there is '
+        'nothing to write',
+        'motor B: the config already has tbl0_toff6_hstrt7_hend5, the result of run y, so there is '
+        'nothing to write', 'Nothing to save, Klipper keeps running'))]
+    # one register away from the winner: motor B has something to write, motor A has not
+    settings['tmc2209 stepper_y']['driver_hend'] = 4
+    assert tune.run_tune(tune_args()) == 0
+    assert finals[-1].endswith(' — to save: CHOPPER_SAVE MOTOR=B')
+    assert capsys.readouterr().out.splitlines()[-1] == 'To save: CHOPPER_SAVE MOTOR=B'
 
 
 def test_winner_of_prefers_the_recorded_winner(tmp_path):
@@ -289,10 +334,10 @@ def test_autotune_on_one_motor_marks_only_that_one(tmp_path, monkeypatch, capsys
     out = capsys.readouterr().out
     assert 'stepper_x: klipper_tmc_autotune' in out and 'driver_SGTHRS: 80' in out
     assert 'stepper_y: klipper_tmc_autotune' not in out
-    assert 'To save: CHOPPER_SAVE MOTOR=AB' in out
+    assert 'To save: CHOPPER_SAVE MOTOR=B\n' in out           # Save skips motor A
     assert out.count('driver_TOFF: 8') == 1          # a snippet for B only, advice for A
     assert '(autotune)' in finals[-1] and finals[-1].count('(autotune)') == 1
-    assert finals[-1].endswith('to save: CHOPPER_SAVE MOTOR=AB')
+    assert finals[-1].endswith('to save: CHOPPER_SAVE MOTOR=B')
 
 
 def test_a_tmc2208_under_autotune_gets_the_advice_not_a_paste(tmp_path, monkeypatch, capsys):
