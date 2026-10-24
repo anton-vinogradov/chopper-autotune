@@ -9,10 +9,10 @@ from pathlib import Path
 
 from . import __version__, tmc
 from .collect import (MOVE_MARGIN, OVERHEAD_CSV_SEC, OVERHEAD_STREAM_SEC, Screen, ThermalGuard,
-                      default_dataset_root, detect_hardware, enter_spreadcycle, exit_spreadcycle,
-                      make_parker, measure_baseline, measure_move, motor_label, now, park,
-                      refuse_blind_z_hop, refuse_if_printing, refuse_multi_motor, rehome_unless_hot,
-                      restore_chopper, run_restore, tell_next, travel_for)
+                      confirmed, default_dataset_root, detect_hardware, enter_spreadcycle,
+                      exit_spreadcycle, make_parker, measure_baseline, measure_move, motor_label,
+                      now, park, refuse_blind_z_hop, refuse_if_printing, refuse_multi_motor,
+                      rehome_unless_hot, restore_chopper, run_restore, tell_next, travel_for)
 from .dataset import Dataset
 from .klippy import Klippy, find_socket
 
@@ -247,8 +247,7 @@ def scan(kl: Klippy, args, popup: bool = True) -> 'tuple[int, int | None, int | 
              eta // 60, eta % 60))
     if args.dry_run:
         return 0, None, None
-    if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):
-        print('Aborted')
+    if not confirmed(args):
         return 1, None, None
 
     refuse_if_printing(kl)

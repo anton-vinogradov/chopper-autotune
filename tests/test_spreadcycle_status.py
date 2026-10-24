@@ -86,13 +86,13 @@ def test_screen_channels_self_disable_on_error():
     assert broken.display is False and broken.console is False
 
 
-def make_running_dataset(tmp_path, n=20):
-    ds = Dataset.create(tmp_path / 'ds', {
+def make_running_dataset(tmp_path, n=20, **manifest):
+    ds = Dataset.create(tmp_path / 'ds', dict({
         'driver': '2209', 'stepper': 'stepper_x', 'search': 'grid', 'capture': 'stream',
         'iterations': 1, 'speeds': [58],
         'ranges': {'tbl': [0, 0], 'toff': [3, 4], 'hstrt': [4, 4], 'hend': [0, 15],
                    'tpfd': None},
-    })
+    }, **manifest))
     start = datetime.now(timezone.utc) - timedelta(seconds=2 * n)
     for i in range(n):
         ds.append({'id': 'm%d' % i, 'kind': 'move', 'status': 'ok', 'tbl': 0, 'toff': 3,
@@ -102,14 +102,20 @@ def make_running_dataset(tmp_path, n=20):
 
 
 def test_status_reports_pace_and_eta(tmp_path, capsys):
-    ds = make_running_dataset(tmp_path)
-    args = argparse.Namespace(dataset=str(ds.root), total=None)
-    assert run_status(args) == 0
+    ds = make_running_dataset(tmp_path, total_moves=60)     # the plan a register search records
+    assert run_status(argparse.Namespace(dataset=str(ds.root))) == 0
     out = capsys.readouterr().out
     assert 'Measurements: 20 ok, 0 failed' in out
     assert 'Pace: 2.0 s/move' in out
-    # 2 toff x 15 hend (hstrt=4 limits raw hend to 0..14) = 30 combos -> 60 planned moves
     assert 'Progress: 20/60 (33%)' in out
+
+
+def test_status_of_a_run_that_recorded_no_plan_has_no_eta(tmp_path, capsys):
+    # a speed scan records no total_moves; nor did the datasets of versions before 0.2.0
+    ds = make_running_dataset(tmp_path)
+    assert run_status(argparse.Namespace(dataset=str(ds.root))) == 0
+    out = capsys.readouterr().out
+    assert 'Pace: 2.0 s/move' in out and 'Progress' not in out
 
 
 def test_status_pace_ignores_old_pause(tmp_path, capsys):
@@ -122,7 +128,7 @@ def test_status_pace_ignores_old_pause(tmp_path, capsys):
                    'hstrt': 4, 'hend': 0, 'score': {'median_magnitude': 1000.0},
                    'ts': (start + offset).isoformat(timespec='seconds')})
 
-    run_status(argparse.Namespace(dataset=str(ds.root), total=None))
+    run_status(argparse.Namespace(dataset=str(ds.root)))
     assert 'Pace: 2.0 s/move (last 50 moves)' in capsys.readouterr().out
 
 

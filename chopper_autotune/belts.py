@@ -18,11 +18,12 @@ configured [resonance_tester] (as for input-shaper calibration).
 The default flow is the tension measurement proper: you pluck each belt's span like a
 guitar string on the display's cue and the toolhead accelerometer listens. The pluck excites
 the transverse string mode — the anchor shakes the head laterally at f and, because the
-string's tension pulses twice per cycle, axially at 2f; the tool identifies the (f, 2f)
-pair and reports the fundamental (a lone unpaired line is suspect — a weak pluck often
-shows only a harmonic, measured: a 4f line masquerading at 400 Hz). Equal spans ->
-matched fundamentals = matched tension; with SPAN= (cm) it also reports absolute
-newtons, T = mu * (2 * L * f)^2.
+string's tension pulses twice per cycle, axially at 2f. Two jogs map the chip's axes to the
+machine's (machine_axes); a belt is accepted once two plucks show the same line
+(tone_families), and the verdict compares the same mode on both belts (resolve_pair),
+halved when its line runs along X or Y — the axial pump at 2f — unless SPAN= makes the
+halved tension impossible. Equal spans -> matched fundamentals = matched tension; with
+SPAN= (cm) it also reports absolute newtons, T = mu * (2 * L * f)^2.
 """
 from __future__ import annotations
 
@@ -32,9 +33,9 @@ import time
 import numpy as np
 
 from .collect import (CAPTURE_MTIME_SLACK_SEC, Screen, ThermalGuard, await_flushed, capture_files,
-                      capture_pattern, capture_span, coupled_xy, detect_hardware, home_xy,
-                      motor_label, refuse_blind_z_hop, refuse_if_printing, rehome_unless_hot,
-                      release_gantry, run_restore, searched, written_files)
+                      capture_pattern, capture_span, confirmed, coupled_xy, detect_hardware,
+                      home_xy, motor_label, refuse_blind_z_hop, refuse_if_printing,
+                      rehome_unless_hot, release_gantry, run_restore, searched, written_files)
 from .current import live_limits, stress_vector
 from .dataset import load_json, save_json
 from .klippy import ConsoleFenceLost, Klippy, find_socket
@@ -52,7 +53,6 @@ PLUCK_BAND = (40.0, 1000.0)  # near-head spans ring ~200-450 Hz, their 2f up to 
                              # ambient lines (e.g. a persistent ~600 Hz) are excluded
                              # via the quiet reference instead of capping the band
 PLUCK_SNR = 30.0            # a pluck tone must beat the window's median spectrum by this
-PAIR_TOLERANCE = 0.04       # |f2 - 2*f1| / f2 for an (f, 2f) match
 GT2_MU = 7.7                # g/m, GT2 6 mm with a fiberglass core
 
 
@@ -191,11 +191,6 @@ def top_peaks(freqs: np.ndarray, psd: np.ndarray, band: 'tuple[float, float]',
     return [freq for _, freq in sorted(peaks, reverse=True)[:count]]
 
 
-def welch_peak(path: str, band: 'tuple[float, float]') -> 'tuple[float, float]':
-    freqs, psd = welch_psd(path)
-    return dominant(freqs, psd, band)
-
-
 def verdict(freq_a: float, freq_b: float, tolerance: float = MATCH_TOLERANCE) -> str:
     apart = gap_pct(freq_a, freq_b)
     if apart < tolerance:
@@ -244,8 +239,6 @@ def belts(kl: Klippy, args) -> int:
     if not coupled_xy(hw.kinematics):
         raise SystemExit('belt-tension match is a CoreXY/H-bot check (two belts drive one '
                          'motion); kinematics here is %s — nothing to match' % hw.kinematics)
-    if getattr(args, 'pluck', False) and args.sweep:
-        raise SystemExit('PLUCK=1 and SWEEP=1 contradict — pick one (pluck is the default)')
 
     if args.show:                                   # just point at a belt, no measurement
         motor = 'x' if args.show == 'a' else 'y'
@@ -285,8 +278,7 @@ def belts(kl: Klippy, args) -> int:
           % (hw.kinematics, band[0], band[1]))
     if args.dry_run:
         return 0
-    if not args.yes and input('Proceed? [y/N] ').strip().lower() not in ('y', 'yes'):
-        print('Aborted')
+    if not confirmed(args):
         return 1
 
     refuse_if_printing(kl)
@@ -427,38 +419,12 @@ def pluck_tones(samples: np.ndarray, band: 'tuple[float, float]' = PLUCK_BAND,
     return best
 
 
-def fundamental(tones: 'list[tuple[float, float]]') -> 'tuple[float | None, bool]':
-    """The string fundamental from a pluck's tone list. A pluck shakes the anchor
-    laterally at f and axially at 2f (the tension pulses twice per cycle), so an
-    (f, 2f) pair identifies the fundamental unambiguously; a lone line is returned
-    unpaired=False — it may be a harmonic of a weak pluck (measured: 4f at 400 Hz)."""
-    best = None
-    for freq, snr, *_ in tones:
-        for freq2, snr2, *_ in tones:
-            if freq2 > freq and abs(freq2 - 2 * freq) <= PAIR_TOLERANCE * freq2:
-                combined = snr + snr2
-                if best is None or combined > best[1]:
-                    best = (freq, combined)
-    if best is not None:
-        return best[0], True
-    return (tones[0][0], False) if tones else (None, False)
-
-
-def agreeing(seen: 'list[float]', new: float, tol: float = 0.03) -> 'float | None':
-    """The match for `new` among earlier tries, within tol — repeatability is the
-    control, and it need not be consecutive (mixed excitations between plucks). 3%:
-    the pump lines scatter wider than the fundamentals (field: 308.3 vs 301.6)."""
-    for seen_freq in seen:
-        if abs(new - seen_freq) <= tol * new:
-            return seen_freq
-    return None
-
-
 def tone_families(tries: 'list[list[tuple]]', tol: float = 0.03) -> 'list[dict]':
     """Cluster every line seen across the plucks into families (within tol); a family
     counts once per try. The strongest single line is not the verdict — the FAMILY
     seen most consistently is (field: the true front-span pump sat one SNR notch
-    below a side-span line and kept losing a greedy accept)."""
+    below a side-span line and kept losing a greedy accept). 3%: the pump lines
+    scatter wider than the fundamentals (field: 308.3 vs 301.6)."""
     families = []
     for try_no, tones in enumerate(tries):
         for tone in tones:
@@ -563,9 +529,10 @@ def tension_newtons(freq: float, span_cm: float, mu_g_per_m: float = GT2_MU) -> 
 
 
 def pluck_mode(kl: Klippy, hw, args) -> int:
-    """Guided pluck on each belt's LONGEST free span (across the front on most CoreXY —
-    field-tested: near-head spans are too short and stiff to ring usefully). A belt is
-    accepted once two plucks agree on the paired fundamental within 2% — repeatability is
+    """Guided pluck on each belt's LONGEST free span: with the head parked at the rear, a
+    side span on small printers, the front span on big ones (field-tested: near-head spans
+    are too short and stiff to ring usefully). A belt is
+    accepted once two plucks show the same tone family (tone_families) — repeatability is
     the control. Motors stay enabled DURING the measurement (the pulley is held, so the
     span has defined ends) and are released at the end: the user's next move is a
     tensioner screw, and holding motors would fight it."""

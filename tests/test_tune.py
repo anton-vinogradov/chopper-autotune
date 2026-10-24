@@ -1,4 +1,7 @@
+import builtins
+import sys
 import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -19,6 +22,14 @@ def tune_args(**overrides):
     for name, value in overrides.items():
         setattr(args, name, value)
     return args
+
+
+def test_a_tune_at_a_terminal_runs_its_stages_without_asking(stub_printer, monkeypatch):
+    # CHOPPER_TUNE asks nothing before it moves, so neither do its scan and its search
+    monkeypatch.setattr(sys, 'stdin', SimpleNamespace(isatty=lambda: True))
+    monkeypatch.setattr(builtins, 'input', lambda prompt: pytest.fail('asked: ' + prompt))
+    assert tune.run_tune(build_parser().parse_args(['tune', '--motor', 'a', '--no-raw'])) == 0
+    assert 'MOVE' in stub_printer.log and stub_printer.measured
 
 
 def make_dataset(tmp_path, axis, toff, winner=True):

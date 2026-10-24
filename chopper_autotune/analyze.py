@@ -1080,14 +1080,7 @@ def run_status(args) -> int:
     if age > 120:
         print('Last measurement %dm ago — the run looks finished or stalled' % (age // 60))
 
-    total = args.total or manifest.get('total_moves')
-    if not total and manifest.get('search') == 'grid' and 'ranges' in manifest:
-        from .collect import VALIDATE_EXTRA_ITERATIONS, build_plan
-        plan = build_plan(tmc.DRIVERS[manifest['driver']], tmc.Space.recorded(manifest),
-                          manifest.get('speeds', [0]), tmc.Hearing.of(recorded=manifest))
-        total = (len(plan) * manifest.get('iterations', 1) * 2
-                 + manifest.get('validate', 0) * VALIDATE_EXTRA_ITERATIONS
-                 * len(manifest.get('speeds', [0])) * 2)
+    total = manifest.get('total_moves')
     if total and rate:
         from .collect import eta_text
         remaining = max(0, total - len(moves))

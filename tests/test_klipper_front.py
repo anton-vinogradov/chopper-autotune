@@ -450,3 +450,56 @@ def test_the_command_to_run_next_reaches_the_console_whole(source, monkeypatch, 
     assert 'Chopper: To tune motor A at its resonance speed: CHOPPER_TUNE MOTOR=A SPEED=60' in front.console
     assert front.console[-1] == ('echo: Current: A skip 0.30A -> run 0.60A — to measure again '
                                  'and save: CHOPPER_CURRENT MOTOR=A SAVE=1')
+
+
+class Proceeded(Exception):
+    """The run went past its question, to its first step on the printer."""
+
+
+def proceeded(kl):
+    raise Proceeded()
+
+
+ASKING = [  # every command that asks before it moves or heats the printer
+    ('collect', 'collect', ['collect', '--axis', 'x', '--speed', '60']),
+    ('find_speed', 'scan', ['find-speed', '--axis', 'x']),
+    ('resonance_map', 'resonance_map', ['map', '--axis', 'x']),
+    ('belts', 'belts', ['belts', '--sweep']),
+    ('current', 'current_tune', ['current', '--motor', 'a']),
+    ('envelope', 'envelope', ['envelope']),
+    ('extruder', 'extruder_tune', ['extruder', '--speed', '5']),
+    ('extruder', 'extruder_tune', ['extruder', '--demo']),
+]
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('module, tool, argv', ASKING)
+@pytest.mark.parametrize('terminal, yes, answer', [
+    (False, False, None),           # a macro: run.sh starts the tool with stdin at /dev/null
+    (True, False, 'n'),
+    (True, False, 'y'),
+    (True, False, 'Y'),
+    (True, True, None),
+])
+def test_a_run_asks_to_proceed_only_at_a_terminal(source, module, tool, argv, terminal, yes,
+                                                  answer, monkeypatch, capsys):
+    import builtins
+    import importlib
+    import sys
+    require(source)
+    tools = importlib.import_module('chopper_autotune.' + module)
+    monkeypatch.setattr(tools, 'refuse_if_printing', proceeded)
+    monkeypatch.setattr(sys, 'stdin', types.SimpleNamespace(isatty=lambda: terminal))
+    asked = []
+    monkeypatch.setattr(builtins, 'input', lambda prompt: asked.append(prompt) or answer)
+    front = klipper_front.Front(source, printer_cfg(extra=HOTEND))
+    argv = argv + ['--yes'] if yes else argv
+    if answer != 'n':
+        with pytest.raises(Proceeded):
+            run_tool(front, getattr(tools, tool), argv)
+        assert asked == ([] if answer is None else ['Proceed? [y/N] '])
+    else:
+        code = run_tool(front, getattr(tools, tool), argv)
+        assert (code[0] if isinstance(code, tuple) else code) == 1
+        assert asked == ['Proceed? [y/N] '] and capsys.readouterr().out.endswith('Aborted\n')
+        assert not front.moves

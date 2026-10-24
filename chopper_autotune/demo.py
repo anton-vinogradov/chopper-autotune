@@ -34,9 +34,6 @@ def run_demo(args) -> int:
     from argparse import Namespace
 
     from .cli import command_line
-    if getattr(args, 'live', False) and args.report:
-        raise SystemExit('LIVE=1 and REPORT=1 contradict — REPORT measures the numbers, '
-                         'LIVE plays the audible showcase (the default)')
     if args.speed is not None and args.axis == 'xy':
         raise SystemExit('add MOTOR=A or B, or leave SPEED out: each motor has its own resonance '
                          'speed. Without SPEED, each motor plays at the speed of its last tune. '
