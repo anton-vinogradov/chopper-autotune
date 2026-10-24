@@ -91,24 +91,6 @@ def improvement_note(manifest: dict) -> str:
     return ' -%d%%' % pct if pct >= 1 else ''
 
 
-def left_undone(args, settings: dict, axes: 'list[str]', axis: str,
-                winners: 'list[tuple[dict, tmc.Chopper]]') -> 'list[str]':
-    """What a run that stops at the motor on `axis` leaves to do: save the motors it tuned
-    before, tune the ones after."""
-    from .cli import command_line
-    lines = []
-    tuned = worth_saving(settings, [manifest for manifest, _ in winners])
-    if tuned:
-        done = run_motors(tuned)
-        lines.append('The run tuned motor %s. To save it: %s' % (done, save_command(tuned)))
-    rest = ''.join(axes[axes.index(axis) + 1:])
-    if rest:
-        later = motor_label(rest)
-        lines.append('The run did not reach motor %s. To tune it: %s'
-                     % (later, command_line('tune', args, axis=rest)))
-    return lines
-
-
 def run_tune(args) -> int:
     if args.speed is not None and args.axis == 'xy':
         from .cli import command_line
@@ -137,6 +119,9 @@ def run_tune(args) -> int:
             refuse_autotune_save(settings, driver_of(settings, stepper) or 'XXXX', stepper)
     screen = Screen(kl, True)
     winners, roots = [], []
+    # the commands that tune the motors without a clear peak: the next motor may have one.
+    # The console gets them however the run ends, after its verdict or before its failure
+    unpeaked = []
     worst = 0
     try:
         seed_root = None
@@ -151,8 +136,8 @@ def run_tune(args) -> int:
                           % DRY_RUN_SPEED)
                     recommended = DRY_RUN_SPEED
                 elif recommended is None:
-                    tell_next(kl, left_undone(args, settings, axes, axis, winners))
-                    raise SystemExit(no_peak(motor_label(axis), tune_at(axis, loudest, args)))
+                    unpeaked.append(no_peak(motor_label(axis), tune_at(axis, loudest, args)))
+                    continue
                 speed = recommended
             code, root = collect(kl, collect_args(args, axis, speed, seed_root), popup=False)
             worst = max(worst, code)
@@ -160,6 +145,8 @@ def run_tune(args) -> int:
                 winners.append(winner_of(root, args))
                 roots.append(Path(root))
                 seed_root = root
+        if unpeaked and not winners:
+            raise SystemExit(unpeaked.pop())
         runs = [manifest for manifest, _ in winners]
         free = [manifest for manifest in runs if not managed(manifest)]
         changed = worth_saving(settings, runs)
@@ -178,11 +165,12 @@ def run_tune(args) -> int:
             tail = (' — autotune resets these at start' if not free
                     else ' — your registers stay' if not changed
                     else ' — saving' if args.save
-                    else ' — to save: ' + save_command(runs))
+                    else ' — to save: ' + save_command(changed))
             screen.final('Tune done: %s%s' % (labels, tail), 'Done ' + ' '.join(
                 motor_label(manifest['stepper'].rsplit('_', 1)[-1]) + improvement_note(manifest).strip()
                 for manifest, _ in winners))
     finally:
+        tell_next(kl, unpeaked)
         kl.close()
 
     if args.dry_run or not winners:
@@ -206,5 +194,5 @@ def run_tune(args) -> int:
         from .analyze import run_save_latest
         run_save_latest(args, run_motors(runs), roots)
     elif changed:
-        print('To save: %s' % save_command(runs))
+        print('To save: %s' % save_command(changed))
     return worst
