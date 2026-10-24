@@ -203,7 +203,8 @@ def test_save_on_an_autotune_extruder_is_refused_before_the_heat_up(monkeypatch)
     from chopper_autotune.dataset import save_json
     state = {'driver': '2209', 'fields': {'tbl': 1, 'toff': 3, 'hstrt': 5, 'hend': 2}}
     save_json(extruder_mod.STATE, state)
-    mk = SimpleNamespace(settings=kl.settings, accepted_commands=lambda: None, gcode=scripts.append)
+    mk = SimpleNamespace(settings=kl.settings, accepted_commands=lambda: None, gcode=scripts.append,
+                         list_config_files=lambda: [])
     monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
     save_last = build_parser().parse_args(['extruder', '--save-last'])
     with pytest.raises(SystemExit, match=r'not saving \[tmc2209 extruder\]'):

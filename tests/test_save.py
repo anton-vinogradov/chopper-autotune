@@ -53,6 +53,7 @@ class FakeMoonraker:
         self.config_settings = settings or {}
         self.commands = commands
         self.uploads = []
+        self.deletes = []
         self.scripts = []
 
     def settings(self):
@@ -74,6 +75,10 @@ class FakeMoonraker:
         self.uploads.append(name)
         self.files[name] = content
 
+    def delete_config(self, name):
+        self.deletes.append(name)
+        del self.files[name]
+
     def gcode(self, script):
         self.scripts.append(script)
 
@@ -85,8 +90,8 @@ def test_run_save_backs_up_edits_and_restarts(capsys):
     mk = FakeMoonraker({'printer.cfg': CFG, 'mainsail.cfg': '[respond]\n'})
     run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))])
 
-    assert mk.uploads == ['printer.chopper-backup.cfg', LAST_SAVE, 'printer.cfg']
-    assert mk.files['printer.chopper-backup.cfg'] == CFG
+    assert mk.uploads == ['chopper-autotune/backups/printer.cfg.bak', LAST_SAVE, 'printer.cfg']
+    assert mk.files['chopper-autotune/backups/printer.cfg.bak'] == CFG
     assert 'driver_TOFF: 8' in mk.files['printer.cfg']
     assert mk.scripts == ['RESTART']
     assert 'Saved the new registers to printer.cfg' in capsys.readouterr().out
@@ -127,7 +132,7 @@ def test_run_save_ignores_unincluded_dated_backups():
              'printer-20260307_201242.cfg': CFG}
     mk = FakeMoonraker(files)
     run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))])
-    assert mk.uploads == ['printer.chopper-backup.cfg', LAST_SAVE, 'printer.cfg']
+    assert mk.uploads == ['chopper-autotune/backups/printer.cfg.bak', LAST_SAVE, 'printer.cfg']
     assert 'driver_TOFF: 8' in mk.files['printer.cfg']
     # the dated backups are untouched
     assert mk.files['printer-20250922_211125.cfg'] == CFG
@@ -138,9 +143,9 @@ def test_run_save_ignores_its_own_backups():
     item = [({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))]
     run_save(mk, item)
     mk.uploads.clear()
-    # the backup now sits in the config root with the same section: must not confuse a re-save
+    # the copy now sits in the config folder with the same section: must not confuse a re-save
     run_save(mk, item)
-    assert mk.uploads == ['printer.chopper-backup.cfg', LAST_SAVE, 'printer.cfg']
+    assert mk.uploads == ['chopper-autotune/backups/printer.cfg.bak', LAST_SAVE, 'printer.cfg']
 
 
 def test_run_save_uploads_all_backups_before_edits():
@@ -151,7 +156,8 @@ def test_run_save_uploads_all_backups_before_edits():
         ({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5)),
         ({'driver': '2209', 'stepper': 'stepper_z'}, tmc.Chopper(1, 6, 5, 4)),
     ])
-    assert mk.uploads[:3] == ['printer.chopper-backup.cfg', 'extra.chopper-backup.cfg', LAST_SAVE]
+    assert mk.uploads[:3] == ['chopper-autotune/backups/printer.cfg.bak',
+                              'chopper-autotune/backups/extra.cfg.bak', LAST_SAVE]
     assert set(mk.uploads[3:]) == {'printer.cfg', 'extra.cfg'}
     assert mk.scripts == ['RESTART']
     assert 'driver_TOFF: 6' in mk.files['extra.cfg']
@@ -197,7 +203,7 @@ def test_restore_defaults_rewrites_tuned_sections_only(monkeypatch):
     x = text[text.index('[tmc2209 stepper_x]'):text.index('[tmc2209 stepper_y]')]
     assert 'driver_TBL: 2' in x and 'driver_HEND: 0' in x    # stock registers written
     assert 'run_current: 1.0' in x                           # the current is untouched
-    assert mk.files['printer.chopper-backup.cfg']            # snapshot taken first
+    assert mk.files['chopper-autotune/backups/printer.cfg.bak']  # snapshot taken first
     assert mk.scripts == ['RESTART']
 
 
@@ -789,16 +795,6 @@ AUTOSAVE = """
 """
 
 
-def backup(mk, monkeypatch):
-    """CHOPPER_RESTORE BACKUP=1 against mk."""
-    from chopper_autotune import analyze
-    from chopper_autotune.cli import _gcode_args, boolean_flags, build_parser
-    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
-    parser = build_parser()
-    analyze.run_restore_config(parser.parse_args(_gcode_args(['restore', 'BACKUP=1'],
-                                                             boolean_flags(parser))))
-
-
 def read(text: str) -> dict:
     """The options of each section as Klipper reads them: '#' starts a comment anywhere."""
     import configparser
@@ -995,52 +991,375 @@ def test_a_file_that_ends_without_a_newline_gets_its_lines_back(monkeypatch):
     assert read(mk.files['extra.cfg']) == read(extra)
 
 
-def test_the_copies_a_glob_include_takes_are_no_config_to_save_or_roll_back(monkeypatch):
-    # [include tmc/*.cfg] takes tmc/motors.chopper-backup.cfg too: the same sections in two files
-    motors = BEFORE_SAVE.replace('[include extra.cfg]\n', '')
-    mk = FakeMoonraker({'printer.cfg': '[include tmc/*.cfg]\n', 'tmc/motors.cfg': motors})
-    run_save(mk, [(X, A)])
-    assert 'tmc/motors.chopper-backup.cfg' in mk.files
-    backup(mk, monkeypatch)
-    assert mk.files['tmc/motors.cfg'] == motors
-    run_save(mk, [(X, A)])
-    assert read(mk.files['tmc/motors.cfg'])['tmc2209 stepper_x']['driver_toff'] == '8'
+# a config split into folders, as [include config/*.cfg] reads it
+STEPPERS = """[tmc2209 stepper_x]
+uart_pin: PA1
+run_current: 1.20
+driver_TOFF: 3
+
+[tmc2209 stepper_y]
+uart_pin: PA2
+run_current: 1.20
+"""
+# what an older version left beside the file before the save that wrote driver_TOFF: 3
+OLD_COPY = STEPPERS.replace('driver_TOFF: 3', 'driver_TOFF: 5')
+MOVE = ('This command moves the backup copies that older versions of the tool left next to your '
+        'files into chopper-autotune/backups: %s. Their new names end in .bak, so Klipper does not '
+        'read them through an [include] of .cfg files')
+RESTART = '. Klipper stops using the old values when it restarts'
+# the line of a config split into folders with OLD_COPY beside config/steppers.cfg
+STEPPERS_COPY = ('Klipper reads config/steppers.chopper-backup.cfg through an [include]. In '
+                 '[tmc2209 stepper_x], Klipper uses old values from it instead of the values in '
+                 'your config. '
+                 + MOVE % 'config/steppers.chopper-backup.cfg' + RESTART)
+
+
+def split_config(**files) -> FakeMoonraker:
+    """printer.cfg with [include config/*.cfg], config/steppers.cfg = STEPPERS and OLD_COPY
+    beside it, unless files say otherwise."""
+    return FakeMoonraker(dict({'printer.cfg': '[include config/*.cfg]\n', 'config/steppers.cfg': STEPPERS,
+                               'config/steppers.chopper-backup.cfg': OLD_COPY}, **files))
+
+
+def test_a_save_copies_each_file_into_the_backups_folder():
+    # no [include ...*.cfg] takes these names: Klipper never reads the old values over the saved ones
+    mk = FakeMoonraker({'printer.cfg': '[include config/*.cfg]\n[include extra.cfg]\n',
+                        'config/steppers.cfg': STEPPERS, 'extra.cfg': EXTRA_CFG})
+    run_save(mk, [(X, A)], {'driver': '2209', 'fields': E.fields()})
+    assert mk.uploads[:2] == ['chopper-autotune/backups/config/steppers.cfg.bak',
+                              'chopper-autotune/backups/extra.cfg.bak']
+    assert mk.files['chopper-autotune/backups/config/steppers.cfg.bak'] == STEPPERS
+    assert mk.files['chopper-autotune/backups/extra.cfg.bak'] == EXTRA_CFG
+
+
+def test_a_save_moves_the_old_copies_before_it_writes():
+    # [include config/*.cfg] takes config/steppers.chopper-backup.cfg too, after the file it is
+    # a copy of: Klipper merges the two sections, the values of the copy win
+    mk = FakeMoonraker({'printer.cfg': '[include config/*.cfg]\n', 'config/steppers.cfg': STEPPERS,
+                        'config/steppers.chopper-backup.cfg': OLD_COPY,
+                        'printer.chopper-backup.cfg': 'pristine'})
+    run_save(mk, [(X, A)], lines=['motor A: saving'])
+    assert console(mk) == [
+        'Klipper reads config/steppers.chopper-backup.cfg through an [include]. In '
+        '[tmc2209 stepper_x], Klipper uses old values from it instead of the values in your '
+        'config. '
+        + MOVE % 'config/steppers.chopper-backup.cfg, printer.chopper-backup.cfg' + RESTART,
+        'motor A: saving']
+    assert mk.deletes == ['config/steppers.chopper-backup.cfg', 'printer.chopper-backup.cfg']
+    assert mk.uploads == ['chopper-autotune/backups/config/steppers.cfg.bak',
+                          'chopper-autotune/backups/printer.cfg.bak',
+                          'chopper-autotune/backups/config/steppers.cfg.bak', LAST_SAVE,
+                          'config/steppers.cfg']
+    assert mk.files['chopper-autotune/backups/printer.cfg.bak'] == 'pristine'
+    assert mk.files['chopper-autotune/backups/config/steppers.cfg.bak'] == STEPPERS
+    assert not any(name.endswith('.chopper-backup.cfg') for name in mk.files)
+    assert read(mk.files['config/steppers.cfg'])['tmc2209 stepper_x']['driver_toff'] == '8'
+
+
+def restore(mk, monkeypatch, mode):
+    """CHOPPER_RESTORE <mode>=1 against mk."""
+    from chopper_autotune import analyze
+    from chopper_autotune.cli import _gcode_args, boolean_flags, build_parser
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    parser = build_parser()
+    analyze.run_restore_config(parser.parse_args(_gcode_args(['restore', mode + '=1'],
+                                                             boolean_flags(parser))))
+
+
+def backup(mk, monkeypatch):
+    """CHOPPER_RESTORE BACKUP=1 against mk."""
+    restore(mk, monkeypatch, 'BACKUP')
+
+
+@pytest.mark.parametrize('mode, after', [
+    ('BACKUP', 'The last save left no record of the lines it changed, so whole files go back: '
+               'config/steppers.cfg from chopper-autotune/backups/config/steppers.cfg.bak'),
+    ('DEFAULTS', None)])
+def test_a_restore_moves_the_old_copies_before_it_writes(monkeypatch, mode, after):
+    mk = split_config()
+    restore(mk, monkeypatch, mode)
+    assert console(mk)[0] == STEPPERS_COPY
+    assert console(mk)[1:2] == ([after] if after else [])
+    assert mk.uploads[0] == 'chopper-autotune/backups/config/steppers.cfg.bak'
+    assert mk.deletes == ['config/steppers.chopper-backup.cfg']
+    assert mk.scripts[-1] == 'RESTART'
+
+
+@pytest.mark.parametrize('save', [
+    lambda mk, monkeypatch: run_save(mk, [(X, A)]),
+    lambda mk, monkeypatch: backup(mk, monkeypatch)])
+def test_the_console_hears_of_the_old_copies_before_the_first_write(monkeypatch, save):
+    from chopper_autotune.moonraker import MoonrakerError
+    mk = split_config()
+
+    def fail(name, content):
+        raise MoonrakerError('cannot upload %s' % name)
+    mk.upload_config = fail
+    with pytest.raises(MoonrakerError):
+        save(mk, monkeypatch)
+    assert console(mk) == [STEPPERS_COPY]
+    assert mk.files['config/steppers.chopper-backup.cfg'] == OLD_COPY
+
+
+def test_with_nothing_to_save_the_old_copies_move_all_the_same(save):
+    # else Klipper reads the old registers until a save that writes something
+    mk = save(mk=split_config())
+    assert console(mk) == [STEPPERS_COPY, 'motor A: no tuning run to save',
+                           'motor B: no tuning run to save', 'motor E: no CHOPPER_EXTRUDER run to save',
+                           'Nothing to save, Klipper keeps running']
+    assert mk.deletes == ['config/steppers.chopper-backup.cfg'] and 'RESTART' not in mk.scripts
+
+
+def test_a_dry_run_names_the_old_copies_and_moves_nothing(save):
+    mk = save('DRY_RUN=1', mk=split_config())
+    assert console(mk)[0] == STEPPERS_COPY.replace(' moves ', ' would move ').replace(RESTART, '')
+    assert mk.uploads == [] and mk.deletes == []
+
+
+def test_the_old_copies_stay_while_printing(save):
+    mk = split_config()
+    mk.printing = True
+    with pytest.raises(SystemExit, match='busy printing'):
+        save(mk=mk)
+    assert console(mk) == [] and mk.uploads == [] and mk.deletes == []
+
+
+def test_klipper_settings_are_weighed_as_without_the_old_copies():
+    # an option and a section that only the copy has go, a value the copy gave goes back
+    from chopper_autotune.analyze import old_copies, settings_without
+    mk = split_config(**{'config/steppers.chopper-backup.cfg': OLD_COPY.replace(
+        'driver_TOFF: 5', 'driver_TOFF: 5\ndriver_HEND: 9') + '\n[tmc2209 stepper_z]\nuart_pin: PA4\n'})
+    klipper = {'tmc2209 stepper_x': {'uart_pin': 'PA1', 'driver_toff': 5, 'driver_hend': 9},
+               'tmc2209 stepper_y': {'uart_pin': 'PA2'}, 'tmc2209 stepper_z': {'uart_pin': 'PA4'}}
+    assert settings_without(klipper, old_copies(mk)[2]) == {
+        'tmc2209 stepper_x': {'uart_pin': 'PA1', 'driver_toff': '3'},
+        'tmc2209 stepper_y': {'uart_pin': 'PA2'}}
+
+
+def test_defaults_moves_the_old_copies_with_nothing_else_to_write(monkeypatch):
+    # the config has no driver_* line left, and Klipper reads the copy's
+    mk = split_config(**{'config/steppers.cfg': STEPPERS.replace('driver_TOFF: 3\n', '')})
+    with pytest.raises(SystemExit, match='no tuned TMC sections found'):
+        restore(mk, monkeypatch, 'DEFAULTS')
+    assert console(mk) == [STEPPERS_COPY]
+    assert mk.deletes == ['config/steppers.chopper-backup.cfg']
+
+
+def test_a_save_to_a_section_only_an_old_copy_holds_names_the_copy_before_it_refuses():
+    mk = split_config(**{'config/steppers.cfg': STEPPERS.split('\n\n')[1]})
+    with pytest.raises(SystemExit, match=r'section \[tmc2209 stepper_x\] not found in any config file'):
+        run_save(mk, [(X, A)])
+    assert console(mk) == [STEPPERS_COPY]
+    assert mk.deletes == ['config/steppers.chopper-backup.cfg']
+
+
+def test_registers_a_run_kept_from_an_old_copy_go_into_the_config(runs, save):
+    # Klipper ran the motor on the registers of the copy, and the run kept them: once the
+    # copy moves, the lines of the config would run instead
+    own = tmc.Chopper(0, 2, 2, 12)
+    runs('01_x', 'x', own, kept=True)
+    mk = split_config(**{'config/steppers.chopper-backup.cfg': updated_options(
+        STEPPERS, 'tmc2209 stepper_x', register_options(own.fields()))})
+    mk.config_settings = {'tmc2209 stepper_x': {'driver_' + field: value
+                                                for field, value in own.fields().items()}}
+    save('MOTOR=A', mk=mk)
+    assert console(mk) == [STEPPERS_COPY, 'motor A: saving %s from run 01_x' % own.label()]
+    assert read(mk.files['config/steppers.cfg'])['tmc2209 stepper_x']['driver_toff'] == '2'
+
+
+# the first sentence of the line about OLD_COPY beside config/steppers.cfg
+OLD_STEPPER_X = ('Klipper reads config/steppers.chopper-backup.cfg through an [include]. In '
+                 '[tmc2209 stepper_x], Klipper uses old values from it instead of the values in '
+                 'your config')
+NONE_CHANGES = ('Klipper reads config/steppers.chopper-backup.cfg through an [include], but this '
+                'changes none of the values Klipper uses')
+
+
+@pytest.mark.parametrize('files, line', [
+    # the copy differs in one section: Klipper reads that one from it
+    ({'config/steppers.chopper-backup.cfg': OLD_COPY, 'config/steppers.cfg': STEPPERS}, OLD_STEPPER_X),
+    # listed in another order: Klipper reads the files a pattern takes sorted by name
+    ({'config/steppers.cfg': STEPPERS, 'config/steppers.chopper-backup.cfg': OLD_COPY,
+      'config/extruder.chopper-backup.cfg': EXTRA_CFG.replace('0.65', '0.50'),
+      'config/extruder.cfg': EXTRA_CFG},
+     'Klipper reads config/extruder.chopper-backup.cfg, config/steppers.chopper-backup.cfg through '
+     'an [include]. In [tmc2209 extruder], [tmc2209 stepper_x], Klipper uses old values from them '
+     'instead of the values in your config'),
+    # a copy Klipper reads that changes nothing is not named with the one that does
+    ({'config/steppers.cfg': STEPPERS, 'config/steppers.chopper-backup.cfg': OLD_COPY,
+      'config/extruder.chopper-backup.cfg': EXTRA_CFG, 'config/extruder.cfg': EXTRA_CFG},
+     OLD_STEPPER_X),
+    # two copies give one option: Klipper takes it from the one it reads last
+    ({'config/steppers.chopper-backup.cfg': OLD_COPY, 'config/steppers.cfg': STEPPERS,
+      'late/steppers.chopper-backup.cfg': OLD_COPY,
+      'printer.cfg': '[include config/*.cfg]\n[include late/*.cfg]\n'},
+     'Klipper reads late/steppers.chopper-backup.cfg through an [include]. In [tmc2209 stepper_x], '
+     'Klipper uses old values from it instead of the values in your config'),
+    # a section the config no longer has comes back from the copy, with options or without
+    ({'config/steppers.chopper-backup.cfg': STEPPERS + '\n[tmc2209 stepper_z]\nuart_pin: PA4\n',
+      'config/steppers.cfg': STEPPERS},
+     'Klipper reads config/steppers.chopper-backup.cfg through an [include]. In '
+     '[tmc2209 stepper_z], Klipper uses old values from it instead of the values in your config'),
+    ({'config/steppers.chopper-backup.cfg': STEPPERS + '\n[exclude_object]\n',
+      'config/steppers.cfg': STEPPERS},
+     'Klipper reads config/steppers.chopper-backup.cfg through an [include]. In [exclude_object], '
+     'Klipper uses old values from it instead of the values in your config'),
+    # a pattern is taken from the folder of the file the [include] is in
+    ({'printer.cfg': '[include config/main.cfg]\n', 'config/main.cfg': '[include parts/*.cfg]\n',
+      'config/parts/steppers.cfg': STEPPERS, 'config/parts/steppers.chopper-backup.cfg': OLD_COPY},
+     'Klipper reads config/parts/steppers.chopper-backup.cfg through an [include]. In '
+     '[tmc2209 stepper_x], Klipper uses old values from it instead of the values in your config'),
+    ({'config/steppers.chopper-backup.cfg': STEPPERS, 'config/steppers.cfg': STEPPERS}, NONE_CHANGES),
+    # read later, the file itself puts its values back over the copy, which still holds others
+    ({'config/steppers.chopper-backup.cfg': OLD_COPY, 'config/steppers.cfg': STEPPERS,
+      'printer.cfg': '[include config/*.cfg]\n[include config/steppers.cfg]\n'}, NONE_CHANGES),
+    # a section of the file with the [include], above it, loses to the copy
+    ({'config/steppers.chopper-backup.cfg': STEPPERS.replace('uart_pin: PA2\nrun_current: 1.20',
+                                                             'uart_pin: PA2\nrun_current: 1.00'),
+      'config/steppers.cfg': STEPPERS,
+      'printer.cfg': '[tmc2209 stepper_y]\nrun_current: 1.20\n\n[include config/*.cfg]\n'},
+     'Klipper reads config/steppers.chopper-backup.cfg through an [include]. In '
+     '[tmc2209 stepper_y], Klipper uses old values from it instead of the values in your config'),
+    # one below it wins over the copy
+    ({'config/steppers.chopper-backup.cfg': OLD_COPY.replace('run_current: 1.20', 'run_current: 1.00'),
+      'config/steppers.cfg': STEPPERS.replace('driver_TOFF: 3', 'driver_TOFF: 5'),
+      'printer.cfg': '[include config/*.cfg]\n\n[tmc2209 stepper_x]\nrun_current: 1.20\n'
+                     '[tmc2209 stepper_y]\nrun_current: 1.20\n'}, NONE_CHANGES),
+    ({'config/steppers.chopper-backup.cfg': OLD_COPY, 'config/steppers.cfg': STEPPERS,
+      'printer.cfg': '[include config/steppers.cfg]\n'}, None),
+])
+def test_the_old_copies_line_names_the_sections_klipper_reads_from_them(files, line):
+    from chopper_autotune.analyze import old_copies
+    moves, lines, _ = old_copies(FakeMoonraker(dict({'printer.cfg': '[include config/*.cfg]\n'},
+                                                    **files)))
+    old = [name for name in files if name.endswith('.chopper-backup.cfg')]
+    assert lines == [(line + '. ' if line else '') + MOVE % ', '.join(old)
+                     + (RESTART if line and ' uses old values ' in line else '')]
+    assert moves == {name: ('chopper-autotune/backups/'
+                            + name.replace('.chopper-backup.cfg', '.cfg.bak'), files[name])
+                     for name in old}
+
+
+def test_without_old_copies_nothing_moves():
+    from chopper_autotune.analyze import old_copies
+    mk = FakeMoonraker({'printer.cfg': CFG, 'chopper-autotune/backups/printer.cfg.bak': CFG})
+    assert old_copies(mk) == ({}, [], {})
+
+
+WHOLE_FILES = ('The last save left no record of the lines it changed, so whole files go back: '
+               'printer.cfg from chopper-autotune/backups/printer.cfg.bak, extra.cfg from '
+               'chopper-autotune/backups/extra.cfg.bak')
+LOST = ('This also undoes anything written to these files after the tool copied them, such as the '
+        'input shaper, bed mesh and Z offset from SAVE_CONFIG. Klipper restarts now')
 
 
 def test_a_save_without_a_record_goes_back_as_whole_files_with_a_warning(monkeypatch):
-    # a save of an older version left the copies alone
+    # a save of an older version wrote no record
     mk = FakeMoonraker({'printer.cfg': BEFORE_SAVE + AUTOSAVE, 'extra.cfg': EXTRA_CFG,
-                        'printer.chopper-backup.cfg': BEFORE_SAVE,
-                        'extra.chopper-backup.cfg': 'pristine'})
+                        'chopper-autotune/backups/printer.cfg.bak': BEFORE_SAVE,
+                        'chopper-autotune/backups/extra.cfg.bak': 'pristine'})
     backup(mk, monkeypatch)
     assert mk.files['printer.cfg'] == BEFORE_SAVE and mk.files['extra.cfg'] == 'pristine'
-    assert console(mk) == [
-        'The last save left no record of the lines it changed, so whole files go back: '
-        'printer.cfg from printer.chopper-backup.cfg, extra.cfg from extra.chopper-backup.cfg',
-        'This also undoes anything written to these files after the tool copied them, such '
-        'as the input shaper, bed mesh and Z offset from SAVE_CONFIG. Klipper restarts now']
+    assert console(mk) == [WHOLE_FILES, LOST]
     assert [script.startswith('RESPOND') for script in mk.scripts] == [True, False]
     assert mk.scripts[-1] == 'RESTART'
 
 
-def test_a_save_of_an_older_version_after_a_recorded_one_goes_back_as_whole_files(monkeypatch):
-    # it rewrote the copy and left the record of the save before it alone
-    mk = saved_registers()
-    recorded = mk.files['printer.cfg']
-    mk.files['printer.chopper-backup.cfg'] = recorded
-    mk.files['printer.cfg'] = updated_options(recorded, 'tmc2209 stepper_x', register_options(B.fields()))
+@pytest.mark.parametrize('printer, extra', [
+    ('printer.chopper-backup.cfg', 'extra.chopper-backup.cfg'),
+    ('printer.chopper-backup.cfg', 'chopper-autotune/backups/extra.cfg.bak'),
+    ('chopper-autotune/backups/printer.cfg.bak', 'extra.chopper-backup.cfg')])
+def test_whole_files_go_back_from_the_copies_in_either_place(monkeypatch, printer, extra):
+    # an older version keeps its copies beside the files
+    mk = FakeMoonraker({'printer.cfg': BEFORE_SAVE + AUTOSAVE, 'extra.cfg': EXTRA_CFG,
+                        printer: BEFORE_SAVE, extra: 'pristine'})
     backup(mk, monkeypatch)
-    assert mk.files['printer.cfg'] == recorded
-    assert console(mk)[0].startswith('The last save left no record of the lines it changed, so '
-                                     'whole files go back: printer.cfg from printer.chopper-backup.cfg')
+    assert mk.files['printer.cfg'] == BEFORE_SAVE and mk.files['extra.cfg'] == 'pristine'
+    assert sorted(console(mk)[-2].split(': ', 1)[1].split(', ')) \
+        == sorted(WHOLE_FILES.split(': ', 1)[1].split(', '))
+    assert console(mk)[-1] == LOST
+    assert mk.scripts[-1] == 'RESTART'
+
+
+@pytest.mark.parametrize('rolled_back', [False, True])
+def test_a_save_of_an_older_version_after_a_recorded_one_goes_back_as_whole_files(monkeypatch,
+                                                                                 rolled_back):
+    # it left a copy beside the file and the record of the save before it alone. After a
+    # rollback of that save, its copy can match the copy of that save byte for byte
+    mk = saved_registers()
+    if rolled_back:
+        backup(mk, monkeypatch)
+    copied = mk.files['printer.cfg']
+    mk.files['printer.chopper-backup.cfg'] = copied
+    mk.files['printer.cfg'] = updated_options(copied, 'tmc2209 stepper_x', register_options(B.fields()))
+    mk.scripts = []
+    backup(mk, monkeypatch)
+    assert mk.files['printer.cfg'] == copied
+    assert console(mk)[1].startswith('The last save left no record of the lines it changed, so '
+                                     'whole files go back: printer.cfg from '
+                                     'chopper-autotune/backups/printer.cfg.bak')
+
+
+def saved_with_copies_beside_the_files() -> FakeMoonraker:
+    """saved_registers() as an older version that writes the record leaves it: the copies
+    beside their files, and the digest in the record taken over them there."""
+    import hashlib
+    mk = saved_registers()
+    for copy in [name for name in mk.files if name.startswith('chopper-autotune/backups/')]:
+        name = copy[len('chopper-autotune/backups/'):-len('.cfg.bak')] + '.chopper-backup.cfg'
+        mk.files[name] = mk.files.pop(copy)
+    digest = hashlib.sha256()
+    for name in sorted(name for name in mk.files if name.endswith('.chopper-backup.cfg')):
+        digest.update(('%s\0%s\0' % (name, mk.files[name])).encode())
+    mk.files[LAST_SAVE] = json.dumps(dict(json.loads(mk.files[LAST_SAVE]), copies=digest.hexdigest()))
+    return mk
+
+
+@pytest.mark.parametrize('moved_by_a_save', [False, True])
+def test_a_record_with_the_copies_beside_the_files_still_rolls_back_by_its_lines(
+        save, monkeypatch, moved_by_a_save):
+    # the copies move, the record stays the record of the last save: what SAVE_CONFIG
+    # wrote after it stays too
+    mk = saved_with_copies_beside_the_files()
+    mk.files['printer.cfg'] += AUTOSAVE
+    if moved_by_a_save:
+        save(mk=mk)
+    mk.scripts = []
+    backup(mk, monkeypatch)
+    assert mk.files['printer.cfg'] == BEFORE_SAVE + AUTOSAVE
+    assert 'Rolling back the last save, made %s:' % when(mk) in console(mk)
+    assert not any(name.endswith('.chopper-backup.cfg') for name in mk.files)
+    mk.scripts = []
+    backup(mk, monkeypatch)
+    assert console(mk) == ['Nothing to put back from the last save, made %s: the lines it wrote '
+                           'already have the values they had before it. Klipper keeps running' % when(mk)]
+
+
+def test_a_save_that_fails_before_its_record_leaves_the_record_out(monkeypatch):
+    # it wrote its copies: the record of the save before it is not of the last save
+    from chopper_autotune.analyze import run_save_currents
+    from chopper_autotune.moonraker import MoonrakerError
+    mk = saved_registers()
+    upload = mk.upload_config
+
+    def fail_at_the_record(name, content):
+        if name == LAST_SAVE:
+            raise MoonrakerError('cannot upload %s' % name)
+        upload(name, content)
+    mk.upload_config = fail_at_the_record
+    with pytest.raises(MoonrakerError):
+        run_save_currents(mk, [('2209', 'stepper_x', 0.8)])
+    mk.upload_config, mk.scripts = upload, []
+    backup(mk, monkeypatch)
+    assert console(mk)[0].startswith('The last save left no record of the lines it changed')
 
 
 @pytest.mark.parametrize('record', [True, False])
 def test_the_console_hears_what_goes_back_before_an_upload_fails(monkeypatch, record):
     # the files may be half written by then: the console has named them already
     from chopper_autotune.moonraker import MoonrakerError
-    mk = saved_registers() if record else FakeMoonraker({'printer.cfg': BEFORE_SAVE + AUTOSAVE,
-                                                         'printer.chopper-backup.cfg': BEFORE_SAVE})
+    mk = saved_registers() if record else FakeMoonraker({
+        'printer.cfg': BEFORE_SAVE + AUTOSAVE, 'chopper-autotune/backups/printer.cfg.bak': BEFORE_SAVE})
 
     def fail(name, content):
         raise MoonrakerError('cannot upload %s' % name)
@@ -1071,7 +1390,9 @@ def test_a_missing_record_reads_as_none_and_other_failures_raise(monkeypatch):
 
 @pytest.mark.parametrize('name, fields, filename', [
     (LAST_SAVE, {'root': 'config', 'path': 'chopper-autotune'}, 'last-save.json'),
-    ('printer.chopper-backup.cfg', {'root': 'config'}, 'printer.chopper-backup.cfg')])
+    ('chopper-autotune/backups/config/steppers.cfg.bak',
+     {'root': 'config', 'path': 'chopper-autotune/backups/config'}, 'steppers.cfg.bak'),
+    ('printer.cfg', {'root': 'config'}, 'printer.cfg')])
 def test_an_upload_names_its_folder_where_moonraker_creates_it(monkeypatch, name, fields, filename):
     # Moonraker creates the folders of the path field; a folder in the file name must exist
     import contextlib
@@ -1087,3 +1408,66 @@ def test_an_upload_names_its_folder_where_moonraker_creates_it(monkeypatch, name
     Moonraker().upload_config(name, 'text')
     assert dict(re.findall(r'name="(\w+)"\r\n\r\n([^\r]*)\r\n', sent[0])) == fields
     assert re.findall(r'filename="([^"]*)"', sent[0]) == [filename]
+
+
+def test_moonraker_lists_every_file_of_the_config_folder_and_deletes_one(monkeypatch):
+    # the copies end in .bak: a listing of .cfg files alone would hide them from the restore
+    import contextlib
+    import io
+
+    from chopper_autotune.moonraker import Moonraker
+    mk = Moonraker('http://x')
+    monkeypatch.setattr(mk, '_request', lambda method, path, params=None: [
+        {'path': 'printer.cfg'}, {'path': 'chopper-autotune/backups/printer.cfg.bak'},
+        {'path': 'chopper-autotune/last-save.json'}])
+    assert mk.list_config_files() == ['printer.cfg', 'chopper-autotune/backups/printer.cfg.bak',
+                                      'chopper-autotune/last-save.json']
+    sent = []
+
+    def urlopen(req, timeout):
+        sent.append((req.get_method(), req.full_url))
+        return contextlib.closing(io.BytesIO(b'{}'))
+    monkeypatch.setattr('urllib.request.urlopen', urlopen)
+    mk.delete_config('config/my steppers.chopper-backup.cfg')
+    assert sent == [('DELETE', 'http://x/server/files/config/config/my%20steppers.chopper-backup.cfg')]
+
+
+# a config folder: dated SAVE_CONFIG copies, nested and hidden folders, the tool's own files
+TREE = ['printer.cfg', 'printer-20250922_211125.cfg', 'mainsail.cfg', 'moonraker.conf',
+        'config/a.cfg', 'config/a.chopper-backup.cfg', 'config/b.cfg', 'config/.c.cfg',
+        'config/sub/d.cfg', 'config/sub/deeper/e.cfg', '.old/f.cfg', 'config/.old/g.cfg',
+        'chopper-autotune/last-save.json', 'chopper-autotune/backups/printer.cfg.bak',
+        'chopper-autotune/backups/config/a.cfg.bak']
+
+
+@pytest.mark.parametrize('pattern', [
+    'mainsail.cfg', 'config/a.cfg', '*.cfg', 'config/*.cfg', 'config/*', '*/*.cfg', '*/*/*.cfg',
+    '**/*.cfg', 'config/**/*.cfg', 'config/**', '**', '**/*', 'config/?.cfg', 'config/[ab].cfg',
+    'config/.*', '.*/*.cfg', 'config/.old/*.cfg', 'config/**/.*', '**.cfg', 'chopper-autotune/**/*.cfg'])
+def test_an_include_pattern_takes_what_glob_takes(tmp_path, pattern):
+    # Klipper and Kalico resolve [include] with glob.glob: Kalico recursive, Klipper not,
+    # where ** is a plain *
+    import glob
+
+    from chopper_autotune.analyze import glob_takes
+    for name in TREE:
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text('')
+
+    def taken(recursive):
+        return {os.path.relpath(path, tmp_path)
+                for path in glob.glob(os.path.join(str(tmp_path), pattern), recursive=recursive)
+                if os.path.isfile(path)}
+    ours = {name for name in TREE if glob_takes(pattern, name)}
+    assert ours == taken(True)
+    assert taken(False) <= ours
+
+
+def test_an_include_counts_as_klipper_reads_it():
+    # Klipper cuts each line at '#' first; an [include] must open the line
+    from chopper_autotune.analyze import active_config_files
+    files = {'printer.cfg': '[include config/*.cfg]  # [tmc2209 stepper_x] and [tmc2209 stepper_y]\n'
+                            '# [include old.cfg]\n'
+                            '[gcode_macro HOME]\ngcode:\n  [include indented.cfg]\n',
+             'config/a.cfg': '[tmc2209 stepper_x]\n', 'old.cfg': '', 'indented.cfg': ''}
+    assert list(active_config_files(FakeMoonraker(files))) == ['printer.cfg', 'config/a.cfg']

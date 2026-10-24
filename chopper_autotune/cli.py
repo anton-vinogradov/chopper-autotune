@@ -389,8 +389,10 @@ def build_parser() -> argparse.ArgumentParser:
     rs.add_argument('--backup', action='store_true',
                     help='undo the last save: the driver_* and run_current lines it wrote get '
                          'back the values they had before it. The rest of the config stays. '
-                         'After a save by an older version of the tool, whole files go back. '
-                         'This also undoes what SAVE_CONFIG wrote after that save')
+                         'Some older versions of the tool keep no record of the lines they save. '
+                         'If one of them made the last save, whole files go back from the copies '
+                         'in chopper-autotune/backups. This also undoes what SAVE_CONFIG wrote '
+                         'after that save')
     rs.add_argument('--url', default='http://127.0.0.1:7125')
 
     cur = sub.add_parser('current', help='find the minimal safe run current per motor '

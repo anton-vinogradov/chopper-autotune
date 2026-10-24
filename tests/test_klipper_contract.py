@@ -574,7 +574,9 @@ class DiskMoonraker:
         return None
 
     def list_config_files(self):
-        return [str(path.relative_to(self.root)) for path in self.root.rglob('*.cfg')]
+        # as Moonraker lists the config root: every file, by lower-case path
+        return sorted((str(path.relative_to(self.root)) for path in self.root.rglob('*')
+                       if path.is_file()), key=str.lower)
 
     def download_config(self, name, missing_ok=False):
         path = self.root / name
@@ -583,6 +585,9 @@ class DiskMoonraker:
     def upload_config(self, name, content):
         (self.root / name).parent.mkdir(parents=True, exist_ok=True)
         (self.root / name).write_text(content)
+
+    def delete_config(self, name):
+        (self.root / name).unlink()
 
     def gcode(self, script):
         self.scripts.append(script)
@@ -636,6 +641,125 @@ def test_a_backup_keeps_what_save_config_wrote_after_the_save(source, tmp_path, 
         == ('52.4', '1.725')
     assert dict(config.items('tmc2209 stepper_x')) == {'uart_pin': 'PA1', 'run_current': '1.2',
                                                        'driver_toff': '3'}
+
+
+STEPPERS = """[tmc2209 stepper_x]
+uart_pin: PA1
+run_current: 1.2
+driver_TOFF: 3
+"""
+SAVED = {'driver_tbl': '1', 'driver_toff': '8', 'driver_hstrt': '2', 'driver_hend': '5'}
+
+
+def split_config(tmp_path, copy: 'str | None' = None) -> DiskMoonraker:
+    """A config split into folders, as [include config/*.cfg] reads it. copy: what an
+    older version left beside config/steppers.cfg."""
+    (tmp_path / 'config').mkdir()
+    (tmp_path / 'printer.cfg').write_text('[include config/*.cfg]\n')
+    (tmp_path / 'config/steppers.cfg').write_text(STEPPERS)
+    if copy:
+        (tmp_path / 'config/steppers.chopper-backup.cfg').write_text(copy)
+    return DiskMoonraker(tmp_path)
+
+
+def save_registers(mk):
+    from chopper_autotune import analyze
+    analyze.run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(1, 8, 2, 5))])
+
+
+@pytest.mark.parametrize('source', fetched('configfile.py'))
+def test_klipper_reads_the_saved_registers_whatever_folder_a_cfg_include_takes(source, tmp_path,
+                                                                                monkeypatch):
+    # Klipper merges the sections of one name, the later one wins: a copy that an include
+    # takes after the file puts the old registers back
+    require(source)
+    from chopper_autotune import analyze
+    mk = split_config(tmp_path)
+    save_registers(mk)
+    # *.cfg of every other folder below the root, read after config/steppers.cfg, and
+    # Kalico's recursive ** (a * to Klipper)
+    folders = sorted({os.path.dirname(name) for name in mk.list_config_files()} - {'', 'config'})
+    assert folders == ['chopper-autotune', 'chopper-autotune/backups/config']
+    (tmp_path / 'printer.cfg').write_text('[include config/*.cfg]\n' + ''.join(
+        '[include %s/*.cfg]\n[include %s/**/*.cfg]\n' % (folder, folder) for folder in folders))
+    section = dict(read_main_config(source, str(tmp_path / 'printer.cfg'), monkeypatch)
+                   .items('tmc2209 stepper_x'))
+    assert {option: section[option] for option in SAVED} == SAVED
+    # and CHOPPER_RESTORE finds them: without a record, whole files go back from them
+    (tmp_path / analyze.LAST_SAVE).unlink()
+    monkeypatch.setattr(analyze, 'Moonraker', lambda url: mk)
+    analyze.run_restore_config(types.SimpleNamespace(defaults=False, backup=True, url=''))
+    assert (tmp_path / 'config/steppers.cfg').read_text() == STEPPERS
+
+
+@pytest.mark.parametrize('source', fetched('configfile.py'))
+def test_a_save_takes_an_old_copy_out_of_the_include(source, tmp_path, monkeypatch):
+    # an older version left the copy beside the file, and [include config/*.cfg] reads it
+    require(source)
+    mk = split_config(tmp_path, copy=STEPPERS.replace('driver_TOFF: 3', 'driver_TOFF: 5'))
+
+    def toff():
+        return read_main_config(source, str(tmp_path / 'printer.cfg'), monkeypatch) \
+            .get('tmc2209 stepper_x', 'driver_toff')
+    assert toff() == '5'
+    save_registers(mk)
+    assert toff() == '8'
+    assert not (tmp_path / 'config/steppers.chopper-backup.cfg').exists()
+
+
+@pytest.mark.parametrize('source', fetched('configfile.py'))
+def test_the_old_copies_line_names_what_the_real_reader_takes_from_them(source, tmp_path, monkeypatch):
+    # the sections that read otherwise once the copies are gone, and the copies they come from
+    require(source)
+    from chopper_autotune import analyze
+    old = STEPPERS.replace('driver_TOFF: 3', 'driver_TOFF: 5')
+    extruder = ('[include more/*.cfg]\n\n[tmc2209 extruder]\nuart_pin: PA3\n'
+                'run_current: 0.65 ; measured\ndriver_TOFF: 3#tuned\n')
+    files = {
+        # Klipper merges a section twice in one file as well
+        'printer.cfg': '[include config/*.cfg]\n\n[tmc2209 stepper_y]\nrun_current: 1.2\n\n'
+                       '[include late/*/*.cfg]\n\n[gcode_macro A]\ngcode:\n\n[gcode_macro A]\ngcode: G28\n',
+        'config/steppers.cfg': STEPPERS + '\n[tmc2209 stepper_y]\nuart_pin: PA2\nrun_current: 1.2\n',
+        # its stepper_x wins over the file, its stepper_y loses to printer.cfg below the
+        # include, its stepper_z the config no longer has
+        'config/steppers.chopper-backup.cfg': old + '\n[tmc2209 stepper_y]\nuart_pin: PA2\n'
+                                              'run_current: 1.0\n\n[tmc2209 stepper_z]\nuart_pin: PA4\n',
+        # the comments Klipper drops leave the values of the copy the same
+        'late/e/extruder.cfg': extruder,
+        'late/e/extruder.chopper-backup.cfg': extruder.replace(' ; measured', '').replace('#tuned', ''),
+        # an [include] below the root takes its pattern from its own folder
+        'late/e/more/fan.cfg': '[fan]\npin: PA8\n',
+        'late/e/more/fan.chopper-backup.cfg': '[fan]\npin: PA9\n',
+        'old.chopper-backup.cfg': old,
+    }
+    for name, text in files.items():
+        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / name).write_text(text)
+    _, (line,), _ = analyze.old_copies(DiskMoonraker(tmp_path))
+
+    def reads():
+        fileconfig = read_main_config(source, str(tmp_path / 'printer.cfg'), monkeypatch)
+        return {section: dict(fileconfig.items(section)) for section in fileconfig.sections()}
+    now = reads()
+    named = ['config/steppers.chopper-backup.cfg', 'late/e/more/fan.chopper-backup.cfg']
+    for name in files:
+        if name.endswith('.chopper-backup.cfg') and name not in named:
+            (tmp_path / name).unlink()
+    assert reads() == now
+    for name in named:
+        (tmp_path / name).unlink()
+    without = reads()
+    differ = [section for section in now if now[section] != without.get(section)]
+    assert differ == ['tmc2209 stepper_x', 'tmc2209 stepper_z', 'fan']
+    assert line == ('Klipper reads %s through an [include]. In %s, Klipper uses old values from '
+                    'them instead of the values in your config. '
+                    'This command moves the backup copies that older versions of the tool left '
+                    'next to your files into chopper-autotune/backups: '
+                    'config/steppers.chopper-backup.cfg, late/e/extruder.chopper-backup.cfg, '
+                    'late/e/more/fan.chopper-backup.cfg, old.chopper-backup.cfg. Their new names '
+                    'end in .bak, so Klipper does not read them through an [include] of .cfg '
+                    'files. Klipper stops using the old values when it restarts'
+                    % (', '.join(named), ', '.join('[%s]' % section for section in differ)))
 
 
 # a TMPDIR of klippy's service: Kalico writes the raw files there, and the tool that
