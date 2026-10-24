@@ -26,10 +26,12 @@ def _chopper(text: str) -> tmc.Chopper:
     return chopper
 
 
-def add_motor(parser: argparse.ArgumentParser, both: bool, help_text: str):
-    """MOTOR of a command that runs motor A or B, or, with `both`, both of them by default.
-    The command gets the stepper axis (a=stepper_x, b=stepper_y), an error names the motors.
-    x/y/xy are accepted too, so old scripts keep working."""
+def add_motor(parser: argparse.ArgumentParser, both: bool, help_text: str,
+              optional: bool = False):
+    """MOTOR of a command that runs motor A or B, or, with `both`, both of them by default;
+    `optional`: none by default (None). The command gets the stepper axis (a=stepper_x,
+    b=stepper_y), an error names the motors. x/y/xy are accepted too, so old scripts keep
+    working."""
     axes = {'a': 'x', 'b': 'y', 'x': 'x', 'y': 'y'}
     if both:
         axes.update(ab='xy', xy='xy')
@@ -41,7 +43,7 @@ def add_motor(parser: argparse.ArgumentParser, both: bool, help_text: str):
             raise argparse.ArgumentTypeError(expected % value)
         return axes[value.lower()]
     parser.add_argument('--motor', '--axis', dest='axis', metavar='MOTOR', type=motor,
-                        default='xy' if both else 'x', help=help_text)
+                        default=None if optional else 'xy' if both else 'x', help=help_text)
 
 
 def _save_motors(text: str) -> str:
@@ -153,8 +155,9 @@ def _gcode_args(argv: 'list[str]', boolean_flags: 'frozenset[str]') -> 'list[str
                 if '--no-' + flag[2:] in boolean_flags:
                     out.append('--no-' + flag[2:])
             else:
-                # silently treating e.g. DRY_RUN=Y as "off" would move the printer
-                raise SystemExit('%s: expected a boolean like 1/0, got %r'
+                # silently treating e.g. DRY_RUN=2 as "off" would move the printer; the
+                # action first: the display shows its first characters (failure_display)
+                raise SystemExit('fix %s=: expected 1 or 0, got %r'
                                  % (match.group(1), match.group(2)))
         else:
             out.extend((flag, match.group(2)))
@@ -171,6 +174,37 @@ def boolean_flags(parser: argparse.ArgumentParser) -> 'frozenset[str]':
             if isinstance(action, (argparse._StoreTrueAction, argparse.BooleanOptionalAction)):
                 flags.update(action.option_strings)
     return frozenset(flags)
+
+
+def macro_name(command: str) -> str:
+    """The macro of a CLI command: find-speed is CHOPPER_FIND_SPEED."""
+    return 'CHOPPER_' + command.upper().replace('-', '_')
+
+
+def macro_key(option: str) -> str:
+    """The macro parameter of a CLI option: --measure-time is MEASURE_TIME."""
+    return option[2:].replace('-', '_').upper()
+
+
+def macro_reason(message: str, command: str) -> str:
+    """argparse's error in the words of the macro: its parameter KEY=, not the CLI option,
+    and the action first, which the display shows (failure_display)."""
+    option = re.fullmatch(r'argument (--[\w-]+)[^:]*: (.*)', message, re.S)
+    if option:
+        return 'fix %s=: %s' % (macro_key(option.group(1)), option.group(2))
+    extra = re.fullmatch(r'unrecognized arguments: (.*)', message, re.S)
+    if not extra:
+        return message
+    params = []
+    for word in extra.group(1).split(' '):
+        if word.startswith('--'):
+            params.append(macro_key(word) + '=')
+        elif params and params[-1].endswith('='):
+            params[-1] += word
+        else:
+            params.append(word)
+    return 'drop %s: %s has no such parameter%s' % (' '.join(params), macro_name(command),
+                                                    's' if len(params) > 1 else '')
 
 
 def command_line(command: str, args=None, **changes) -> str:
@@ -194,9 +228,9 @@ def command_line(command: str, args=None, **changes) -> str:
             value = ','.join(str(field) for field in (value.tbl, value.toff, value.hstrt, value.hend))
         elif action.dest == 'axis':
             value = ''.join(motor_label(axis) for axis in value)
-        params.append('%s=%s' % (action.option_strings[0][2:].replace('-', '_').upper(),
+        params.append('%s=%s' % (macro_key(action.option_strings[0]),
                                  '%g' % value if isinstance(value, float) else value))
-    return ' '.join(['CHOPPER_' + command.upper().replace('-', '_')] + params)
+    return ' '.join([macro_name(command)] + params)
 
 
 def install_sigterm_handler():
@@ -208,9 +242,28 @@ def install_sigterm_handler():
         pass
 
 
+class BadParameter(SystemExit):
+    """argparse's refusal of the command line: its exit status 2, and the reason."""
+
+    def __init__(self, reason: str):
+        super().__init__(2)
+        self.reason = reason
+
+
+class Parser(argparse.ArgumentParser):
+    """argparse's parser, its subcommands' too. An error raises BadParameter, so main can
+    announce it like any other refusal."""
+
+    def error(self, message: str):
+        try:
+            super().error(message)          # the usage and the error on stderr, as argparse prints them
+        except SystemExit:
+            raise BadParameter(message) from None
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog='chopper-autotune',
-                                     description='Measurement-driven tuning of TMC chopper registers for Klipper')
+    parser = Parser(prog='chopper-autotune',
+                    description='Measurement-driven tuning of TMC chopper registers for Klipper')
     sub = parser.add_subparsers(dest='command', required=True)
 
     u = sub.add_parser('tune', help='the whole pipeline in one command: resonance speed + descent per motor')
@@ -237,6 +290,7 @@ def build_parser() -> argparse.ArgumentParser:
     c = sub.add_parser('collect', help='run measurements on the printer, write a dataset')
     c.add_argument('--socket', default=None,
                    help='klippy unix socket path, default: auto-detect (printer_data/comms, /tmp/klippy_uds)')
+    c.add_argument('--url', default='http://127.0.0.1:7125')
     c.add_argument('--csv', action='store_true',
                    help='fallback capture via ACCELEROMETER_MEASURE and its CSV instead of streaming')
     add_motor(c, False, 'motor a or b, one per run (a=stepper_x, b=stepper_y); x/y also accepted')
@@ -373,6 +427,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help='dataset directory, default: the latest collected one')
     a.add_argument('--dataset', dest='dataset_opt', default=None,
                    help='same as the positional argument, for DATASET= macro params')
+    add_motor(a, False, 'motor a or b: take the newest run of this motor, not the newest run of '
+                        'any motor; x/y also accepted', optional=True)
     a.add_argument('--top', type=int, default=15, help='rows in the console table')
     add_hearing(a, recorded=True)
     a.add_argument('--trim', type=float, default=0.25)
@@ -380,11 +436,11 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument('--html', default=None, help='report path, default <dataset>/report.html')
     a.add_argument('--no-html', action='store_true')
     a.add_argument('--apply', action='store_true',
-                   help='set the best config live via SET_TMC_FIELD, until Klipper restarts. '
-                        'On a motor without klipper_tmc_autotune, a later tune, collect, '
-                        'find-speed or demo run undoes it. Such a run ends by putting back the '
-                        'registers from the Klipper config. Demo on that motor also plays those '
-                        'registers, not the applied ones')
+                   help='set the best config live via SET_TMC_FIELD, until Klipper restarts. On '
+                        'a motor without klipper_tmc_autotune, a later tune, collect or find-speed '
+                        'run undoes it. Such a run ends by putting back the registers from the '
+                        'Klipper config. Demo on that motor refuses to start while the driver runs '
+                        'the applied registers')
     a.add_argument('--save', action='store_true',
                    help='write the best config of this dataset only into the Klipper config and '
                         'restart Klipper. The save command writes the latest run of each motor')
@@ -405,8 +461,8 @@ def build_parser() -> argparse.ArgumentParser:
                          'tuned TMC section; run_current stays as saved')
     rs.add_argument('--motor', type=_save_motors, default=None,
                     help='with --defaults: the motors to reset, a, b, e (the extruder) or several, '
-                         'e.g. ab; on an axis with two motors, a or b resets both drivers of the axis; '
-                         'default all three')
+                         'e.g. ab; default all three. On an axis with two or more motors, a or b '
+                         'resets every driver of the axis')
     rs.add_argument('--backup', action='store_true',
                     help='undo the last save: the driver_* and run_current lines it wrote get '
                          'back the values they had before it. The rest of the config stays. '
@@ -520,8 +576,18 @@ def main(argv=None) -> int:
     install_sigterm_handler()
 
     parser = build_parser()
-    args = parser.parse_args(_gcode_args(sys.argv[1:] if argv is None else argv,
-                                         boolean_flags(parser)))
+    argv = sys.argv[1:] if argv is None else argv
+    try:
+        args = parser.parse_args(_gcode_args(argv, boolean_flags(parser)))
+    except SystemExit as failure:
+        command = argv[0] if argv else parser.prog
+        reason = macro_reason(failure.reason, command) if isinstance(failure, BadParameter) \
+            else failure.code
+        # run.sh prints a start-up failure only within its first second: a CLI that starts
+        # slower is past it, as detached as any run
+        if isinstance(reason, str):
+            announce_failure(None, '%s FAILED: %s' % (command, reason))
+        raise
     if getattr(args, 'dataset_opt', None):
         args.dataset = args.dataset_opt
 

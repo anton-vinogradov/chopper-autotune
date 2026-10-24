@@ -638,20 +638,32 @@ def driver_of(settings: dict, stepper: str) -> 'str | None':
     return next((name for name in tmc.DRIVERS if 'tmc%s %s' % (name, stepper) in settings), None)
 
 
-def detect_hardware(kl: Klippy, axis: str, accel: bool = True) -> Hardware:
-    require_current_klipper(kl)                     # every tool that moves starts here
-    settings = kl.settings()
-    stepper = 'stepper_' + axis
+def driver_config(settings: dict, stepper: str) -> dict:
+    """One driver as the config sets it up, as Hardware fields: its supported TMC model,
+    the chopper registers of its driver_* lines, the stealthChop the config asks for, the
+    klipper_tmc_autotune goal."""
     name = driver_of(settings, stepper)
     if name is None:
         raise SystemExit('no supported TMC driver section found for %s' % stepper)
     driver, section = tmc.DRIVERS[name], settings['tmc%s %s' % (name, stepper)]
 
     baseline = {}
-    for field in ('tbl', 'toff', 'hstrt', 'hend') + (('tpfd',) if driver.has_tpfd else ()):
-        value = section.get('driver_' + field)
+    for register in ('tbl', 'toff', 'hstrt', 'hend') + (('tpfd',) if driver.has_tpfd else ()):
+        value = section.get('driver_' + register)
         if value is not None:
-            baseline[field] = int(value)
+            baseline[register] = int(value)
+
+    stealth = None
+    if driver.spreadcycle_switch and float(section.get('stealthchop_threshold') or 0) > 0:
+        stealth = driver.spreadcycle_switch
+    return {'stepper': stepper, 'driver': driver, 'baseline': baseline, 'stealth': stealth,
+            'autotune': autotune_goal(settings, stepper)}
+
+
+def detect_hardware(kl: Klippy, axis: str, accel: bool = True) -> Hardware:
+    require_current_klipper(kl)                     # every tool that moves starts here
+    settings = kl.settings()
+    own = driver_config(settings, 'stepper_' + axis)
 
     spans, centers = {}, {}
     for ax in ('x', 'y'):
@@ -664,28 +676,20 @@ def detect_hardware(kl: Klippy, axis: str, accel: bool = True) -> Hardware:
     kinematics = settings['printer']['kinematics']
     span = min(spans.values()) if 'core' in kinematics or 'hbot' in kinematics else spans[axis]
 
-    stealth = None
-    if driver.spreadcycle_switch and float(section.get('stealthchop_threshold') or 0) > 0:
-        stealth = driver.spreadcycle_switch
-
     # the endstop-referee tools never stream: no demanding a chip they won't use
     chip = resolve_accel_chip(settings, axis, lambda: kl.config_sections()) if accel else ''
     return Hardware(
         kl=kl,
-        stepper=stepper,
-        driver=driver,
         accel_chip=chip,
         kinematics=kinematics,
         axis_span=span,
         center=(centers['x'], centers['y']),
         max_accel=float(settings['printer']['max_accel']),
-        baseline=baseline,
-        stealth=stealth,
         # display_status is usually an implicit runtime object (auto-loaded on
         # Mainsail/Fluidd setups), not a config section — check the live objects
         display='display_status' in kl.object_list(),
-        autotune=autotune_goal(settings, stepper),
         measure_chip=accel_command_chip(settings, chip) if chip else '',
+        **own,
     )
 
 
@@ -1601,46 +1605,64 @@ def check_resume(manifest: dict, speeds: 'list[int]', accel: float, measure_time
 
 
 def run_collect(args) -> int:
+    from .moonraker import Moonraker
     kl = Klippy(find_socket(args.socket)).connect()
     try:
         code, root = collect(kl, args)
         if root:
-            what_next(kl, Dataset.open(root))
+            what_next(kl, Dataset.open(root), Moonraker(args.url))
         return code
     finally:
         kl.close()
 
 
-def what_next(kl: Klippy, ds: Dataset):
+def what_next(kl: Klippy, ds: Dataset, mk):
     """After a register search run on its own: what klipper_tmc_autotune means for its
-    result, to the log as CHOPPER_TUNE's summary says it, or how to hear and keep it."""
+    result, to the log as CHOPPER_TUNE's summary says it, or how to hear and keep it. mk:
+    Moonraker, for the config files (worth_saving)."""
     settings = kl.settings()
     manifest = ds.manifest()
     if ds.moves() and autotune_goal(settings, manifest['stepper']) is not None:
         print('\n%s: %s' % (manifest['stepper'], autotune_advice(settings, manifest['driver'],
                                                                   manifest['stepper'])))
-    tell_next(kl, hear_and_save(settings, ds))
+    tell_next(kl, hear_and_save(settings, ds, mk))
 
 
-def hear_and_save(settings: dict, ds: Dataset) -> 'list[str]':
+def hear_and_save(settings: dict, ds: Dataset, mk) -> 'list[str]':
     """How to hear and keep what a run found; none when it measured nothing or has nothing
     to save (worth_saving)."""
     manifest = ds.manifest()
-    if not ds.moves() or not worth_saving(settings, [manifest]):
+    if not ds.moves() or not worth_saving(settings, [manifest], mk):
         return []
-    return ['To hear the registers this run found, set them live: CHOPPER_ANALYZE APPLY=1',
+    from .cli import command_line
+    # without MOTOR= ANALYZE takes the newest run of any motor
+    return ['To hear the registers this run found, set them live: '
+            + command_line('analyze', axis=manifest['axis'], apply=True),
             'To save the registers this run found: ' + save_command([manifest])]
 
 
-def worth_saving(settings: dict, manifests: 'list[dict]') -> 'list[dict]':
-    """The runs whose registers a save would write and the driver would keep: not the
-    motor's own registers kept, not a winner the config already gives the motor, not on a
-    motor klipper_tmc_autotune rewrites at start."""
-    from .analyze import configured
+def worth_saving(settings: dict, manifests: 'list[dict]', mk) -> 'list[dict]':
+    """The runs whose registers a save would write and the driver would keep: not on a motor
+    klipper_tmc_autotune rewrites at start, not a winner the motor runs now and gets again at
+    Klipper's next start (analyze.stays: settings, then the files through mk). The motor's
+    own registers kept count the same way: Klipper may run them from an old copy it read,
+    and then a save still has to write them. Files Moonraker does not give leave the config
+    Klipper loaded to judge by: the run is over, and its result is in the dataset."""
+    from .analyze import configured, stays
+    from .moonraker import MoonrakerError
+
+    def stay(manifest: dict) -> bool:
+        try:
+            return stays(mk, settings, manifest['driver'], [manifest['stepper']],
+                         manifest['winner'])
+        except MoonrakerError as failure:
+            print('%s. The tool checks what is left to save against the config Klipper loaded, '
+                  'not against the config files Klipper reads at its next start' % failure)
+            return configured(settings, manifest['driver'], manifest['stepper'],
+                              manifest['winner'])
     return [manifest for manifest in manifests
-            if not manifest.get('kept') and autotune_goal(settings, manifest['stepper']) is None
-            and not (manifest.get('winner') and configured(settings, manifest['driver'],
-                                                           manifest['stepper'], manifest['winner']))]
+            if autotune_goal(settings, manifest['stepper']) is None
+            and not (manifest.get('winner') and stay(manifest))]
 
 
 def run_motors(manifests: 'list[dict]') -> str:

@@ -26,8 +26,8 @@ def test_chopper_parser():
         _chopper('2,3,5')
 
 
-def make_hw(baseline):
-    return Hardware(kl=None, stepper='stepper_x', driver=tmc.DRIVERS['2209'],
+def make_hw(baseline, stepper='stepper_x'):
+    return Hardware(kl=None, stepper=stepper, driver=tmc.DRIVERS['2209'],
                     accel_chip='adxl345', kinematics='corexy', axis_span=260,
                     center=(130, 130), max_accel=10000, baseline=baseline)
 
@@ -43,7 +43,8 @@ def demo_args(**over):
 def test_demo_rejects_when_not_yet_tuned(monkeypatch):
     monkeypatch.setattr(demo_module, 'detect_hardware',
                         lambda kl, axis: make_hw({'tbl': 2, 'toff': 3, 'hstrt': 5, 'hend': 0}))
-    with pytest.raises(SystemExit, match='nothing to demo'):
+    with pytest.raises(SystemExit, match='^tune and save motor A first: the config that Klipper '
+                                         'loaded gives the Klipper defaults '):
         demo(None, demo_args())
 
 
@@ -75,8 +76,10 @@ def test_run_demo_report_measures_both_motors(monkeypatch):
     monkeypatch.setattr(demo_module, 'demo', lambda kl, args: played.append(args.axis) or 0)
     monkeypatch.setattr(demo_module, 'find_socket', lambda socket: 'sock')
     monkeypatch.setattr(demo_module, 'Klippy', fake_klippy)
-    # MOTOR=AB REPORT=1 measures each motor in turn (the audible show goes through _together)
-    assert demo_module.run_demo(argparse.Namespace(axis='xy', report=True, socket=None, speed=None)) == 0
+    # MOTOR=AB REPORT=1 measures each motor in turn (the audible show goes through _together).
+    # Here and below a dry run: no driver read before the motors, which demo() fakes
+    assert demo_module.run_demo(argparse.Namespace(axis='xy', report=True, socket=None, speed=None,
+                                                   dry_run=True)) == 0
     assert played == ['x', 'y']
 
 
@@ -89,7 +92,8 @@ def test_run_demo_report_skips_an_untuned_motor(monkeypatch, capsys):
     monkeypatch.setattr(demo_module, 'demo', one_untuned)
     monkeypatch.setattr(demo_module, 'find_socket', lambda socket: 'sock')
     monkeypatch.setattr(demo_module, 'Klippy', fake_klippy)
-    assert demo_module.run_demo(argparse.Namespace(axis='xy', report=True, socket=None, speed=None)) == 2
+    assert demo_module.run_demo(argparse.Namespace(axis='xy', report=True, socket=None, speed=None,
+                                                   dry_run=True)) == 2
     assert 'motor A skipped' in capsys.readouterr().out
 
 
@@ -106,7 +110,8 @@ def test_run_demo_report_reraises_a_sigterm_exit(monkeypatch):
     monkeypatch.setattr(demo_module, 'find_socket', lambda socket: 'sock')
     monkeypatch.setattr(demo_module, 'Klippy', fake_klippy)
     with pytest.raises(SystemExit):
-        demo_module.run_demo(argparse.Namespace(axis='xy', report=True, socket=None, speed=None))
+        demo_module.run_demo(argparse.Namespace(axis='xy', report=True, socket=None, speed=None,
+                                                dry_run=True))
     assert played == ['x']
 
 
@@ -145,9 +150,9 @@ TUNED = {'tbl': 2, 'toff': 1, 'hstrt': 4, 'hend': 14}
 @pytest.mark.parametrize('argv, b, advice', [
     # motor B has tuned registers: alone, the demo scans for its speed and plays them
     (['demo', '--rounds', '2', '--default', '2,3,5,1', '--dry-run'], TUNED,
-     'no tuned speed recorded for motor B. The command that plays it alone scans for its resonance '
-     'speed first: CHOPPER_DEMO MOTOR=B DEFAULT=2,3,5,1 ROUNDS=2 DRY_RUN=1'),
-    # motor B runs the defaults: alone it has nothing to play against them
+     'no tuned speed recorded for motor B. The command that plays only motor B scans for its '
+     'resonance speed first: CHOPPER_DEMO MOTOR=B DEFAULT=2,3,5,1 ROUNDS=2 DRY_RUN=1'),
+    # motor B runs the defaults: on its own it has nothing to play against them
     (['demo', '--rounds', '2'], {'tbl': 2, 'toff': 3, 'hstrt': 5, 'hend': 0},
      'no tuned speed recorded for motor B. Its registers equal the defaults, so it has nothing to '
      'show. To tune it: CHOPPER_TUNE MOTOR=B')])
@@ -155,7 +160,7 @@ def test_show_requires_a_recorded_speed(monkeypatch, argv, b, advice):
     # a silent 50 mm/s fallback would play the show off resonance and prove nothing
     from chopper_autotune.cli import _gcode_args, boolean_flags, build_parser
     monkeypatch.setattr(demo_module, 'detect_hardware',
-                        lambda kl, axis: make_hw(TUNED if axis == 'x' else b))
+                        lambda kl, axis: make_hw(TUNED if axis == 'x' else b, 'stepper_' + axis))
     monkeypatch.setattr(demo_module, 'known_speed', lambda axis: None if axis == 'y' else 58)
     parser = build_parser()
     with pytest.raises(SystemExit) as refused:
@@ -170,30 +175,55 @@ def test_show_requires_a_recorded_speed(monkeypatch, argv, b, advice):
         assert demo(None, pasted) == 0
     else:
         assert pasted.command == 'tune' and pasted.axis == 'y'
-        with pytest.raises(SystemExit, match='nothing to demo'):
-            demo(None, parser.parse_args(['demo', '--motor', 'b']))
+        with pytest.raises(SystemExit, match='^tune and save motor B first'):
+            demo(None, parser.parse_args(['demo', '--motor', 'b', '--dry-run']))
+
+
+def tuned_motors(monkeypatch):
+    """A printer whose config gives both motors tuned registers."""
+    monkeypatch.setattr(demo_module, 'find_socket', lambda socket: 'sock')
+    monkeypatch.setattr(demo_module, 'Klippy', fake_klippy)
+    monkeypatch.setattr(demo_module, 'detect_hardware',
+                        lambda kl, axis, accel=True: make_hw(TUNED, 'stepper_' + axis))
 
 
 @pytest.mark.parametrize('argv, one', [
-    (['demo', '--speed', '40'], 'CHOPPER_DEMO MOTOR=A SPEED=40'),
+    (['demo', '--speed', '40', '--dry-run'], 'CHOPPER_DEMO MOTOR=A SPEED=40 DRY_RUN=1'),
     (['demo', '--motor', 'ab', '--speed', '40', '--report', '--dry-run'],
      'CHOPPER_DEMO MOTOR=A SPEED=40 REPORT=1 DRY_RUN=1'),
-    (['demo', '--speed', '40', '--default', '2/3/5/1'], 'CHOPPER_DEMO MOTOR=A SPEED=40 DEFAULT=2,3,5,1')])
+    (['demo', '--speed', '40', '--default', '2/3/5/1', '--dry-run'],
+     'CHOPPER_DEMO MOTOR=A SPEED=40 DEFAULT=2,3,5,1 DRY_RUN=1')])
 def test_a_demo_of_both_motors_takes_no_speed(monkeypatch, argv, one):
     # one SPEED on both motors plays at least one of them off its resonance
     from chopper_autotune.cli import _gcode_args, boolean_flags, build_parser
     from chopper_autotune.collect import failure_display
-    monkeypatch.setattr(demo_module, 'Klippy', lambda path: pytest.fail('nothing may connect'))
+    tuned_motors(monkeypatch)
     with pytest.raises(SystemExit) as refused:
         demo_module.run_demo(build_parser().parse_args(argv))
     assert refused.value.code == ('add MOTOR=A or B, or leave SPEED out: each motor has its own '
                                   'resonance speed. Without SPEED, each motor plays at the speed of '
-                                  'its last tune. To play motor A alone at this speed: ' + one)
+                                  'its last tune. To play only motor A at this speed: ' + one)
     assert failure_display('demo FAILED: ' + refused.value.code)[:16] == 'FAIL add MOTOR=A'
     # pasted, it plays motor A at that speed
     parser = build_parser()
     pasted = parser.parse_args(_gcode_args(['demo'] + one.split()[1:], boolean_flags(parser)))
     assert vars(pasted) == dict(vars(build_parser().parse_args(argv)), axis='x')
+
+
+@pytest.mark.parametrize('recorded, motor', [
+    ({}, 'A'), ({'x': 58}, 'B'), ({'y': 34}, 'A'), ({'x': 58, 'y': 34}, 'A')])
+def test_a_demo_of_both_motors_with_a_speed_names_the_motor_that_has_none(monkeypatch, recorded,
+                                                                         motor):
+    # without a speed from its last tune, the show of both refuses that motor and the report
+    # scans it: SPEED= is for it
+    from chopper_autotune.cli import build_parser
+    tuned_motors(monkeypatch)
+    monkeypatch.setattr(demo_module, 'known_speed', recorded.get)
+    with pytest.raises(SystemExit) as refused:
+        demo_module.run_demo(build_parser().parse_args(['demo', '--speed', '40', '--report',
+                                                        '--dry-run']))
+    assert refused.value.code.endswith(' To play only motor %s at this speed: CHOPPER_DEMO MOTOR=%s '
+                                       'SPEED=40 REPORT=1 DRY_RUN=1' % (motor, motor))
 
 
 def test_show_writes_state_for_both_motors(tmp_path, monkeypatch):
@@ -422,8 +452,9 @@ def test_the_show_puts_back_autotunes_registers_read_live(monkeypatch):
     assert kl.sent.index('G28 X Y') > kl.sent.index(writes[-1])      # restored, then re-homed
 
 
-def test_a_print_on_one_motor_stops_the_whole_report(monkeypatch):
-    # a running or paused print refuses every motor: one refusal, announced, no 'skipped'
+def test_a_print_stops_the_whole_report(monkeypatch):
+    # a running or paused print refuses every motor before any: one refusal, announced, no
+    # 'skipped'
     from argparse import Namespace
 
     from chopper_autotune.collect import PrinterBusy, refuse_if_printing
@@ -438,8 +469,9 @@ def test_a_print_on_one_motor_stops_the_whole_report(monkeypatch):
         'settings': lambda self: {'stepper_x': {}, 'stepper_y': {}}})())
     monkeypatch.setattr(demo_module, 'find_socket', lambda explicit=None: '<sock>')
     with pytest.raises(PrinterBusy, match='busy printing'):
-        demo_module.run_demo(Namespace(axis='xy', report=True, socket=None, speed=None))
-    assert tried == ['x']
+        demo_module.run_demo(Namespace(axis='xy', report=True, socket=None, speed=None,
+                                       dry_run=False))
+    assert tried == []
 
 
 def test_an_unsupported_klipper_stops_the_whole_report(monkeypatch):
@@ -459,7 +491,8 @@ def test_an_unsupported_klipper_stops_the_whole_report(monkeypatch):
         'settings': lambda self: {'stepper_x': {}, 'stepper_y': {}}})())
     monkeypatch.setattr(demo_module, 'find_socket', lambda explicit=None: '<sock>')
     with pytest.raises(UnsupportedKlipper):
-        demo_module.run_demo(Namespace(axis='xy', report=True, socket=None, speed=None))
+        demo_module.run_demo(Namespace(axis='xy', report=True, socket=None, speed=None,
+                                       dry_run=True))
     assert tried == ['x']
 
 
@@ -479,7 +512,8 @@ def test_a_shutdown_on_one_motor_stops_the_whole_report(monkeypatch):
         'settings': lambda self: {'stepper_x': {}, 'stepper_y': {}}})())
     monkeypatch.setattr(demo_module, 'find_socket', lambda explicit=None: '<sock>')
     with pytest.raises(KlipperShutdown):
-        demo_module.run_demo(Namespace(axis='xy', report=True, socket=None, speed=None))
+        demo_module.run_demo(Namespace(axis='xy', report=True, socket=None, speed=None,
+                                       dry_run=True))
     assert tried == ['x']
 
 

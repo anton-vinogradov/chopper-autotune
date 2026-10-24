@@ -390,7 +390,8 @@ def test_demo_does_not_skip_to_the_next_motor_after_a_thermal_stop(monkeypatch):
     monkeypatch.setattr(demo_module, 'Klippy', lambda path: kl)
     monkeypatch.setattr(demo_module, 'demo', hot)
     with pytest.raises(DriverTooHot):
-        demo_module.run_demo(build_parser().parse_args(['demo', '--report']))
+        # a dry run: no driver read before the motors, which demo() fakes
+        demo_module.run_demo(build_parser().parse_args(['demo', '--report', '--dry-run']))
     assert played == ['x']
 
 

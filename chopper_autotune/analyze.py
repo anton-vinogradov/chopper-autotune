@@ -42,7 +42,32 @@ def dataset_dirs(bases=None) -> 'list[Path]':
                    for path in base.iterdir() if (path / 'manifest.json').is_file()), key=written)
 
 
-def latest_dataset(bases=None) -> str:
+def motor_runs(axis: str, runs: 'list[Path] | None' = None):
+    """The (path, manifest) of each tuning run of the motor on `axis` among runs (default:
+    all of them), newest first. A run stopped before its first measurement is skipped,
+    named in the log."""
+    from .collect import motor_label
+    for path in reversed(dataset_dirs() if runs is None else runs):
+        manifest = Dataset(path).manifest()
+        if manifest.get('axis') != axis or 'search' not in manifest:
+            continue
+        if not manifest.get('winner') and not Dataset(path).moves():
+            print('motor %s: skipping run %s: it has no measurements'
+                  % (motor_label(axis), path.name))
+            continue
+        yield path, manifest
+
+
+def latest_dataset(bases=None, axis: 'str | None' = None) -> str:
+    """The run ANALYZE takes without DATASET=: the newest one, or with MOTOR= the newest
+    run of that motor, as CHOPPER_SAVE takes it."""
+    if axis:
+        from .collect import motor_label
+        for path, _ in motor_runs(axis, dataset_dirs(bases)):
+            return str(path)
+        # the action first: the display shows its first characters (failure_display)
+        raise SystemExit('tune motor %s first: none of its tuning runs has measurements'
+                         % motor_label(axis))
     for path in reversed(dataset_dirs(bases)):
         # scans and demos are not tuning results: analyzing (worse, SAVE-ing) a
         # two-combo demo dataset as "the latest run" would persist nonsense
@@ -408,6 +433,22 @@ def settings_without(settings: dict, stale: dict) -> dict:
     return settings
 
 
+def file_settings(listing: 'list[str]', read) -> dict:
+    """The sections as Klipper reads these files (config_chunks): {section: {option: value}},
+    lower-cased as in its settings."""
+    return {section.lower(): {option: value for option, (value, _) in options.items()}
+            for section, (_, options) in klipper_reads(config_chunks(listing, read)).items()}
+
+
+def restart_settings(mk) -> dict:
+    """file_settings of Klipper's next start, the old copies gone (move_old_copies). Klipper
+    runs what it read at its last start: old copies it read then, copies moved since, or a
+    file edited since set the two apart."""
+    return file_settings([name for name in mk.list_config_files()
+                          if not name.endswith(OLD_BACKUP_SUFFIX)],
+                         functools.lru_cache(maxsize=None)(mk.download_config))
+
+
 def section_file(files: 'dict[str, str]', section: str) -> 'str | None':
     """The file that holds the section, None when none does."""
     matches = [name for name in files
@@ -576,6 +617,41 @@ def run_apply(mk, stepper: str, chopper: tmc.Chopper):
                 mk.gcode('M118 ' + warning)
             except Exception:
                 pass
+
+
+def applied_line(mk, manifest: dict, dataset: str, chopper: tmc.Chopper, args) -> str:
+    """The console line of APPLY: the registers, the run, the driver; what CHOPPER_DEMO
+    makes of them, which refuses a driver on registers other than the config Klipper loaded
+    gives it (demo.refuse_set_live); how to keep them: this ANALYZE on this run with SAVE=1
+    for APPLY=1, its hearing and trim choosing the same set."""
+    from .cli import command_line
+    from .collect import autotune_goal, driver_config, motor_label
+    settings = mk.settings()
+    stepper = manifest['stepper']
+    line = ('Motor %s: %s from run %s is set on %s'
+            % (motor_label(manifest['axis']), chopper.label(), Path(dataset).name, stepper))
+    # klipper_tmc_autotune writes its own registers at every start, whatever printer.cfg says
+    if manifest.get('autotune') or autotune_goal(settings, stepper) is not None:
+        return line + ' until Klipper restarts'
+    if stays(mk, settings, manifest['driver'], [stepper], chopper.fields()):
+        return line + ('. These are the registers Klipper loaded from its config at its last '
+                       'start. The run found nothing to change')
+    line += ' until Klipper restarts'
+    own = driver_config(settings, stepper)
+    saved = tmc.baseline_chopper(dict(own['baseline'], **chopper.fields()),
+                                 default=own['driver'].default)
+    if configured(settings, manifest['driver'], stepper, chopper.fields()):
+        hear = ('Klipper runs them from the config it loaded. At its next start, Klipper loads '
+                'other registers from its config files')
+    elif saved == own['driver'].default:
+        hear = ('These are the Klipper defaults. CHOPPER_DEMO refuses to start while %s runs '
+                'them. After you save them, it has nothing to play against the defaults' % stepper)
+    else:
+        hear = ('CHOPPER_DEMO refuses to start while %s runs them. At its end, the demo would put '
+                'back the registers Klipper loaded from its config. After you save them, '
+                'CHOPPER_DEMO plays them' % stepper)
+    return '%s. %s. To save them: %s' % (line, hear, command_line(
+        'analyze', args, dataset_opt=dataset, axis=None, apply=False, save=True))
 
 
 def run_save(mk, items: 'list[tuple[dict, tmc.Chopper]]', extruder_state: 'dict | None' = None,
@@ -811,26 +887,31 @@ def configured(settings: dict, driver_name: str, stepper: str, fields: dict) -> 
                for field, value in fields.items())
 
 
-def axis_choice(args, axis: str, settings: dict, since: float,
-                runs: 'list[Path] | None' = None) -> 'tuple[str, tuple | None, bool]':
+def stays(mk, settings: dict, driver_name: str, steppers: 'list[str]', fields: dict) -> bool:
+    """Whether each of the steppers keeps these registers with nothing saved: the config
+    Klipper loaded at its last start gives them (settings), and so do the files it reads at
+    the next one (restart_settings, read through mk once the first holds). Only then does
+    a save write nothing and restart nothing."""
+    def held(view):
+        return all(configured(view, driver_name, stepper, fields) for stepper in steppers)
+    return held(settings) and held(restart_settings(mk))
+
+
+def axis_choice(args, axis: str, settings: dict, since: float, runs: 'list[Path] | None',
+                mk, loaded: dict) -> 'tuple[str, tuple | None, bool]':
     """What CHOPPER_SAVE does with a motor of the gantry: its console line, the (manifest,
     registers) to write or None, and whether the line is a refusal. The motor's run is
-    its newest tuning dataset among runs (default: all of them); one stopped before its
-    first measurement does not count."""
+    its newest tuning dataset among runs (all of them when None); one stopped before its
+    first measurement does not count. settings: the config as Klipper reads it once the
+    old copies are gone; loaded: Klipper's settings, what it runs; mk: the files (stays)."""
     from .cli import command_line
     from .collect import BACK_TO_BACK_ROUNDS, motor_label
     from .tune import winner_of
     motor = 'motor ' + motor_label(axis)
-    for path in reversed(runs or dataset_dirs()):
-        manifest = Dataset(path).manifest()
-        if manifest.get('axis') != axis or 'search' not in manifest:
-            continue
+    for path, manifest in motor_runs(axis, runs):
         winner = manifest.get('winner')
-        if not winner and not Dataset(path).moves():
-            print('%s: skipping run %s: it has no measurements' % (motor, path.name))
-            continue
-        why = save_refusal(settings, manifest.get('driver', 'XXXX'), 'stepper_' + axis,
-                           autotune=manifest.get('autotune'))
+        driver_name, stepper = manifest.get('driver', 'XXXX'), 'stepper_' + axis
+        why = save_refusal(settings, driver_name, stepper, autotune=manifest.get('autotune'))
         if why:
             return '%s: %s' % (motor, why), None, True
         if not winner:
@@ -838,8 +919,7 @@ def axis_choice(args, axis: str, settings: dict, since: float,
                     '(SEARCH=grid) with VALIDATE=0. So repeat measurements have not confirmed its '
                     'top-ranked registers. To save them anyway: CHOPPER_ANALYZE DATASET=%s SAVE=1'
                     % (motor, path.name, path)), None, False
-        if manifest.get('kept') and configured(settings, manifest['driver'], 'stepper_' + axis,
-                                               winner):
+        if manifest.get('kept') and stays(mk, loaded, driver_name, [stepper], winner):
             return ('%s: your registers %s stay. In run %s, neither the winner nor Klipper '
                     'defaults was quieter than them in all %d rounds'
                     % (motor, tmc.Chopper(**winner).label(), path.name, BACK_TO_BACK_ROUNDS)), \
@@ -848,7 +928,7 @@ def axis_choice(args, axis: str, settings: dict, since: float,
             manifest, combo = winner_of(str(path), args)
         except SystemExit as reason:
             return '%s: %s' % (motor, reason), None, True
-        if configured(settings, manifest['driver'], 'stepper_' + axis, combo.fields()):
+        if stays(mk, loaded, driver_name, [stepper], combo.fields()):
             return ('%s: the config already has %s, the result of run %s, so there is nothing '
                     'to write' % (motor, combo.label(), path.name)), None, False
         if written(path) < since:
@@ -926,16 +1006,18 @@ def run_save_latest(args, motors: 'str | None' = None, runs: 'list[Path] | None'
     runs: the datasets to take the motors' runs from instead of all; CHOPPER_TUNE SAVE=1
     passes its own, newer than any CHOPPER_RESTORE whatever the clock says."""
     mk = Moonraker(args.url)
+    loaded = mk.settings()
     # Klipper read the old copies at its last start: each motor is weighed against the
     # config as Klipper reads it once they are gone
-    settings = settings_without(mk.settings(), move_old_copies(mk, args.dry_run))
+    settings = settings_without(loaded, move_old_copies(mk, args.dry_run))
     lines, refusals, items, extruder_state = [], [], [], None
     for motor in motors or args.motor:
         since = 0.0 if runs else last_restore(motor)
         if motor == 'E':
             line, extruder_state, refused = extruder_choice(args, settings, since)
         else:
-            line, item, refused = axis_choice(args, MOTOR_AXES[motor], settings, since, runs)
+            line, item, refused = axis_choice(args, MOTOR_AXES[motor], settings, since, runs,
+                                              mk, loaded)
             if item:
                 items.append(item)
         lines.append(line)
@@ -1090,11 +1172,22 @@ def run_status(args) -> int:
 
 
 def run_analyze(args) -> int:
-    dataset = args.dataset or latest_dataset()
+    axis = getattr(args, 'axis', None)
+    dataset = args.dataset or latest_dataset(axis=axis)
     ds = Dataset.open(dataset)
     manifest = ds.manifest()
+    if axis and manifest.get('axis') != axis:
+        from .collect import motor_label
+        # the action first: the display shows its first characters (failure_display)
+        raise SystemExit('drop DATASET= or MOTOR=: %s is a run of motor %s, not of motor %s'
+                         % (dataset, motor_label(manifest.get('axis') or '?'), motor_label(axis)))
     driver = tmc.DRIVERS[manifest['driver']]
     aggregates = aggregate(ds, args.recompute, args.trim)
+    if not aggregates and not args.dataset and not axis:
+        # the action first: the display shows its first characters (failure_display)
+        raise SystemExit('add MOTOR=A or MOTOR=B: the newest run, %s, has no successful '
+                         'measurements. With MOTOR=, CHOPPER_ANALYZE takes the newest run of that '
+                         'motor that has them' % Path(dataset).name)
     if not aggregates:
         raise SystemExit('no successful measurements in %s' % dataset)
     hearing = tmc.Hearing.of(args, manifest)
@@ -1156,9 +1249,10 @@ def run_analyze(args) -> int:
         print('\nRecommended for printer.cfg:\n')
     print(tmc.cfg_snippet(driver, manifest['stepper'], best['chopper']))
     if args.apply and not args.save:
-        run_apply(Moonraker(args.url), manifest['stepper'], best['chopper'])
-        print('\nApplied via SET_TMC_FIELD (runtime only%s)'
-              % ('' if manifest.get('autotune') else ', use SAVE=1 to persist'))
+        mk = Moonraker(args.url)
+        run_apply(mk, manifest['stepper'], best['chopper'])
+        # APPLY runs detached: the console sees nothing else of it
+        tell(mk, [applied_line(mk, manifest, dataset, best['chopper'], args)])
     if args.save:
         from .cli import command_line
         from .collect import motor_label
