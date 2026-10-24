@@ -90,3 +90,9 @@ def test_the_self_check_knows_every_macro():
     names = re.search(r'for name in \[([^\]]*)\]', check).group(1)
     assert sorted(re.findall(r"'([A-Z_]+)'", names)) == sorted(
         name[len('CHOPPER_'):] for name in our_macros())
+
+
+def test_the_command_reference_says_only_not_alone_of_one_motor():
+    # on an axis with two motors "the motor alone" is the one without a second motor
+    assert [name for name, section in sections(read('README.md')).items()
+            if re.search(r'\balone\b', section)] == []

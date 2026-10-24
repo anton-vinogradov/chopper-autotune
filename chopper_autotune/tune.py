@@ -15,6 +15,7 @@ from .collect import (Screen, autotune_advice, autotune_goal, collect, driver_of
 from .dataset import Dataset
 from .find_speed import no_peak, scan, tune_at
 from .klippy import Klippy, find_socket
+from .moonraker import Moonraker
 
 DRY_RUN_SPEED = 60
 
@@ -152,7 +153,7 @@ def run_tune(args) -> int:
             raise SystemExit(unpeaked.pop())
         runs = [manifest for manifest, _ in winners]
         free = [manifest for manifest in runs if not managed(manifest)]
-        changed = worth_saving(settings, runs)
+        changed = worth_saving(settings, runs, Moonraker(args.url))
 
         # the run's outcome must reach the screen: the console summary below only lands
         # in the detached log, and SAVE=1 restarts Klipper, wiping the status line — so

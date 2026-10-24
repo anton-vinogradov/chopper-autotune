@@ -92,6 +92,16 @@ def test_a_wrong_motor_is_named_in_motors_with_the_right_form(command, value, ca
     assert '--motor MOTOR' in err and "'x'" not in err and '{x' not in err
 
 
+def test_analyze_takes_one_motor_or_none(capsys):
+    # without MOTOR, ANALYZE takes the newest run of any motor
+    parser = build_parser()
+    assert parser.parse_args(['analyze']).axis is None
+    assert parser.parse_args(_gcode_args(['analyze', 'MOTOR=B', 'APPLY=1'], FLAGS)).axis == 'y'
+    with pytest.raises(SystemExit):
+        parser.parse_args(_gcode_args(['analyze', 'MOTOR=AB'], FLAGS))
+    assert "expected MOTOR=A or MOTOR=B, one motor per run; got 'AB'\n" in capsys.readouterr().err
+
+
 @pytest.mark.parametrize('value, motors', [('A', 'A'), ('ab', 'AB'), ('EA', 'AE'), ('bea', 'ABE')])
 def test_save_takes_motors_a_b_and_e_in_any_combination(value, motors):
     parser = build_parser()

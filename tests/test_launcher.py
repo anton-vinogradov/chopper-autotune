@@ -171,3 +171,52 @@ def test_the_launchers_take_the_yes_values_the_cli_takes(script, first, keys):
     patterns = re.findall(r'\b(%s)=(\w+)' % '|'.join(keys), pattern)
     assert sorted(patterns) == sorted((key, value) for key in keys for value in TRUE_VALUES)
 
+
+
+@pytest.mark.parametrize('argv, error, reason, display', [
+    (['analyze', 'MOTOR=C', 'APPLY=1'],
+     "argument --motor/--axis: expected MOTOR=A or MOTOR=B, one motor per run; got 'C'",
+     "fix MOTOR=: expected MOTOR=A or MOTOR=B, one motor per run; got 'C'", 'FAIL fix MOTOR=:'),
+    (['demo', 'MOTOR=A', 'SPEED=0'],
+     "argument --speed: expected one speed as a whole number of mm/s above 0, e.g. 40, got '0'",
+     "fix SPEED=: expected one speed as a whole number of mm/s above 0, e.g. 40, got '0'",
+     'FAIL fix SPEED=:'),
+    (['tune', 'FOO=1'], 'unrecognized arguments: --foo 1',
+     'drop FOO=1: CHOPPER_TUNE has no such parameter', 'FAIL drop FOO=1:'),
+    (['tune', 'FOO=1', 'MOTOR=A', 'BAR=x'], 'unrecognized arguments: --foo 1 --bar x',
+     'drop FOO=1 BAR=x: CHOPPER_TUNE has no such parameters', 'FAIL drop FOO=1 '),
+    (['collect', 'SPEED=60', 'DRY_RUN=2'], None, "fix DRY_RUN=: expected 1 or 0, got '2'",
+     'FAIL fix DRY_RUN')])
+def test_a_bad_parameter_reaches_the_console_and_the_display_however_slow_the_start(
+        argv, error, reason, display, monkeypatch, capsys):
+    # run.sh prints a start-up failure only within its first second: past it the run is
+    # detached, and the CLI itself says what failed, on a printer of each release, in the
+    # words of the macro: its parameters, not the CLI's options. stderr keeps argparse's
+    import types
+
+    import klipper_front
+    from chopper_autotune import cli, klippy
+    from chopper_autotune.collect import failure_display
+    from test_klipper_front import SOURCES, printer_cfg, require
+    for source in SOURCES:
+        require(source)
+        front = klipper_front.Front(source, printer_cfg())
+        monkeypatch.setattr(klippy, 'Klippy', lambda path: types.SimpleNamespace(
+            connect=lambda: front.connect()))
+        monkeypatch.setattr(klippy, 'find_socket', lambda explicit=None: '<front>')
+        message = '%s FAILED: %s' % (argv[0], reason)
+        for sync in (True, False):
+            # a foreground run's macro holds Klipper's G-code queue: its output goes there
+            if sync:
+                monkeypatch.setenv('CHOPPER_SYNC', '1')
+            else:
+                monkeypatch.delenv('CHOPPER_SYNC', raising=False)
+            with pytest.raises(SystemExit) as failed:
+                cli.main(argv)
+            assert failed.value.code == (2 if error else reason)
+            assert ('error: %s\n' % error in capsys.readouterr().err) == bool(error)
+            assert ('echo: ' + message in front.console) != sync
+        assert front.status({'display_status': ['message']})['display_status']['message'] \
+            == failure_display(message)
+        assert failure_display(message)[:16] == display
+        assert not [line for line in front.console if line.startswith('!!')]
