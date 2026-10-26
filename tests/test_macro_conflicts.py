@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import pytest
 
 import klipper_front
-from chopper_autotune import belts, current, demo, envelope, extruder, resonance_map, tune
+from chopper_autotune import belts, current, demo, envelope, extruder, resonance_map, tmc, tune
 from chopper_autotune.cli import _gcode_args, boolean_flags, build_parser, dispatch
 from klipper_config import CFG, named, our_macros, read_like_klipper, run_selfcheck, selfcheck, settings_of
 from test_klipper_front import SOURCES, awd_cfg, require
@@ -288,6 +288,27 @@ def test_the_results_name_each_axis_on_limited_cartesian(tmp_path, panel_module,
     panel.motors = []
     assert ('[printer] velocity ≤471 (X ≤400, Y ≤250) · accel ≤11100 (X ≤10000, Y ≤5000)'
             in panel.results_text())
+
+
+def test_the_panel_shows_only_a_figure_that_a_run_of_that_motor_alone_wrote(tmp_path, panel_module,
+                                                                          monkeypatch):
+    # an older show of both motors wrote their gain together to each motor: motor A, which
+    # gained nothing, would read -3%. That show never wrote the extruder's figure
+    import json
+    printer = tmp_path / 'printer.cfg'
+    printer.write_text('[tmc2209 stepper_x]\ndriver_tbl: 1\ndriver_toff: 3\ndriver_hstrt: 4\n'
+                       'driver_hend: 3\n[tmc2209 stepper_y]\ndriver_tbl: 2\ndriver_toff: 1\n'
+                       'driver_hstrt: 4\ndriver_hend: 14\n[tmc2209 extruder]\ndriver_tbl: 1\n'
+                       'driver_toff: 4\ndriver_hstrt: 5\ndriver_hend: 2\n')
+    monkeypatch.setattr('chopper_autotune.dataset.RESULTS_HOME', tmp_path)
+    (tmp_path / 'state.json').write_text(json.dumps({'x': {'regs': '1/3/4/3', 'quieter': 1.03},
+                                                     'extruder': {'regs': '1/4/5/2', 'quieter': 1.25}}))
+    demo.write_state('y', tmc.Chopper(2, 1, 4, 14), 1.06)
+    monkeypatch.setattr(panel_module, 'STATE', str(tmp_path / 'state.json'))
+    panel = panel_on(panel_module, str(printer))
+    panel.motors = (('stepper_x', 'A'), ('stepper_y', 'B'), ('extruder', 'E'))
+    assert [row.rstrip() for row in panel.register_table().splitlines()[1:]] == [
+        'A     2/3/5/0 → 1/3/4/3', 'B     2/3/5/0 → 2/1/4/14   -6%', 'E     2/3/5/0 → 1/4/5/2    -20%']
 
 
 @pytest.fixture

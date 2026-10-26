@@ -214,11 +214,13 @@ def test_the_show_runs_each_rail_on_its_own_set_and_puts_the_printer_back(source
     assert chips(front) == configured
     assert limits_in_force(front) == limits
     assert homed(front) == 'xy'
-    state = json.loads((collect.RESULTS_HOME / 'state.json').read_text())
-    assert {axis: state[axis]['regs'] for axis in 'xy'} == {
-        axis: '/'.join(str(value) for value in sets[axis]['tuned'].values()) for axis in 'xy'}
+    out = capsys.readouterr().out
+    assert len(re.findall(r'\n   => both motors, defaults \d+ -> tuned \d+: \d\.\d\dx less '
+                          r'vibration\n', out)) == 2
+    # the panel shows each motor's own gain, which the show of both does not measure
+    assert not (collect.RESULTS_HOME / 'state.json').exists()
     # both motors play at once: neither goes first (rails_first)
-    assert 'goes first' not in capsys.readouterr().out
+    assert 'goes first' not in out
 
 
 @pytest.mark.parametrize('source', SOURCES)
@@ -821,7 +823,8 @@ def test_the_show_with_a_default_equal_to_one_saved_set_names_it(source, monkeyp
 @pytest.mark.parametrize('source', SOURCES)
 def test_the_show_says_which_motor_plays_the_same_registers_in_both_rounds(source, monkeypatch,
                                                                            capsys):
-    # motor A tuned and saved, motor B on Klipper defaults: the panel shows no gain for B
+    # motor A tuned and saved, motor B on Klipper defaults: the demo of only motor B has nothing
+    # to play
     require(source)
     front = klipper_front.Front(source, tuned_cfg(awd_cfg('meijjaa'), '5160', 'x'))
     assert run_demo(front, monkeypatch, ['--speed', '60', '--rounds', '1', '--repeats', '1']) == 0
@@ -837,11 +840,13 @@ def test_the_show_says_which_motor_plays_the_same_registers_in_both_rounds(sourc
                        if re.search('^G28 ', script, re.M))
     assert re.search(r'both motors together: \d\.\d\dx less vibration overall; motor B played the '
                      r'same registers in DEFAULTS and TUNED\n', out)
-    assert [line for line in front.console
-            if line.startswith('echo: Chopper: both motors together ')][-1] \
-        .endswith('x less vibration; motor B played the same registers in DEFAULTS and TUNED')
-    state = json.loads((collect.RESULTS_HOME / 'state.json').read_text())
-    assert state['y']['quieter'] is None and state['x']['quieter'] > 1
+    verdict = max(index for index, line in enumerate(front.console)
+                  if line.startswith('echo: Chopper: both motors together '))
+    assert front.console[verdict].endswith(
+        'x less vibration; motor B played the same registers in DEFAULTS and TUNED')
+    assert front.console[verdict + 1:] == [
+        'Chopper: To see the gain of motor A, play only that motor: CHOPPER_DEMO MOTOR=A ROUNDS=1 '
+        'REPEATS=1']
 
 
 @pytest.mark.parametrize('source', SOURCES)

@@ -444,7 +444,10 @@ class Panel(ScreenPanel):
 
     def noise_change(self, axis, tuned, state):
         entry = state.get(axis)
-        if not tuned or not entry or not entry.get("quieter"):
+        # on motor A or B, a figure without "own" may be the gain of both motors together
+        # (write_state); the extruder never got one
+        if not tuned or not entry or not entry.get("quieter") or (
+                axis in ("x", "y") and not entry.get("own")):
             return ""
         saved = str(entry.get("regs", ""))
         # a state.json written before the fifth (TPFD) register was recorded carries four
