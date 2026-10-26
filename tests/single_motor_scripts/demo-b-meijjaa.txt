@@ -67,7 +67,7 @@ SET_TMC_FIELD STEPPER=stepper_y FIELD=tpfd VALUE=4
 
 G28 X Y
 
-M117 B 1.2x less vib
+M117 B 1.15x less vib
 
-M118 Chopper demo: 1.2x less vibration
+M118 Chopper demo: motor B, 1.15x less vibration
 

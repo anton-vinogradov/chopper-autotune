@@ -73,9 +73,9 @@ M400
 G1 X105.00 Y175.00 F3600
 M400
 
-M117 1.3x less vib
+M117 1.25x less vib
 
-RESPOND PREFIX="Chopper:" MSG="both motors: 1.3x less vibration"
+RESPOND PREFIX="Chopper:" MSG="both motors, defaults 1600 -> tuned 1280: 1.25x less vibration"
 
 SET_TMC_FIELD STEPPER=stepper_x FIELD=tbl VALUE=1
 SET_TMC_FIELD STEPPER=stepper_x FIELD=toff VALUE=4
@@ -91,7 +91,11 @@ M204 S3000
 
 G28 X Y
 
-M117 1.3x less vib
+M117 1.25x less vib
 
-M118 Chopper: both motors together 1.3x less vibration
+M118 Chopper: both motors together 1.25x less vibration
+
+RESPOND PREFIX="Chopper:" MSG="To see the gain of motor A, play only that motor: CHOPPER_DEMO MOTOR=A ROUNDS=1 REPEATS=1"
+
+RESPOND PREFIX="Chopper:" MSG="To see the gain of motor B, play only that motor: CHOPPER_DEMO MOTOR=B ROUNDS=1 REPEATS=1"
 

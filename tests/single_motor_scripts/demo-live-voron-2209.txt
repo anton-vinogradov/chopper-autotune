@@ -57,9 +57,9 @@ M400
 FORCE_MOVE STEPPER=stepper_x DISTANCE=-72.000 VELOCITY=60.0 ACCEL=300
 M400
 
-M117 A 1.3x less vib
+M117 A 1.25x less vib
 
-RESPOND PREFIX="Chopper:" MSG="def 799 -> tuned 639  1.3x less vibration"
+RESPOND PREFIX="Chopper:" MSG="motor A, defaults 799 -> tuned 639: 1.25x less vibration"
 
 SET_TMC_FIELD STEPPER=stepper_x FIELD=tbl VALUE=1
 SET_TMC_FIELD STEPPER=stepper_x FIELD=toff VALUE=4
@@ -68,7 +68,7 @@ SET_TMC_FIELD STEPPER=stepper_x FIELD=hend VALUE=3
 
 G28 X Y
 
-M117 A 1.3x less vib
+M117 A 1.25x less vib
 
-M118 Chopper demo: 1.3x less vibration
+M118 Chopper demo: motor A, 1.25x less vibration
 

@@ -254,7 +254,7 @@ def test_report_winner_reports_improvement_vs_defaults(tmp_path, monkeypatch, ca
     assert ds.manifest()['improvement'] == 2.0
     assert 'less vibration' in finals[0]                 # the display says what it bought
     state = json.loads((tmp_path / 'state.json').read_text())
-    assert state['x'] == {'regs': '0/2/4/7', 'quieter': 2.0}   # the panel column fills
+    assert state['x'] == {'regs': '0/2/4/7', 'quieter': 2.0, 'own': True}   # the panel column fills
 
 
 def test_resolve_accel_chip_never_guesses_a_name():

@@ -1,6 +1,6 @@
 """The scripts a printer with one motor per axis gets from COLLECT, FIND_SPEED, DEMO, MAP
-and TUNE, what the run prints and the dataset it writes, recorded from the code of main:
-tools that learn to move a rail (#129) must not change a line for a single motor. The
+and TUNE, what the run prints and the dataset it writes, as the code of main makes them:
+a change not meant for a single motor, such as one for a rail (#129), must not change them. The
 printers are AWD's own (tests/test_klipper_front.py) without the twins, frozen beside the
 scripts (printer-*.cfg): meijjaa's cartesian with its low limits, a Voron's CoreXY, and that
 Voron with a second motor on Y alone, where motor A still runs alone on its axis; each built
@@ -8,20 +8,29 @@ from every release's modules. The scores the text and the dataset carry come fro
 printer's accelerometer, whose samples fall a little apart on each release: they are held on
 PRINTED_ON, to nine significant digits, the last ones being numpy's and the platform's.
 
-After merging main, record the references again from main's code:
+A PR that changes on purpose what a single motor gets records the references again, from
+its own commit: a recording runs a commit, not the files of a tree. Until then this test
+fails in the cases whose output the PR changes, and only there. Commit the change, then run:
 
     python tests/record_single_motor_scripts.py --check
-    python tests/record_single_motor_scripts.py origin/main
+    python tests/record_single_motor_scripts.py HEAD
 
 The first command records from the commit the references came from, which
-single_motor_scripts/recorded-from names, with the merged tests. It must reproduce them byte
-for byte, except a score's digits past the ninth significant one, which this test ignores. If
-the recording fails or more differs, the merge changed how the tests drive the tools (run(),
-the test printer), and a new recording would carry that change along with main's: find out why
-first. The second command records from main into single_motor_scripts and names the files that
-changed. Apart from such digits, each change in `git diff tests/single_motor_scripts` must
-come from a change in main; this test then holds the merged code to them. A normal test run
-records nothing."""
+single_motor_scripts/recorded-from names, with the PR's tests. main takes each PR as one
+squashed commit, so after a merge recorded-from names a commit that is not in main, and a
+clone may not have it: git then fails to find it. In that case check from the commit of main
+the PR branches from. CI runs this test on every commit of main, so that commit's code gives
+the same references:
+
+    python tests/record_single_motor_scripts.py --check $(git merge-base HEAD origin/main)
+
+The check must reproduce the references byte for byte, except a score's digits past the
+ninth significant one, which this test ignores. If the recording fails otherwise or more
+differs, the PR changed how the tests drive the tools (run(), the test printer), and a new
+recording would carry that change along with the PR's: find out why first. The second command
+records from the PR's commit into single_motor_scripts and names the files that changed.
+Apart from such digits, each change in `git diff tests/single_motor_scripts` must be one the
+PR means to make: commit the references with the PR. A normal test run records nothing."""
 import os
 import re
 import types

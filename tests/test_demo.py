@@ -228,26 +228,79 @@ def test_a_demo_of_both_motors_with_a_speed_names_the_motor_that_has_none(monkey
                                        'SPEED=40 REPORT=1 DRY_RUN=1' % (motor, motor))
 
 
-def test_show_writes_state_for_both_motors(tmp_path, monkeypatch):
-    import json
-
+def show_of_both(monkeypatch, tmp_path, sweeps: list, b: dict = TUNED):
+    """A printer with a display for showcase_together, whose motor A runs TUNED and motor B
+    `b`, and whose sweeps measure `sweeps` in turn, the defaults of a round first; and the
+    scripts it is sent."""
+    from dataclasses import replace
     monkeypatch.setattr('chopper_autotune.dataset.RESULTS_HOME', tmp_path)
-    monkeypatch.setattr(demo_module, 'detect_hardware',
-                        lambda kl, axis: make_hw({'tbl': 2, 'toff': 1, 'hstrt': 4, 'hend': 14}))
+    monkeypatch.setattr(demo_module, 'detect_hardware', lambda kl, axis: replace(
+        make_hw(TUNED if axis == 'x' else b, 'stepper_' + axis), display=True))
     monkeypatch.setattr(demo_module, 'known_speed', lambda axis: 58 if axis == 'x' else 34)
-    sweeps = iter([[2000.0], [1000.0]] * 2)
+    sweeps = iter(sweeps)
     monkeypatch.setattr(demo_module, '_sweep', lambda *a, **kw: next(sweeps))
-    kl = type('K', (), {'gcode': lambda self, s: None, 'request': lambda self, *args: LIVE,
+    sent = []
+    kl = type('K', (), {'gcode': lambda self, s: sent.append(s),
+                        'request': lambda self, *args: LIVE,
                         'gcode_output': lambda self, s: [],
                         'subscribe_accel': lambda self, chip: None,
                         'settings': lambda self: {},          # no driver sections: guard idle
                         'is_printing': lambda self: False})()
+    return kl, sent
 
+
+def test_each_round_of_the_show_prints_its_own_vibrations_and_gain_with_two_decimals(
+        tmp_path, monkeypatch, capsys):
+    # with one decimal, a gain under 5% reads 1.0x, as if tuning gave nothing; in round 2
+    # and overall TUNED vibrates more, which "less vibration" would hide
+    from chopper_autotune.collect import LCD_WIDTH
+    kl, sent = show_of_both(monkeypatch, tmp_path, [[1040.0], [1000.0], [1000.0], [1100.0]])
     assert demo_module.showcase_together(kl, demo_args(dry_run=False, rounds=2)) == 0
-    state = json.loads((tmp_path / 'state.json').read_text())
-    # the Show button must feed the panel's vibration column for both motors
-    assert state == {'x': {'regs': '2/1/4/14', 'quieter': 2.0},
-                     'y': {'regs': '2/1/4/14', 'quieter': 2.0}}
+    out = capsys.readouterr().out
+    rounds = ['both motors, defaults 1040 -> tuned 1000: 1.04x less vibration',
+              'both motors, defaults 1000 -> tuned 1100: 1.10x more vibration']
+    assert [line[len('   => '):] for line in out.splitlines() if line.startswith('   => ')] \
+        == rounds
+    assert [script for script in sent if script.startswith('RESPOND ') and ' -> ' in script] \
+        == ['RESPOND PREFIX="Chopper:" MSG="%s"' % line for line in rounds]
+    assert '\nboth motors together: 1.03x more vibration overall\n' in out     # 1050 / 1020
+    assert 'M118 Chopper: both motors together 1.03x more vibration' in sent
+    shown = [script[len('M117 '):] for script in sent if script.startswith('M117 ')]
+    assert [text for text in shown if 'vib' in text] == [
+        '1.04x less vib', '1.10x more vib', '1.03x more vib']   # each round, then the result
+    assert max(len(text) for text in shown) <= LCD_WIDTH
+
+
+def test_the_show_leaves_the_panel_figure_of_each_motor_as_it_was(tmp_path, monkeypatch):
+    # the panel shows a figure per motor: the show's would credit each motor with the gain
+    # of both together, a motor that gains nothing too
+    kl, _ = show_of_both(monkeypatch, tmp_path, [[2000.0], [1000.0]])
+    demo_module.write_state('x', tmc.Chopper(**TUNED), 1.3)        # motor A's own run
+    before = (tmp_path / 'state.json').read_text()
+    assert demo_module.showcase_together(kl, demo_args(dry_run=False, rounds=1)) == 0
+    assert (tmp_path / 'state.json').read_text() == before
+
+
+@pytest.mark.parametrize('b, played', [(TUNED, 'AB'),
+                                      ({'tbl': 2, 'toff': 3, 'hstrt': 5, 'hend': 0}, 'A')],
+                         ids=['both tuned', 'B on the defaults'])
+def test_the_show_ends_with_the_demo_of_each_motor(tmp_path, monkeypatch, capsys, b, played):
+    # the show measures both motors together; the demo of only a motor on the defaults has
+    # nothing to play
+    from chopper_autotune.cli import build_parser
+    from test_next_step import pasted
+    kl, sent = show_of_both(monkeypatch, tmp_path, [[2000.0], [1000.0]], b)
+    argv = ['demo', '--rounds', '1', '--repeats', '2']
+    assert demo_module.showcase_together(kl, build_parser().parse_args(argv)) == 0
+    lines = ['To see the gain of motor %s, play only that motor: CHOPPER_DEMO MOTOR=%s ROUNDS=1 '
+             'REPEATS=2' % (motor, motor) for motor in played]
+    assert capsys.readouterr().out.endswith(' less vibration overall%s\n\n%s\n' % (
+        '' if played == 'AB' else '; motor B played the same registers in DEFAULTS and TUNED',
+        '\n'.join(lines)))
+    final = next(index for index, script in enumerate(sent) if script.startswith('M118 '))
+    assert sent[final + 1:] == ['RESPOND PREFIX="Chopper:" MSG="%s"' % line for line in lines]
+    for line, axis in zip(lines, 'xy'):
+        assert vars(pasted(line)) == dict(vars(build_parser().parse_args(argv)), axis=axis)
 
 
 def test_show_refuses_a_hot_driver_and_writes_nothing_after_the_release(tmp_path, monkeypatch):
@@ -317,12 +370,17 @@ def test_showcase_alternates_and_announces(monkeypatch, capsys):
 
     played = []
 
+    # round 1: defaults 1040, tuned 1000; round 2: defaults 1000, tuned 1020
+    vibration = {(1, 3): 1040.0, (1, 1): 1000.0, (2, 3): 1000.0, (2, 1): 1020.0}
+
     def fake_measurement(hw, ds, args, combo, speed, iteration, direction, travel, accel, before):
         played.append((combo.toff, direction))
-        return {'status': 'ok', 'score': {'median_magnitude': 2000.0 if combo.toff == 3 else 900.0}}
+        return {'status': 'ok',
+                'score': {'median_magnitude': vibration[(len(played) + 3) // 4, combo.toff]}}
 
     monkeypatch.setattr(demo_module, 'run_measurement', fake_measurement)
-    kl = type('K', (), {'gcode': lambda self, s: None})()
+    sent = []
+    kl = type('K', (), {'gcode': lambda self, s: sent.append(s)})()
     hw = make_hw({'tbl': 2, 'toff': 1, 'hstrt': 4, 'hend': 14})
     configs = [('default', tmc.Chopper(2, 3, 5, 0)), ('tuned', tmc.Chopper(2, 1, 4, 14))]
     args = demo_args(rounds=2, repeats=1)
@@ -332,11 +390,17 @@ def test_showcase_alternates_and_announces(monkeypatch, capsys):
 
     # 2 rounds x 2 configs x 1 repeat x 2 directions
     assert len(played) == 8
-    assert statistics_mean(results['default']) == 2000.0
-    assert statistics_mean(results['tuned']) == 900.0
+    assert statistics_mean(results['default']) == 1020.0
+    assert statistics_mean(results['tuned']) == 1010.0
     out = capsys.readouterr().out
     assert 'DEFAULTS' in out and 'TUNED' in out and 'round 1/2' in out
-    assert '2.2x less vibration' in out          # per-round comparison announced
+    # each round its own vibrations, a gain under 5% with two decimals, not 1.0x, and
+    # "more" where TUNED vibrates more
+    assert [line for line in out.splitlines() if line.startswith('   => ')] == [
+        '   => motor A, defaults 1040 -> tuned 1000: 1.04x less vibration',
+        '   => motor A, defaults 1000 -> tuned 1020: 1.02x more vibration']
+    assert [script for script in sent if script.startswith('M117 A ')] == [
+        'M117 A 1.04x less vib', 'M117 A 1.02x more vib']
 
 
 def statistics_mean(xs):
@@ -348,10 +412,12 @@ def test_write_state_merges_per_motor(tmp_path, monkeypatch):
 
     monkeypatch.setattr('chopper_autotune.dataset.RESULTS_HOME', tmp_path)
     demo_module.write_state('x', tmc.Chopper(2, 1, 4, 14), 2.375)
-    assert json.loads((tmp_path / 'state.json').read_text()) == {'x': {'regs': '2/1/4/14', 'quieter': 2.38}}
+    assert json.loads((tmp_path / 'state.json').read_text()) == {
+        'x': {'regs': '2/1/4/14', 'quieter': 2.38, 'own': True}}
     demo_module.write_state('y', tmc.Chopper(0, 2, 7, 9), 1.9)          # merged, not overwritten
     state = json.loads((tmp_path / 'state.json').read_text())
-    assert set(state) == {'x', 'y'} and state['y'] == {'regs': '0/2/7/9', 'quieter': 1.9}
+    assert set(state) == {'x', 'y'} and state['y'] == {'regs': '0/2/7/9', 'quieter': 1.9,
+                                                      'own': True}
 
 
 def test_known_speed_reuses_latest_axis_run(tmp_path, monkeypatch):

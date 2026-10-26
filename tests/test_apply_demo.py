@@ -555,7 +555,8 @@ def test_the_show_names_no_motor_of_klipper_tmc_autotune_as_playing_the_same_reg
 @pytest.mark.parametrize('dry_run', [True, False], ids=['dry run', 'run'])
 def test_the_show_says_which_motor_plays_the_same_registers_in_both_rounds(source, dry_run,
                                                                            monkeypatch, capsys):
-    # motor A tuned and saved, motor B on Klipper defaults: the panel shows no gain for B
+    # motor A tuned and saved, motor B on Klipper defaults: the demo of only motor B has nothing
+    # to play
     require(source)
     front = klipper_front.Front(source, tuned(printer_cfg(), stepper_x=TUNED['x']))
     assert run_demo(front, monkeypatch, ['--speed', '60', '--rounds', '1', '--repeats', '1']
@@ -573,10 +574,84 @@ def test_the_show_says_which_motor_plays_the_same_registers_in_both_rounds(sourc
     assert 'Chopper: ' + same in front.console[:first_round]
     assert re.search(r'\nboth motors together: \d+\.\d\dx less vibration overall; motor B played '
                      r'the same registers in DEFAULTS and TUNED\n', out)
-    assert [line for line in front.console if line.startswith('echo: Chopper: both motors ')][-1] \
-        .endswith('x less vibration; motor B played the same registers in DEFAULTS and TUNED')
-    state = json.loads((collect.RESULTS_HOME / 'state.json').read_text())
-    assert state['y']['quieter'] is None and state['x']['quieter'] is not None
+    verdict = max(index for index, line in enumerate(front.console)
+                  if line.startswith('echo: Chopper: both motors '))
+    assert front.console[verdict].endswith(
+        'x less vibration; motor B played the same registers in DEFAULTS and TUNED')
+    assert front.console[verdict + 1:] == [
+        'Chopper: To see the gain of motor A, play only that motor: CHOPPER_DEMO MOTOR=A ROUNDS=1 '
+        'REPEATS=1']
+
+
+@pytest.mark.parametrize('source', SOURCES)
+def test_the_show_prints_a_small_gain_with_two_decimals_and_names_the_demo_of_each_motor(
+        source, monkeypatch, capsys):
+    # tavalin's show: motor B quieter a little, motor A not at all. One decimal printed 1.0x,
+    # and the panel showed the gain of both together as the gain of each motor
+    require(source)
+    shakes = {STOCK.toff: 500., TUNED['x'].toff: 500., TUNED['y'].toff: 470.}
+    monkeypatch.setattr(klipper_front.Front, 'shake',
+                        staticmethod(lambda speed, chopper: shakes[chopper['toff']]))
+    front = klipper_front.Front(source, tuned(printer_cfg(), stepper_x=TUNED['x'],
+                                              stepper_y=TUNED['y']))
+    assert run_demo(front, monkeypatch, ['--speed', '60', '--rounds', '1', '--repeats', '1']) == 0
+    assert_clean(front)
+    out = capsys.readouterr().out
+    # both vibrations of the round and their ratio, 1000/970 mg
+    before, after = map(int, re.search(r'\n   => both motors, defaults (\d+) -> tuned (\d+): '
+                                       r'1\.03x less vibration\n', out).groups())
+    assert before / after == pytest.approx(1000 / 970, abs=0.005)
+    assert '\nboth motors together: 1.03x less vibration overall\n' in out
+    verdict = front.console.index('echo: Chopper: both motors together 1.03x less vibration')
+    each = front.console[verdict + 1:]
+    assert each == ['Chopper: To see the gain of motor %s, play only that motor: CHOPPER_DEMO '
+                    'MOTOR=%s ROUNDS=1 REPEATS=1' % (motor, motor) for motor in 'AB']
+    shown = [script[len('M117 '):] for script in front.scripts if script.startswith('M117 ')]
+    assert shown[-1] == '1.03x less vib'
+    assert not (collect.RESULTS_HOME / 'state.json').exists()       # the panel: no gain per motor
+    # pasted, each line plays only its motor: its own gain, which the panel shows
+    for line, axis, gain in zip(each, 'xy', ('1.00', '1.06')):
+        kl = front.connect()                            # each run closes its client
+        monkeypatch.setattr(demo, 'Klippy', lambda path: types.SimpleNamespace(connect=lambda: kl))
+        assert demo.run_demo(pasted(line)) == 0
+        assert_clean(front)
+        motor = collect.motor_label(axis)
+        # two such windows in a row: each names its motor
+        assert front.console[-1] == ('echo: Chopper demo: motor %s, %sx less vibration'
+                                     % (motor, gain))
+        assert [script for script in front.scripts if script.startswith('M117 ')][-1] \
+            == 'M117 %s %sx less vib' % (motor, gain)
+        state = json.loads((collect.RESULTS_HOME / 'state.json').read_text())
+        assert state[axis] == {'regs': '/'.join(map(str, TUNED[axis].fields().values())),
+                               'quieter': float(gain), 'own': True}
+    shown = [script[len('M117 '):] for script in front.scripts if script.startswith('M117 ')]
+    assert max(len(text) for text in shown) <= collect.LCD_WIDTH
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('tuned_shake, gain, shown', [
+    # two decimals would make 'A 12.50x less vib', a character past the display
+    (40., '12.50x less vibration', 'A 12.5x less vib'),
+    (510., '1.02x more vibration', 'A 1.02x more vib')], ids=['12.5x less', 'more'])
+def test_the_demo_of_a_motor_says_less_or_more_vibration_and_fits_the_display(
+        source, tuned_shake, gain, shown, monkeypatch, capsys):
+    require(source)
+    shakes = {STOCK.toff: 500., TUNED['x'].toff: tuned_shake}
+    monkeypatch.setattr(klipper_front.Front, 'shake',
+                        staticmethod(lambda speed, chopper: shakes[chopper['toff']]))
+    front = klipper_front.Front(source, tuned(printer_cfg(), stepper_x=TUNED['x']))
+    assert run_demo(front, monkeypatch, ['--motor', 'a', '--speed', '60', '--rounds', '1',
+                                         '--repeats', '1']) == 0
+    assert_clean(front)
+    out = capsys.readouterr().out
+    assert re.search(r'\n   => motor A, defaults \d+ -> tuned \d+: %s\n' % gain, out)
+    assert '\n  %s overall\n' % gain in out
+    assert re.search(r'\n  \d+\.\d\dx %s above the \d+ noise floor\n' % gain.split('x ')[1], out)
+    assert front.console[-1] == 'echo: Chopper demo: motor A, ' + gain
+    # the round, then the result
+    assert [script for script in front.scripts if script.startswith('M117 A ')][-2:] \
+        == ['M117 ' + shown] * 2
+    assert len(shown) == collect.LCD_WIDTH
 
 
 @pytest.mark.parametrize('source', SOURCES)

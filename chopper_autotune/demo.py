@@ -18,7 +18,7 @@ from .collect import (MOVE_MARGIN, Hardware, RunStopped, Screen, ThermalGuard, c
                       measure_baseline, motor_label, now, rail_of, rail_twins, refuse_after_shutdown,
                       refuse_blind_z_hop, refuse_if_printing, refuse_multi_motor, refused,
                       rehome_unless_hot, restore_chopper, run_measurement, run_restore,
-                      set_rail_fields, travel_for, untouched_autotune)
+                      set_rail_fields, tell_next, travel_for, untouched_autotune)
 from .current import live_limits, velocity_caps
 from .dataset import Dataset
 from .klippy import Klippy, KlippyError, find_socket
@@ -30,6 +30,24 @@ BAR_WIDTH = 40
 
 def bar(value: float, scale: float) -> str:
     return '#' * max(1, round(BAR_WIDTH * value / scale))
+
+
+def gain(default: float, tuned: float, short: bool = False) -> str:
+    """How many times less the tuned registers vibrate than the defaults, '1.04x less
+    vibration', or more where they vibrate more, '1.02x more vibration'. Two decimals: one
+    would print a gain under 5% as 1.0x, as if tuning gave nothing. short: for the display,
+    '1.04x less vib', three significant digits, so that 'A 12.4x less vib' fits its 16
+    characters."""
+    more = tuned > default
+    factor = tuned / default if more else default / tuned
+    return '%sx %s %s' % ('%#.3g' % factor if short else '%.2f' % factor,
+                          'more' if more else 'less', 'vib' if short else 'vibration')
+
+
+def round_result(played: str, default: float, tuned: float) -> str:
+    """A round's mean vibration on each set and the gain: 'motor A, defaults 1040 -> tuned
+    1000: 1.04x less vibration'."""
+    return '%s, defaults %.0f -> tuned %.0f: %s' % (played, default, tuned, gain(default, tuned))
 
 
 def run_demo(args) -> int:
@@ -284,7 +302,7 @@ def showcase_together(kl, args) -> int:
             *[lambda axis=axis: exit_spreadcycle(kl, hw[axis]) for axis in MOTORS],
             lambda: kl.gcode('M204 S%.0f' % accel_now),
             lambda: rehome_unless_hot(kl))
-    return _verdict(results, screen, tuned, default)
+    return _verdict(kl, args, results, screen, tuned, default)
 
 
 def _show_rails(kl, hw, args, speed, tuned, default, same_rounds: 'list[str]') -> int:
@@ -323,7 +341,7 @@ def _show_rails(kl, hw, args, speed, tuned, default, same_rounds: 'list[str]') -
                         lambda: _rail_sweep(board, motion, feed, accel, stroke, args))
     finally:
         motion.restore()
-    return _verdict(results, screen, tuned, default)
+    return _verdict(kl, args, results, screen, tuned, default)
 
 
 def _play(kl, hw, args, tuned, default, screen, sweep) -> dict:
@@ -353,29 +371,31 @@ def _play(kl, hw, args, tuned, default, screen, sweep) -> dict:
                 results[name].extend(mags)
                 round_avg[name] = statistics.mean(mags)
         if 'default' in round_avg and 'tuned' in round_avg:
-            factor = round_avg['default'] / round_avg['tuned']
-            summary = 'both motors: %.1fx less vibration' % factor
-            screen.update(summary, force=True, short='%.1fx less vib' % factor)
+            summary = round_result('both motors', round_avg['default'], round_avg['tuned'])
+            screen.update(summary, force=True,
+                          short=gain(round_avg['default'], round_avg['tuned'], short=True))
             print('   => %s' % summary)
     return results
 
 
-def _verdict(results, screen, tuned, default) -> int:
-    """The show's end: how much less both motors vibrate on the tuned registers, on the
-    console, the display and the panel (write_state)."""
+def _verdict(kl, args, results, screen, tuned, default) -> int:
+    """The show's end: how much less both motors vibrate together on the tuned registers,
+    on the console and the display, and for each motor the demo that plays only that motor
+    and measures its own gain. The panel shows a motor's own gain, so the show leaves it as
+    it was."""
+    from .cli import command_line
     if not results['default'] or not results['tuned']:
         raise SystemExit('show failed to collect measurements')
     d, t = statistics.mean(results['default']), statistics.mean(results['tuned'])
-    # a motor that played one set in both rounds: the panel shows no gain for it
+    # a motor that played one set in both rounds: its own demo has nothing to play (demo)
     same = [axis for axis in MOTORS if tuned[axis] == default[axis]]
     note = ''.join('; motor %s played the same registers in DEFAULTS and TUNED'
                    % motor_label(axis) for axis in same)
-    print('\nboth motors together: %.2fx less vibration overall%s' % (d / t, note))
-    screen.final('Chopper: both motors together %.1fx less vibration%s' % (d / t, note),
-                 '%.1fx less vib' % (d / t))
-    for axis in MOTORS:
-        # combined factor, shown per motor by the panel
-        write_state(axis, tuned[axis], None if axis in same else d / t)
+    print('\nboth motors together: %s overall%s' % (gain(d, t), note))
+    screen.final('Chopper: both motors together %s%s' % (gain(d, t), note), gain(d, t, short=True))
+    tell_next(kl, ['To see the gain of motor %s, play only that motor: %s'
+                   % (motor_label(axis), command_line('demo', args, axis=axis))
+                   for axis in MOTORS if axis not in same])
     return 0
 
 
@@ -544,12 +564,13 @@ def demo(kl: Klippy, args) -> int:
     print('\nmotor %s at %d mm/s (mean vibration, lower is better):\n' % (hw.motor, speed))
     print('  defaults %-10s %6.0f  %s' % (default.label(), d, bar(d, scale)))
     print('  tuned    %-10s %6.0f  %s' % (tuned.label(), t, bar(t, scale)))
-    print('\n  %.2fx less vibration overall' % (d / t))
+    print('\n  %s overall' % gain(d, t))
     # a rail's floor is measured with every motor holding: their noise at standstill, which
     # the moves have not, would make the gain above it too high
     if not hw.twins and noise and t > noise and d > noise:
-        print('  %.2fx less vibration above the %.0f noise floor' % ((d - noise) / (t - noise), noise))
-    screen.final('Chopper demo: %.1fx less vibration' % (d / t), '%s %.1fx less vib' % (hw.motor, d / t))
+        print('  %s above the %.0f noise floor' % (gain(d - noise, t - noise), noise))
+    screen.final('Chopper demo: motor %s, %s' % (hw.motor, gain(d, t)),
+                 '%s %s' % (hw.motor, gain(d, t, short=True)))
     write_state(args.axis, tuned, d / t)
     return 0
 
@@ -557,12 +578,16 @@ def demo(kl: Klippy, args) -> int:
 def write_state(axis: str, tuned: tmc.Chopper, quieter: 'float | None'):
     """Record the last measured improvement so the KlipperScreen panel can show how much
     quieter tuning made the motor: RESULTS_HOME/state.json -> {"x": {"regs": "2/1/4/14",
-    "quieter": 2.38}, ...}. Keyed by the tuned registers so the panel can drop it as stale
-    once the motor is retuned; None when a run measured no gain, so the panel shows none."""
+    "quieter": 2.38, "own": true}, ...}. Keyed by the tuned registers so the panel can drop it
+    as stale once the motor is retuned; None when a run measured no gain, so the panel shows
+    none. own: a run that measured only this motor wrote it. The show of both motors of an
+    older version wrote their gain together to each motor, which the panel must not show as
+    the gain of one."""
     from .dataset import RESULTS_HOME, save_json
     save_json(RESULTS_HOME / 'state.json',
               {axis: {'regs': '/'.join(str(v) for v in tuned.fields().values()),
-                      'quieter': round(quieter, 2) if quieter else None}}, merge=True)
+                      'quieter': round(quieter, 2) if quieter else None, 'own': True}},
+              merge=True)
 
 
 def _showcase(kl, hw, args, ds, configs, speed, travel, accel, motion, screen):
@@ -591,10 +616,9 @@ def _showcase(kl, hw, args, ds, configs, speed, travel, accel, motion, screen):
                 results[name].extend(mags)
                 round_avg[name] = statistics.mean(mags)
         if 'default' in round_avg and 'tuned' in round_avg:
-            factor = round_avg['default'] / round_avg['tuned']
-            summary = 'def %.0f -> tuned %.0f  %.1fx less vibration' % (
-                round_avg['default'], round_avg['tuned'], factor)
-            screen.update(summary, force=True, short='%s %.1fx less vib' % (hw.motor, factor))
+            summary = round_result('motor ' + hw.motor, round_avg['default'], round_avg['tuned'])
+            screen.update(summary, force=True, short='%s %s' % (
+                hw.motor, gain(round_avg['default'], round_avg['tuned'], short=True)))
             print('   => %s' % summary)
     return results
 

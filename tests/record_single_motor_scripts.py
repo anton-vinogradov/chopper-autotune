@@ -1,14 +1,14 @@
-"""Records the single-motor references, tests/single_motor_scripts, from the code of main.
+"""Records the single-motor references, tests/single_motor_scripts, from the code of a commit.
 When and how to run it: see tests/test_single_motor_scripts.py.
 
     python tests/record_single_motor_scripts.py SOURCE    record from SOURCE
     python tests/record_single_motor_scripts.py --check   record from the code the references
                                                           came from, compare and change nothing
 
-SOURCE is a ref or commit of this repository (origin/main), or the directory of a checkout,
-which stands for the commit it has checked out. In a temporary tree the recording runs that
-commit's chopper_autotune and tests/conftest.py, whose fixtures patch that code, with the
-other tests of this tree. single_motor_scripts/recorded-from names the commit."""
+SOURCE is a ref or commit of this repository (HEAD, origin/main), or the directory of a
+checkout, which stands for the commit it has checked out. In a temporary tree the recording
+runs that commit's chopper_autotune and tests/conftest.py, whose fixtures patch that code,
+with the other tests of this tree. single_motor_scripts/recorded-from names the commit."""
 import argparse
 import os
 import shutil
@@ -99,11 +99,11 @@ def store(recording: str, reference: str, code: str):
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
-        description='Record the single-motor references from the code of main.')
+        description='Record the single-motor references from the code of a commit.')
     parser.add_argument('source', nargs='?',
-                        help='a ref or commit (origin/main), or the directory of a checkout for the '
-                             'commit it has checked out; with --check, by default the commit in '
-                             'single_motor_scripts/recorded-from')
+                        help='a ref or commit (HEAD, origin/main), or the directory of a checkout '
+                             'for the commit it has checked out; with --check, by default the '
+                             'commit in single_motor_scripts/recorded-from')
     parser.add_argument('--check', action='store_true',
                         help='compare a recording with the references byte for byte, change nothing')
     args = parser.parse_args(argv)
@@ -113,7 +113,7 @@ def main(argv=None) -> int:
         with open(os.path.join(REFERENCE, RECORDED_FROM)) as source:
             code = source.read().strip()
     else:
-        parser.error('name the code of main to record from, for example origin/main')
+        parser.error('name the commit to record from, for example HEAD')
     with tempfile.TemporaryDirectory() as recording:
         record(code, recording)
         lines = differences(recording, REFERENCE)

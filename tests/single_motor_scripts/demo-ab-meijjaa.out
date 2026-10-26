@@ -3,6 +3,9 @@ Show on both motors together — diagonal move running motor A at 60 and motor B
 >> round 1/1  >> DEFAULTS — listen (both motors)
 
 >> round 1/1  >> TUNED — listen (both motors)
-   => both motors: 1.2x less vibration
+   => both motors, defaults 93 -> tuned 81: 1.15x less vibration
 
 both motors together: 1.15x less vibration overall
+
+To see the gain of motor A, play only that motor: CHOPPER_DEMO MOTOR=A ROUNDS=1 REPEATS=1
+To see the gain of motor B, play only that motor: CHOPPER_DEMO MOTOR=B ROUNDS=1 REPEATS=1
