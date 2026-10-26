@@ -62,7 +62,7 @@ SET_TMC_FIELD STEPPER=stepper_x FIELD=hend VALUE=3
 
 G28 X Y
 
-M117 A 1.3x less vib
+M117 A 1.25x less vib
 
-M118 Chopper demo: 1.3x less vibration
+M118 Chopper demo: motor A, 1.25x less vibration
 
