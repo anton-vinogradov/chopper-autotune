@@ -36,6 +36,12 @@ def save_json(path, data: dict, merge: bool = False):
         pass
 
 
+def measured_steppers(manifest: dict) -> 'list[str]':
+    """The drivers a dataset measured, the ones its winner is for: a rail run's whole rail
+    ('steppers'); else its one motor, as every dataset from before rails."""
+    return manifest.get('steppers') or [manifest['stepper']]
+
+
 class Dataset:
     def __init__(self, root):
         self.root = Path(root)

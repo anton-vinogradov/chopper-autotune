@@ -1,0 +1,55 @@
+Driver tmc5160 on stepper_x (motor A), accelerometer adxl345, kinematics cartesian, current registers {'tbl': 1, 'toff': 4, 'hstrt': 2, 'hend': 3, 'tpfd': 4}
+Resonance map on motor A at the CURRENT registers (what you print with), accel 125
+Plan: 3 speeds (40..60 step 10) -> 6 moves, capture stream, ETA 0m 12s
+Preparing: home XY, park at center, switch the gantry and head motors off
+Baseline noise: median magnitude 5.0
+[1/3] 40 mm/s: median 50.8
+[2/3] 50 mm/s: median 260.9
+[3/3] 60 mm/s: median 638.5
+Homing
+
+=== Resonance map: motor A @ current registers ===
+  speed   vibration
+    40   ###                                 51
+    50   #############                      261
+    60   ################################   639
+
+VFAs (fine vertical banding) come from cruising on a motor resonance — that is what this map catches, so avoid the peaks above. It is NOT your top print speed: the motor holds torque far past any commanded speed (CHOPPER_ENVELOPE), the real ceiling is hotend flow, and corner ringing is the input shaper (SHAPER_CALIBRATE).
+Report: <tmp>/dataset/report.html (done in 0m)
+=== manifest.json ===
+{
+  "version": "0.3.0",
+  "created": "<time>",
+  "mode": "resonance-map",
+  "klippy_socket": "<front>",
+  "capture": "stream",
+  "axis": "x",
+  "stepper": "stepper_x",
+  "driver": "5160",
+  "accel_chip": "adxl345",
+  "kinematics": "cartesian",
+  "registers": {
+    "tbl": 1,
+    "toff": 4,
+    "hstrt": 2,
+    "hend": 3,
+    "tpfd": 4
+  },
+  "accel": 125.0,
+  "measure_time": 1.0,
+  "trim": 0.1,
+  "iterations": 1,
+  "speeds": [
+    40,
+    50,
+    60
+  ]
+}
+=== measurements.jsonl ===
+{"id": "baseline", "kind": "baseline", "source": "stream", "ts": "<time>", "score": {"samples": 400, "sample_rate_hz": 401.0, "median_magnitude": 4.9818374944722486, "p95_magnitude": 6.814623543516613, "rms": 5.000575660160494}, "status": "ok"}
+{"id": "v040_i0_fwd", "kind": "speed", "source": "stream", "speed": 40, "cruise": 1.0, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [4.701983, 5.501983], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 50.83085703244825, "p95_magnitude": 69.43252661280997, "rms": 50.94861281729479, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v040_i0_rev", "kind": "speed", "source": "stream", "speed": 40, "cruise": 1.0, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [6.341983, 7.141983], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 50.83085703244825, "p95_magnitude": 69.43252661280997, "rms": 50.94861281729479, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v050_i0_fwd", "kind": "speed", "source": "stream", "speed": 50, "cruise": 1.0, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [8.061983, 8.861983], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 260.8655344304294, "p95_magnitude": 355.582007771155, "rms": 260.35469475337874, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v050_i0_rev", "kind": "speed", "source": "stream", "speed": 50, "cruise": 1.0, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [9.861983, 10.661983], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 260.8655344304294, "p95_magnitude": 355.582007771155, "rms": 260.35469475337874, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v060_i0_fwd", "kind": "speed", "source": "stream", "speed": 60, "cruise": 1.0, "direction": 1, "iteration": 0, "ts": "<time>", "steady": [11.741983, 12.541983], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 638.5384231005526, "p95_magnitude": 872.313372469898, "rms": 639.7022424441988, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}
+{"id": "v060_i0_rev", "kind": "speed", "source": "stream", "speed": 60, "cruise": 1.0, "direction": -1, "iteration": 0, "ts": "<time>", "steady": [13.701983, 14.501983], "score": {"samples": 320, "sample_rate_hz": 401.3, "median_magnitude": 638.5384231005526, "p95_magnitude": 872.313372469898, "rms": 639.7022424441988, "clicks": 0, "peak_ratio": 1.4}, "status": "ok"}

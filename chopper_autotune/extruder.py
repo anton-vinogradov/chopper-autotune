@@ -346,7 +346,7 @@ def extruder_tune(kl: Klippy, args) -> int:
         if args.save:
             from .analyze import _persist, register_options, save_refusal
             from .moonraker import Moonraker
-            why = save_refusal(settings, driver_name, 'extruder', winner.fields())
+            why = save_refusal(settings, driver_name, 'extruder', fields=winner.fields())
             if why:
                 raise SystemExit(why)
             _persist(Moonraker(args.url),

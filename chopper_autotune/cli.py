@@ -280,7 +280,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_hearing(u)
     u.add_argument('--accel', type=float, default=None,
                    help='acceleration of the speed scan and the register search, '
-                        'default printer max_accel / 10')
+                        'default printer max_accel / 10 (can be higher on a two-motor axis, '
+                        'see README)')
     u.add_argument('--no-raw', action='store_true')
     u.add_argument('--csv', action='store_true')
     u.add_argument('--socket', default=None)
@@ -309,7 +310,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument('--validate', type=int, default=3,
                    help='re-measure top N candidates with extra runs before recommending (0 = off)')
     c.add_argument('--measure-time', type=float, default=1.25, help='cruise time per move in seconds')
-    c.add_argument('--accel', type=float, default=None, help='acceleration, default printer max_accel / 10')
+    c.add_argument('--accel', type=float, default=None, help='acceleration, default printer max_accel / 10 (can be higher on a two-motor axis, see README)')
     c.add_argument('--trim', type=float, default=None,
                    help='guard fraction of the cruise window (stream, default 0.1); '
                         'with --csv: fraction of the whole capture (default 0.25)')
@@ -332,7 +333,7 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument('--iterations', type=int, default=1)
     f.add_argument('--measure-time', type=float, default=1.0,
                    help='target cruise time per move; shrinks at high speeds to fit the axis')
-    f.add_argument('--accel', type=float, default=None, help='acceleration, default printer max_accel / 10')
+    f.add_argument('--accel', type=float, default=None, help='acceleration, default printer max_accel / 10 (can be higher on a two-motor axis, see README)')
     f.add_argument('--trim', type=float, default=None)
     f.add_argument('--dataset', default=None, help='dataset directory; pass an existing one to resume')
     f.add_argument('--no-raw', action='store_true')
@@ -400,9 +401,12 @@ def build_parser() -> argparse.ArgumentParser:
     d.add_argument('--repeats', type=int, default=4, help='showcase: moves per config per round, default 4')
     d.add_argument('--measure-time', type=float, default=1.0,
                    help='target cruise time per move in seconds, default 1.0; shrinks at high '
-                        'speeds to fit the axis. Used only with --motor a or b, or with --report')
+                        'speeds to fit the axis. Used with --motor a or b, or with --report. In the '
+                        'show of both motors on a two-motor axis, a longer --measure-time can also '
+                        'raise the default acceleration (see README)')
     d.add_argument('--accel', type=float, default=None,
-                   help='acceleration, default printer max_accel / 10')
+                   help='acceleration, default printer max_accel / 10 (can be higher on a '
+                        'two-motor axis, see README)')
     d.add_argument('--trim', type=float, default=None)
     d.add_argument('--socket', default=None)
     d.add_argument('--dry-run', action='store_true')

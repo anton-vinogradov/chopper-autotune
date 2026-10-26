@@ -281,21 +281,75 @@ def test_rank_never_recommends_a_combo_klipper_would_not_load():
     assert len(rank(rows, tmc.DRIVERS['2209'], tmc.Hearing())) == 2
 
 
-def test_run_save_refuses_to_write_one_driver_of_a_pair():
-    # AWD: stepper_x1 drives the same belt; saving to [tmc stepper_x] alone would
-    # leave the twin on its old registers (#129)
-    mk = FakeMoonraker({'printer.cfg': CFG}, settings={'stepper_x': {}, 'stepper_x1': {}})
-    with pytest.raises(SystemExit, match='stepper_x1 share its axis'):
-        run_save(mk, [({'driver': '2209', 'stepper': 'stepper_x'}, tmc.Chopper(0, 8, 7, 5))])
+RAIL_CFG = CFG + """
+[tmc2209 stepper_x1]
+uart_pin: PC12
+driver_TOFF: 4
+"""
+RAIL = {'driver': '2209', 'stepper': 'stepper_x', 'motion': 'rail', 'steppers': ['stepper_x', 'stepper_x1']}
+RAIL_SETTINGS = {'stepper_x': {}, 'stepper_x1': {}, 'tmc2209 stepper_x': {},
+                 'tmc2209 stepper_x1': {}}
+
+
+def test_run_save_writes_a_rails_winner_into_each_of_its_sections_in_one_restart():
+    # AWD: stepper_x1 drives the same belt (#129), the rail run measured both drivers
+    mk = FakeMoonraker({'printer.cfg': RAIL_CFG}, settings=RAIL_SETTINGS)
+    run_save(mk, [(RAIL, tmc.Chopper(0, 8, 7, 5))])
+    assert mk.uploads == ['chopper-autotune/backups/printer.cfg.bak', LAST_SAVE, 'printer.cfg']
+    assert mk.scripts == ['RESTART']
+    text = mk.files['printer.cfg']
+    for section in ('[tmc2209 stepper_x]\n', '[tmc2209 stepper_x1]\n'):
+        assert section + 'driver_TBL: 0\ndriver_TOFF: 8\ndriver_HSTRT: 7\ndriver_HEND: 5\n' in text
+    assert text.count('driver_TOFF: 8') == 2 and 'driver_TOFF: 4' not in text
+    assert 'driver_TOFF: 5' in text.split('[tmc2209 stepper_y]')[1]     # motor B untouched
+
+
+@pytest.mark.parametrize('settings, manifest, refusal', [
+    # a twin with no section of the model the rail measured: no save of half the rail
+    ({'stepper_x': {}, 'stepper_x1': {}, 'tmc2209 stepper_x': {}}, RAIL,
+     'tune motor A again: its dataset measured TMC2209 drivers, the config gives stepper_x1 no '
+     'TMC section now'),
+    # the drivers swapped for another model since the run
+    (RAIL_SETTINGS, dict(RAIL, driver='5160'),
+     'its dataset measured TMC5160 drivers, the config gives stepper_x TMC2209, stepper_x1 '
+     'TMC2209'),
+    # a dataset of stepper_x alone would leave the twin on its old registers
+    ({'stepper_x': {}, 'stepper_x1': {}}, {'driver': '2209', 'stepper': 'stepper_x'},
+     'tune motor A again: its dataset measured stepper_x alone, the config drives the axis with '
+     'stepper_x, stepper_x1 now'),
+    # the rail changed since the run
+    ({'stepper_x': {}}, RAIL,
+     'tune motor A again: its dataset measured stepper_x, stepper_x1, the config drives the axis '
+     'with stepper_x alone now'),
+    ({'stepper_x': {}, 'stepper_x1': {}, 'stepper_x2': {}}, RAIL, 'tune motor A again'),
+])
+def test_run_save_refuses_a_dataset_of_another_rail_than_the_configs(settings, manifest, refusal):
+    mk = FakeMoonraker({'printer.cfg': RAIL_CFG}, settings=settings)
+    with pytest.raises(SystemExit, match=re.escape(refusal)):
+        run_save(mk, [(manifest, tmc.Chopper(0, 8, 7, 5))])
     assert mk.uploads == [] and mk.scripts == []
 
 
-def test_apply_refuses_to_set_one_driver_of_a_pair():
+def test_apply_sets_every_driver_of_a_rail_and_refuses_one_of_them(capsys):
+    # the rail's motors go on first, then every driver gets the set in one script, as a run
+    # writes it; a twin without an enable pin of its own gets the warning, its main motor
+    # does not
     from chopper_autotune.analyze import run_apply
-    mk = FakeMoonraker({}, settings={'stepper_x': {}, 'stepper_x1': {}})
-    with pytest.raises(SystemExit, match='stepper_x1 share its axis'):
-        run_apply(mk, 'stepper_x', tmc.Chopper(0, 8, 7, 5))
+    mk = FakeMoonraker({}, settings=dict(RAIL_SETTINGS, stepper_x={'enable_pin': '!PA1'}))
+    combo = tmc.Chopper(0, 8, 7, 5)
+    with pytest.raises(SystemExit, match='tune motor A again: its dataset measured stepper_x alone'):
+        run_apply(mk, '2209', ['stepper_x'], combo)
     assert mk.scripts == []
+    run_apply(mk, '2209', ['stepper_x', 'stepper_x1'], combo)
+    assert mk.scripts[:2] == ['SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=1\n'
+                              'SET_STEPPER_ENABLE STEPPER=stepper_x1 ENABLE=1',
+                              tmc.set_fields_script('stepper_x', combo.fields()) + '\n'
+                              + tmc.set_fields_script('stepper_x1', combo.fields())]
+    assert [script for script in mk.scripts if script.startswith('M118')] \
+        == ['M118 WARNING: stepper_x1 has no enable pin of its own: at the next motors off and on '
+            'Klipper puts toff back to the config value and keeps the other applied registers; '
+            'SAVE=1 keeps the whole set']
+    assert 'stepper_x has no enable pin' not in capsys.readouterr().out
 
 
 @pytest.mark.parametrize('enable_pins, shared', [
@@ -309,7 +363,7 @@ def test_apply_enables_the_motor_before_its_registers(enable_pins, shared, capsy
     from chopper_autotune.analyze import run_apply
     settings = {name: {'enable_pin': pin} for name, pin in enable_pins.items()}
     mk = FakeMoonraker({}, settings=dict({'stepper_x': {}}, **settings))
-    run_apply(mk, 'stepper_x', tmc.Chopper(2, 3, 5, 0))
+    run_apply(mk, '2209', ['stepper_x'], tmc.Chopper(2, 3, 5, 0))
     assert mk.scripts[0] == 'SET_STEPPER_ENABLE STEPPER=stepper_x ENABLE=1'
     assert mk.scripts[1].startswith('SET_TMC_FIELD')
     assert ('no enable pin of its own' in capsys.readouterr().out) is shared
@@ -321,7 +375,7 @@ def test_apply_sends_its_warning_only_where_klipper_takes_m118(capsys):
     # without [respond] the M118 drew an 'Unknown command' line and a KlipperScreen error
     from chopper_autotune.analyze import run_apply
     mk = FakeMoonraker({}, settings={'stepper_x': {}}, commands={'M117', 'SET_TMC_FIELD'})
-    run_apply(mk, 'stepper_x', tmc.Chopper(2, 3, 5, 0))
+    run_apply(mk, '2209', ['stepper_x'], tmc.Chopper(2, 3, 5, 0))
     assert 'no enable pin of its own' in capsys.readouterr().out
     assert not any(script.startswith('M118') for script in mk.scripts)
 
@@ -343,7 +397,7 @@ def test_apply_refuses_while_printing():
     from chopper_autotune.analyze import run_apply
     mk = FakeMoonraker({}, printing=True, settings={'stepper_x': {}})
     with pytest.raises(SystemExit, match='busy printing'):
-        run_apply(mk, 'stepper_x', tmc.Chopper(2, 3, 5, 0))
+        run_apply(mk, '2209', ['stepper_x'], tmc.Chopper(2, 3, 5, 0))
     assert mk.scripts == []
 
 
@@ -744,8 +798,8 @@ def test_save_skips_a_motor_with_a_twin_and_saves_the_rest(runs, save):
     extruder_run(E)
     mk = save(mk=FakeMoonraker({'printer.cfg': CFG_ABE}, settings={'stepper_x': {}, 'stepper_x1': {}}))
     assert changed(mk) == {'stepper_y', 'extruder'}
-    assert console(mk)[0].startswith('motor A: refusing to write registers to stepper_x only: '
-                                     'stepper_x1 share its axis')
+    assert console(mk)[0].startswith('motor A: tune motor A again: its dataset measured stepper_x '
+                                     'alone, the config drives the axis with stepper_x, stepper_x1 now')
 
 
 def test_save_skips_the_autotune_motor_and_saves_the_other(runs, save):
@@ -789,6 +843,108 @@ def test_save_skips_an_extruder_winner_klipper_would_not_load(runs, save):
     assert console(mk)[2].startswith('motor E: refusing to save %s to [tmc2660 extruder]' % stale.label())
     with pytest.raises(SystemExit, match='Klipper refuses'):
         save('MOTOR=E', mk=FakeMoonraker(files))
+
+
+def test_a_rail_measured_under_autotune_names_each_of_its_sections():
+    mk = FakeMoonraker({'printer.cfg': RAIL_CFG}, settings=RAIL_SETTINGS)
+    with pytest.raises(SystemExit, match=re.escape(
+            'not saving [tmc2209 stepper_x] and [tmc2209 stepper_x1]: measured under autotune')):
+        run_save(mk, [(dict(RAIL, autotune='performance'), tmc.Chopper(0, 8, 7, 5))])
+    assert mk.uploads == [] and mk.scripts == []
+
+
+def test_the_advice_for_a_rail_names_each_driver_with_the_thresholds_of_its_own():
+    from chopper_autotune.collect import autotune_advice, autotune_refusal
+    settings = {'autotune_tmc stepper_x': {'sg4_thrs': 80}, 'autotune_tmc stepper_x1': {'sg4_thrs': 60}}
+    advice = autotune_advice(settings, '2209', 'stepper_x', 'stepper_x1')
+    assert ('1) in [tmc2209 stepper_x] set driver_SGTHRS: 80 and in [tmc2209 stepper_x1] set '
+            'driver_SGTHRS: 60 (autotune sets these') in advice
+    assert '2) remove [autotune_tmc stepper_x] and [autotune_tmc stepper_x1] and restart' in advice
+    assert autotune_refusal('2209', 'stepper_x', 'stepper_x1', settings=settings).startswith(
+        'not saving [tmc2209 stepper_x] and [tmc2209 stepper_x1]: autotune resets')
+    assert 'remove [autotune_tmc stepper_x] and [autotune_tmc stepper_x1], restart' \
+        in autotune_advice({}, '2208', 'stepper_x', 'stepper_x1')
+
+
+CFG_RAIL_ABE = CFG_ABE + """
+[tmc2209 stepper_x1]
+uart_pin: PA4
+driver_TOFF: 3
+"""
+RAIL_RUN = {'motion': 'rail', 'steppers': ['stepper_x', 'stepper_x1']}
+RAIL_ON_X = {'stepper_x': {}, 'stepper_x1': {}, 'tmc2209 stepper_x': {}, 'tmc2209 stepper_x1': {}}
+
+
+def rail_on(text: str, combo: tmc.Chopper, *steppers: str) -> str:
+    """The config with combo in [tmc2209 <stepper>] of each of steppers, motor A's rail by default."""
+    for stepper in steppers or RAIL_RUN['steppers']:
+        text = updated_options(text, 'tmc2209 ' + stepper, register_options(combo.fields()))
+    return text
+
+
+def rail_changed(mk) -> 'set[str]':
+    """changed(), the twin of motor A too."""
+    text = mk.files['printer.cfg']
+    twin = re.search(r'driver_TOFF: (\d+)', text.split('[tmc2209 stepper_x1]')[1]).group(1)
+    return changed(mk) | ({'stepper_x1'} if twin != '3' else set())
+
+
+def test_save_writes_a_rail_into_every_section_of_it_and_the_line_names_them(runs, save):
+    # AWD on X (#129): the registers go to both drivers of motor A, and the console says so
+    runs('01_x', 'x', A, **RAIL_RUN)
+    runs('02_y', 'y', B)
+    line = ('motor A: %s ' + A.label() + ' into [tmc2209 stepper_x] and [tmc2209 stepper_x1] '
+            'from run 01_x' + TBL0_A)
+    dry = save('MOTOR=A', 'DRY_RUN=1', mk=FakeMoonraker({'printer.cfg': CFG_RAIL_ABE},
+                                                        settings=RAIL_ON_X))
+    assert console(dry) == [line % 'would save', 'DRY_RUN=1: nothing written, Klipper keeps running']
+    assert dry.uploads == [] and 'RESTART' not in dry.scripts
+    mk = save('MOTOR=A', mk=FakeMoonraker({'printer.cfg': CFG_RAIL_ABE}, settings=RAIL_ON_X))
+    assert rail_changed(mk) == {'stepper_x', 'stepper_x1'}
+    assert console(mk) == [line % 'saving'] and mk.scripts[-1] == 'RESTART'
+
+
+def test_a_rail_that_kept_its_shared_registers_is_not_rewritten(runs, save):
+    own = tmc.Chopper(0, 2, 2, 12)
+    runs('01_x', 'x', own, kept=True, **RAIL_RUN)
+    holding = {'driver_' + field: value for field, value in own.fields().items()}
+    settings = dict(RAIL_ON_X, **{'tmc2209 stepper_x': holding, 'tmc2209 stepper_x1': holding})
+    mk = save('MOTOR=A', mk=FakeMoonraker({'printer.cfg': rail_on(CFG_RAIL_ABE, own)},
+                                          settings=settings))
+    assert mk.uploads == [] and 'RESTART' not in mk.scripts
+    assert console(mk)[0] == ('motor A: your registers %s stay in [tmc2209 stepper_x] and '
+                              '[tmc2209 stepper_x1]. In run 01_x, neither the winner nor Klipper '
+                              'defaults was quieter than them in all 4 rounds' % own.label())
+    # the twin on other registers since: the save puts the pair on the kept ones again
+    settings['tmc2209 stepper_x1'] = {'driver_toff': 3}
+    mk = save('MOTOR=A', mk=FakeMoonraker({'printer.cfg': CFG_RAIL_ABE}, settings=settings))
+    assert rail_changed(mk) == {'stepper_x', 'stepper_x1'}
+
+
+@pytest.mark.parametrize('run, settings, refusal', [
+    # klipper_tmc_autotune came onto the twin after the run
+    (RAIL_RUN, dict(RAIL_ON_X, **{'autotune_tmc stepper_x1': {'tuning_goal': 'performance'}}),
+     'motor A: not saving [tmc2209 stepper_x1]: autotune resets'),
+    # the twin got another driver model since
+    (RAIL_RUN, {'stepper_x': {}, 'stepper_x1': {}, 'tmc2209 stepper_x': {}, 'tmc5160 stepper_x1': {}},
+     'motor A: tune motor A again: its dataset measured TMC2209 drivers, the config gives '
+     'stepper_x1 TMC5160 now'),
+    # the run measured the pair, the config drives the axis with stepper_x alone now
+    (RAIL_RUN, {'stepper_x': {}, 'tmc2209 stepper_x': {}},
+     'motor A: tune motor A again: its dataset measured stepper_x, stepper_x1, the config '
+     'drives the axis with stepper_x alone now'),
+    (dict(RAIL_RUN, autotune='auto'), RAIL_ON_X,
+     'motor A: not saving [tmc2209 stepper_x] and [tmc2209 stepper_x1]: measured under autotune'),
+])
+def test_save_skips_a_rail_it_may_not_write_whole_and_saves_the_rest(runs, save, run, settings,
+                                                                     refusal):
+    runs('01_x', 'x', A, **run)
+    runs('02_y', 'y', B)
+    mk = save('MOTOR=AB', mk=FakeMoonraker({'printer.cfg': CFG_RAIL_ABE}, settings=settings))
+    assert rail_changed(mk) == {'stepper_y'}
+    assert console(mk)[0].startswith(refusal)
+    with pytest.raises(SystemExit, match='^' + re.escape(refusal)):
+        save('MOTOR=A', mk=FakeMoonraker({'printer.cfg': CFG_RAIL_ABE}, settings=settings))
 
 
 BEFORE_SAVE = """[include extra.cfg]
@@ -1021,6 +1177,70 @@ def test_a_file_that_ends_without_a_newline_gets_its_lines_back(monkeypatch):
     assert read(mk.files['extra.cfg']) == read(extra)
 
 
+# motor A on two drivers (#129), stepper_x in printer.cfg, its twin in awd.cfg
+RAIL_PRINTER = """[include awd.cfg]
+
+[stepper_x]
+step_pin: PA0
+
+[tmc2209 stepper_x]
+uart_pin: PA2
+driver_TOFF: 3
+
+[stepper_y]
+step_pin: PA5
+
+[tmc2209 stepper_y]
+uart_pin: PA4
+driver_TOFF: 3
+"""
+RAIL_AWD = """[stepper_x1]
+step_pin: PA1
+
+[tmc2209 stepper_x1]
+uart_pin: PA3
+driver_TOFF: 3
+"""
+W, O = tmc.Chopper(1, 4, 4, 3), tmc.Chopper(0, 2, 2, 12)
+RAIL_X = dict(RAIL_RUN, driver='2209', stepper='stepper_x', axis='x')
+
+
+def rail_registers(mk) -> 'list[dict]':
+    """The driver_* lines of each driver of motor A as Klipper reads them at its next start."""
+    from chopper_autotune.analyze import restart_settings
+    klipper = restart_settings(mk)
+    return [{option: value for option, value in klipper['tmc2209 ' + stepper].items()
+             if option.startswith('driver_')} for stepper in RAIL_RUN['steppers']]
+
+
+def test_backup_gives_each_driver_of_a_rail_its_own_lines_back(monkeypatch):
+    # the drivers of motor A in two files, on different registers before the save; a hand
+    # changed the twin after it
+    awd = RAIL_AWD.replace('driver_TOFF: 3', 'driver_TOFF: 5')
+    mk = started({'printer.cfg': RAIL_PRINTER, 'awd.cfg': awd})
+    run_save(mk, [(RAIL_X, W)])
+    assert sorted(json.loads(mk.files[LAST_SAVE])['sections']) == ['tmc2209 stepper_x',
+                                                                   'tmc2209 stepper_x1']
+    mk.files['awd.cfg'] = mk.files['awd.cfg'].replace('driver_TOFF: 4', 'driver_TOFF: 6')
+    mk.scripts = []
+    backup(mk, monkeypatch)
+    assert read(mk.files['printer.cfg']) == read(RAIL_PRINTER) and read(mk.files['awd.cfg']) == read(awd)
+    assert ('[tmc2209 stepper_x1] driver_TOFF changed after the save: the save wrote 4, the config '
+            'has 6. The rollback still puts back 5') in console(mk)
+    assert mk.scripts[-1] == 'RESTART'
+
+
+def test_backup_after_defaults_on_a_rail_gives_each_driver_its_registers_back(monkeypatch):
+    printer = rail_on(RAIL_PRINTER, W, 'stepper_x')
+    awd = rail_on(RAIL_AWD, O, 'stepper_x1')
+    mk = started({'printer.cfg': printer, 'awd.cfg': awd})
+    restore(mk, monkeypatch, 'DEFAULTS')
+    stock = {'driver_' + field: str(value) for field, value in tmc.DRIVERS['2209'].default.fields().items()}
+    assert rail_registers(mk) == [stock, stock]
+    backup(mk, monkeypatch)
+    assert read(mk.files['printer.cfg']) == read(printer) and read(mk.files['awd.cfg']) == read(awd)
+
+
 # a config split into folders, as [include config/*.cfg] reads it
 STEPPERS = """[tmc2209 stepper_x]
 uart_pin: PA1
@@ -1197,7 +1417,70 @@ def test_registers_a_run_kept_from_an_old_copy_go_into_the_config(runs, save):
     assert read(mk.files['config/steppers.cfg'])['tmc2209 stepper_x']['driver_toff'] == '2'
 
 
-W, O = tmc.Chopper(1, 4, 4, 3), tmc.Chopper(0, 2, 2, 12)
+RAIL_MAIN = RAIL_PRINTER.replace('[include awd.cfg]\n\n', '')
+RAIL_STEPPERS = RAIL_MAIN + '\n' + RAIL_AWD
+RAIL_SAVING = 'motor A: saving %s into [tmc2209 stepper_x] and [tmc2209 stepper_x1] from run 01_x'
+
+
+@pytest.mark.parametrize('files', [
+    # an older version saved W and left its copy beside the file: Klipper reads the copy last
+    {'config/steppers.cfg': rail_on(RAIL_STEPPERS, W),
+     'config/steppers.chopper-backup.cfg': rail_on(RAIL_STEPPERS, O)},
+    # the twin in a file of its own, without a copy: Klipper runs stepper_x on O, stepper_x1 on W
+    {'config/main.cfg': rail_on(RAIL_MAIN, W, 'stepper_x'),
+     'config/main.chopper-backup.cfg': rail_on(RAIL_MAIN, O, 'stepper_x'),
+     'config/zz_awd.cfg': rail_on(RAIL_AWD, W, 'stepper_x1')}], ids=['copy', 'twin apart'])
+def test_a_rail_run_ending_on_the_registers_of_the_files_is_saved_while_klipper_runs_a_copy(
+        runs, save, files):
+    runs('01_x', 'x', W, **RAIL_RUN)
+    mk = save('MOTOR=A', mk=started(files))
+    assert console(mk)[1] == RAIL_SAVING % W.label() and mk.scripts[-1] == 'RESTART'
+    regs = {'driver_' + field: str(value) for field, value in W.fields().items()}
+    assert rail_registers(mk) == [regs, regs]
+
+
+@pytest.mark.parametrize('kept', [False, True])
+def test_a_rail_run_ending_on_what_klipper_runs_is_saved_once_a_copy_moved_without_a_restart(
+        runs, save, kept):
+    # a CHOPPER_SAVE with nothing to write moved the copy: Klipper runs O until it restarts,
+    # the file gives W
+    runs('01_x', 'x', O, kept=kept, **RAIL_RUN)
+    mk = started({'config/steppers.cfg': rail_on(RAIL_STEPPERS, W),
+                  'config/steppers.chopper-backup.cfg': rail_on(RAIL_STEPPERS, O)})
+    save('MOTOR=B', mk=mk)
+    assert 'config/steppers.chopper-backup.cfg' not in mk.files and 'RESTART' not in mk.scripts
+    mk.scripts = []
+    save('MOTOR=A', mk=mk)
+    assert console(mk) == [RAIL_SAVING % O.label() + TBL0_A] and mk.scripts[-1] == 'RESTART'
+    regs = {'driver_' + field: str(value) for field, value in O.fields().items()}
+    assert rail_registers(mk) == [regs, regs]
+
+
+@pytest.mark.parametrize('kept', [False, True])
+def test_a_rail_run_ending_on_registers_klipper_runs_from_a_copy_names_how_to_save_them(
+        runs, save, kept):
+    # an older version saved W, then CHOPPER_RESTORE DEFAULTS=1 wrote the defaults and left
+    # the copy with W beside the file: Klipper runs W. Once the copy moves, a restart brings
+    # the defaults, so each command that says what is left to do names the save
+    from chopper_autotune import analyze, collect
+    from chopper_autotune.cli import build_parser
+    from chopper_autotune.dataset import Dataset
+    root = runs('01_x', 'x', W, kept=kept, **RAIL_RUN)
+    mk = started({'config/steppers.cfg': RAIL_STEPPERS,
+                  'config/steppers.chopper-backup.cfg': rail_on(RAIL_STEPPERS, W)})
+    ds = Dataset.open(root)
+    assert collect.hear_and_save(mk.settings(), ds, mk) == [
+        'To hear the registers this run found, set them live: CHOPPER_ANALYZE MOTOR=A APPLY=1',
+        'To save the registers this run found: CHOPPER_SAVE MOTOR=A']
+    applied = analyze.applied_line(mk, ds.manifest(), str(root), W,
+                                   build_parser().parse_args(['analyze', str(root), '--apply']))
+    assert applied.endswith('until Klipper restarts. Klipper runs them from the config it loaded. '
+                            'At its next start, Klipper loads other registers from its config '
+                            'files. To save them: CHOPPER_ANALYZE DATASET=%s SAVE=1' % root)
+    save('MOTOR=A', mk=mk)
+    assert console(mk)[1] == RAIL_SAVING % W.label() and mk.scripts[-1] == 'RESTART'
+
+
 SAVING = 'motor A: saving %s from run 01_x'
 
 
@@ -1372,6 +1655,32 @@ def test_whole_files_go_back_from_the_copies_in_either_place(monkeypatch, printe
         == sorted(WHOLE_FILES.split(': ', 1)[1].split(', '))
     assert console(mk)[-1] == LOST
     assert mk.scripts[-1] == 'RESTART'
+
+
+@pytest.mark.parametrize('saved_b', [True, False])
+def test_whole_files_that_set_the_drivers_of_a_rail_apart_name_them(monkeypatch, saved_b):
+    # an older version saved W into both files of motor A, copying each beside it, then
+    # motor B: the copy of printer.cfg holds A's save, the copy of awd.cfg the file before it
+    after_a = rail_on(RAIL_PRINTER, W, 'stepper_x')
+    files = {'printer.cfg': after_a, 'awd.cfg': rail_on(RAIL_AWD, W, 'stepper_x1'),
+             'printer.chopper-backup.cfg': RAIL_PRINTER, 'awd.chopper-backup.cfg': RAIL_AWD}
+    if saved_b:
+        files.update({'printer.cfg': updated_options(after_a, 'tmc2209 stepper_y',
+                                                     register_options(O.fields())),
+                      'printer.chopper-backup.cfg': after_a})
+    mk = started(files)
+    backup(mk, monkeypatch)
+    apart = ('After the files go back, the drivers of motor A get different registers: '
+             'stepper_x %s, stepper_x1 %s. CHOPPER_DEMO refuses such a motor. To give its '
+             'drivers one set, copy the driver_* lines of one section into the others and '
+             'restart Klipper'
+             % (W.label(), tmc.DRIVERS['2209'].default.label()))
+    moved, whole, *rest = console(mk)
+    assert moved.startswith('This command moves the backup copies')
+    assert whole.startswith('The last save left no record of the lines it changed')
+    assert rest == [LOST] + ([apart] if saved_b else [])
+    assert read(mk.files['printer.cfg']) == read(after_a if saved_b else RAIL_PRINTER)
+    assert read(mk.files['awd.cfg']) == read(RAIL_AWD)
 
 
 @pytest.mark.parametrize('rolled_back', [False, True])
@@ -1701,6 +2010,26 @@ def test_registers_a_rollback_put_back_are_not_written_again(runs, save, monkeyp
         % B.label(),
         'motor E: the config already has %s, the result of the CHOPPER_EXTRUDER run of %s, so there '
         'is nothing to write' % (E.label(), when),
+        'Nothing to save, Klipper keeps running']
+    assert mk.uploads == [] and 'RESTART' not in mk.scripts
+
+
+def test_a_rails_registers_a_rollback_put_back_are_not_written_again(runs, save, monkeypatch):
+    # as on one motor: the run's registers are back on every driver of the rail, so a save
+    # has no rollback to undo
+    runs('01_x', 'x', B, age=60, **RAIL_RUN)
+    mk = save('MOTOR=A', mk=FakeMoonraker({'printer.cfg': CFG_RAIL_ABE}, settings=RAIL_ON_X))
+    restore(mk, monkeypatch, 'DEFAULTS')
+    backup(mk, monkeypatch)
+    sections = read(mk.files['printer.cfg'])
+    for stepper in RAIL_RUN['steppers']:
+        assert {name: int(sections['tmc2209 ' + stepper]['driver_' + name])
+                for name in B.fields()} == B.fields()
+    settings = dict(RAIL_ON_X, **holding(stepper_x=B, stepper_x1=B))
+    mk = save('MOTOR=A', mk=FakeMoonraker(dict(mk.files), settings=settings))
+    assert console(mk) == [
+        'motor A: the config already has %s, the result of run 01_x, in [tmc2209 stepper_x] and '
+        '[tmc2209 stepper_x1], so there is nothing to write' % B.label(),
         'Nothing to save, Klipper keeps running']
     assert mk.uploads == [] and 'RESTART' not in mk.scripts
 

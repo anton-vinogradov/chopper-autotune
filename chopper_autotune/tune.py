@@ -9,13 +9,15 @@ from dataclasses import fields
 from pathlib import Path
 
 from . import tmc
-from .collect import (Screen, autotune_advice, autotune_goal, collect, driver_of, motor_label,
-                      refuse_autotune_save, refuse_multi_motor, refuse_nothing_to_try,
-                      run_motors, save_command, tell_next, worth_saving)
-from .dataset import Dataset
+from .collect import (Screen, autotune_advice, autotune_manages, collect, driver_of, motor_label,
+                      rail_snippet, rail_steppers, rail_twins, refuse_autotune_save,
+                      refuse_multi_motor, refuse_nothing_to_try, run_motors, save_command,
+                      tell_next, worth_saving)
+from .dataset import Dataset, measured_steppers
 from .find_speed import no_peak, scan, tune_at
 from .klippy import Klippy, find_socket
 from .moonraker import Moonraker
+from .rail import rails_first, refuse_rail_run, resync_first
 
 DRY_RUN_SPEED = 60
 
@@ -104,12 +106,11 @@ def run_tune(args) -> int:
     kl = Klippy(find_socket(args.socket)).connect()
     settings = kl.settings()
 
-    def managed(manifest: dict) -> bool:
-        """klipper_tmc_autotune manages the motor now (a TMC2208 included, whose result
-        carries no 'measured under autotune' tag): pasting or saving would be undone."""
-        return autotune_goal(settings, manifest['stepper']) is not None
-
-    refuse_multi_motor(settings, args.axis)
+    refuse_multi_motor(settings, args.axis, rails=True)
+    if any(rail_twins(settings, axis) for axis in axes):
+        # say it now, not after the other motor's tune
+        refuse_rail_run(kl, args.csv, args.dry_run)
+    axes = rails_first(settings, axes, 'tune')
     for axis in axes:
         # say it now, not after the speed scan
         name = driver_of(settings, 'stepper_' + axis)
@@ -119,8 +120,8 @@ def run_tune(args) -> int:
     if args.save:
         # say it now, not after twenty minutes of tuning
         for axis in axes:
-            stepper = 'stepper_' + axis
-            refuse_autotune_save(settings, driver_of(settings, stepper) or 'XXXX', stepper)
+            rail = rail_steppers(settings, axis)
+            refuse_autotune_save(settings, driver_of(settings, rail[0]) or 'XXXX', *rail)
     screen = Screen(kl, True)
     winners, roots = [], []
     # the commands that tune the motors without a clear peak: the next motor may have one.
@@ -140,7 +141,8 @@ def run_tune(args) -> int:
                           % DRY_RUN_SPEED)
                     recommended = DRY_RUN_SPEED
                 elif recommended is None:
-                    unpeaked.append(no_peak(motor_label(axis), tune_at(axis, loudest, args)))
+                    unpeaked.append(no_peak(motor_label(axis), tune_at(axis, loudest, args),
+                                            resync_first(settings, axes, axis)))
                     continue
                 speed = recommended
             code, root = collect(kl, collect_args(args, axis, speed, seed_root), popup=False)
@@ -151,8 +153,9 @@ def run_tune(args) -> int:
                 seed_root = root
         if unpeaked and not winners:
             raise SystemExit(unpeaked.pop())
+        winners.sort(key=lambda winner: winner[0]['stepper'])      # A, B: the order shown
         runs = [manifest for manifest, _ in winners]
-        free = [manifest for manifest in runs if not managed(manifest)]
+        free = [manifest for manifest in runs if not autotune_manages(settings, manifest)]
         changed = worth_saving(settings, runs, Moonraker(args.url))
 
         # the run's outcome must reach the screen: the console summary below only lands
@@ -164,7 +167,7 @@ def run_tune(args) -> int:
                 '%s %s%s%s%s' % (motor_label(manifest['stepper'].rsplit('_', 1)[-1]),
                                  'keep ' if manifest.get('kept') else '', combo.compact(),
                                  improvement_note(manifest),
-                                 ' (autotune)' if managed(manifest) else '')
+                                 ' (autotune)' if autotune_manages(settings, manifest) else '')
                 for manifest, combo in winners)
             tail = (' — autotune resets these at start' if not free
                     else ' — your registers stay' if not changed
@@ -182,12 +185,13 @@ def run_tune(args) -> int:
 
     print('\n=== Summary ===')
     for manifest, combo in winners:
-        if managed(manifest):
+        steppers = measured_steppers(manifest)
+        if autotune_manages(settings, manifest):
             # no snippet: pasting it would change nothing, autotune writes its own at start
-            print('%s: %s\n' % (manifest['stepper'],
-                                autotune_advice(settings, manifest['driver'], manifest['stepper'])))
+            print('%s: %s\n' % (', '.join(steppers),
+                                autotune_advice(settings, manifest['driver'], *steppers)))
             continue
-        print(tmc.cfg_snippet(tmc.DRIVERS[manifest['driver']], manifest['stepper'], combo))
+        print(rail_snippet(tmc.DRIVERS[manifest['driver']], steppers, combo))
         if manifest.get('kept'):
             print('# your registers, kept: no combo was quieter in each back-to-back round')
         if manifest.get('improvement'):

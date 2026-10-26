@@ -1,0 +1,11 @@
+Demo on motor B at 40 mm/s (measure 1 each): defaults tbl2_toff3_hstrt5_hend2_tpfd4 vs tuned tbl1_toff4_hstrt2_hend3_tpfd4
+Preparing: home XY, park at center, switch the gantry and head motors off
+Baseline noise: median magnitude 5.0
+
+motor B at 40 mm/s (mean vibration, lower is better):
+
+  defaults tbl2_toff3_hstrt5_hend2_tpfd4     59  ########################################
+  tuned    tbl1_toff4_hstrt2_hend3_tpfd4     51  ###################################
+
+  1.15x less vibration overall
+  1.17x less vibration above the 5 noise floor
