@@ -1,3 +1,5 @@
+import pytest
+
 from chopper_autotune import tmc
 from chopper_autotune.cli import build_parser
 from chopper_autotune.collect import (Hardware, Screen, VALIDATE_EXTRA_ITERATIONS,
@@ -18,8 +20,8 @@ class FakeKl:
         return {}              # no X/Y driver sections: the thermal guard stays idle
 
 
-def make_hw(kl):
-    return Hardware(kl=kl, stepper='stepper_x', driver=tmc.DRIVERS['2209'],
+def make_hw(kl, driver='2209'):
+    return Hardware(kl=kl, stepper='stepper_x', driver=tmc.DRIVERS[driver],
                     accel_chip='adxl345', kinematics='corexy', axis_span=260,
                     center=(130, 130), max_accel=10000, baseline={})
 
@@ -214,9 +216,9 @@ def test_the_table_adds_the_recommended_row_at_its_own_rank(capsys):
     assert len(capsys.readouterr().out.strip().split('\n')) == 11
 
 
-def drifting(true_of, drift):
+def drifting(true_of, drift, clicks_of=lambda combo: 0):
     """Fake measurement: each combo's true magnitude, louder by `drift` per move made so
-    far, as a printer heating over a run."""
+    far, as a printer heating over a run, and its clicks per move."""
     moves = []
 
     def fake(hw, ds_, args, combo, speed, iteration, direction, travel, accel, before_move):
@@ -224,26 +226,28 @@ def drifting(true_of, drift):
         value = true_of(combo) * (1 + drift * len(moves))
         record = {'id': measurement_id(combo, speed, iteration, direction), 'kind': 'move',
                   'status': 'ok', **combo.fields(), 'speed': speed, 'direction': direction,
-                  'iteration': iteration, 'score': {'median_magnitude': value}}
+                  'iteration': iteration,
+                  'score': {'median_magnitude': value, 'clicks': clicks_of(combo)}}
         ds_.append(record)
         return record
     return fake
 
 
-def back_to_back_run(tmp_path, monkeypatch, true_of, drift, baseline=None):
+def back_to_back_run(tmp_path, monkeypatch, true_of, drift, baseline=None, driver='2209',
+                     args=None, clicks_of=lambda combo: 0):
     seed = {toff: 1000 + 10 * toff for toff in range(2, 8)}
     seed[2] = 700                                     # the pick's lucky first draw
     ds = seed_grid(tmp_path, seed)
     kl = FakeKl()
-    hw = make_hw(kl)
+    hw = make_hw(kl, driver)
     hw.baseline = baseline or {}
     finals = []
     screen = Screen(kl, display=True)               # its texts must fit the LCD (conftest)
     shown = screen.final
     screen.final = lambda text, short=None: (finals.append(text), shown(text, short))
-    monkeypatch.setattr(collect_module, 'run_measurement', drifting(true_of, drift))
-    validate_top(kl, hw, ds, make_args(validate=2), [58], 70.0, 1000, set(), lambda d, t: None,
-                 screen)
+    monkeypatch.setattr(collect_module, 'run_measurement', drifting(true_of, drift, clicks_of))
+    validate_top(kl, hw, ds, args or make_args(validate=2), [58], 70.0, 1000, set(),
+                 lambda d, t: None, screen)
     return ds.manifest(), finals[0]
 
 
@@ -265,7 +269,8 @@ def test_a_real_gain_is_claimed_at_its_size(tmp_path, monkeypatch, capsys):
     assert not manifest['kept'] and manifest['winner'] != stock.fields()
     assert abs(manifest['improvement'] - 1.5) < 0.03
     assert '33% less vibration' in final
-    assert 'back to back: 1.5x less vibration, quieter in each of 4 rounds' in capsys.readouterr().out
+    assert 'back to back: 1.50x less vibration, lower in each of 4 rounds' \
+        in capsys.readouterr().out
 
 
 def test_the_own_registers_stay_unless_the_winner_beats_them_every_round(tmp_path, monkeypatch,
@@ -289,13 +294,13 @@ def test_a_winner_that_ties_with_defaults_replaces_louder_registers_with_no_gain
         baseline=own.fields())
     assert not manifest['kept'] and manifest['winner'] not in (own.fields(), stock.fields())
     assert manifest['improvement'] is None and 'less vibration' not in final
-    assert 'not quieter in each of 4 rounds, so no gain this run can tell from noise' \
+    assert 'vibration not lower in all 4 rounds, so no gain this run can tell from noise' \
         in capsys.readouterr().out
 
 
 def test_whining_own_registers_give_way_though_they_shake_a_little_less(tmp_path, monkeypatch,
                                                                         capsys):
-    # the rounds score as the ranking does: 24 kHz own registers at 950 count as 1188
+    # the rounds add the audible penalty: 24 kHz own registers at 950 count as 1188
     own = tmc.Chopper(2, 6, 4, 4)
     manifest, final = back_to_back_run(
         tmp_path, monkeypatch, lambda combo: 950.0 if combo == own else
@@ -315,6 +320,230 @@ def test_klipper_defaults_that_beat_the_own_registers_become_the_recommendation(
     assert manifest['winner'] == stock.fields() and not manifest['kept']
     assert 'Klipper defaults tbl2_toff3_hstrt5_hend0 were quieter than' in out
     assert manifest['improvement'] is None              # no gain over themselves
+
+
+# the 5160's defaults as a run that leaves TPFD alone spells them
+STOCK_5160 = tmc.stock_chopper(tmc.DRIVERS['5160'], False)
+
+
+def test_a_tie_on_a_tmc5160_keeps_the_registers_and_claims_no_gain(tmp_path, monkeypatch,
+                                                                   capsys):
+    # #164: the ranking's edge penalty, 3.7% on the 5160 defaults and 1.9% on the winner,
+    # turned a tie into a win in each of 4 rounds and an improvement of 1.0
+    manifest, final = back_to_back_run(tmp_path, monkeypatch, lambda combo: 1000.0, drift=0.0,
+                                       driver='5160')
+    out = capsys.readouterr().out
+    assert manifest['kept'] and manifest['winner'] == STOCK_5160.fields()
+    assert manifest['improvement'] is None and 'less vibration' not in out + final
+    assert 'Keep your registers tbl2_toff3_hstrt5_hend2' in out
+    assert final.startswith('Chopper: keep')
+
+
+def test_a_winner_louder_than_klipper_defaults_claims_no_gain(tmp_path, monkeypatch, capsys):
+    manifest, final = back_to_back_run(
+        tmp_path, monkeypatch, lambda combo: 1000.0 if combo == STOCK_5160 else 1015.0,
+        drift=0.0, driver='5160')
+    out = capsys.readouterr().out
+    assert manifest['winner'] == STOCK_5160.fields()
+    assert manifest['improvement'] is None and 'less vibration' not in out + final
+
+
+def test_own_registers_quieter_than_a_winner_with_a_smaller_edge_penalty_stay(
+        tmp_path, monkeypatch, capsys):
+    # the edge penalty of 1/4/7/6 on a 5160 is 7.1%, the winner's 1.9%
+    own = tmc.Chopper(1, 4, 7, 6)
+    manifest, final = back_to_back_run(
+        tmp_path, monkeypatch, lambda combo: 1000.0 if combo == own else 1040.0, drift=0.0,
+        baseline=dict(own.fields(), tpfd=14), driver='5160')
+    out = capsys.readouterr().out
+    assert manifest['kept'] and manifest['winner'] == own.fields()
+    assert 'Keep your registers tbl1_toff4_hstrt7_hend6' in out
+    # one decimal printed this gain as 1.0x
+    assert 'back to back: 1.04x less vibration, lower in each of 4 rounds (1040 -> 1000)' in out
+    assert manifest['improvement'] == 1.04
+    assert final == 'Chopper: keep tbl1_toff4_hstrt7_hend6 — 4% less vibration'
+
+
+def test_clicking_own_registers_give_way_though_they_shake_a_little_less(tmp_path, monkeypatch,
+                                                                         capsys):
+    # a click a move counts as much as doubling the vibration: 950 counts as 1900
+    own = tmc.Chopper(1, 4, 2, 3)
+    manifest, final = back_to_back_run(
+        tmp_path, monkeypatch, lambda combo: 950.0 if combo == own else 1000.0, drift=0.0,
+        baseline=own.fields(), clicks_of=lambda combo: 1 if combo == own else 0)
+    out = capsys.readouterr().out
+    assert not manifest['kept'] and manifest['winner'] != own.fields()
+    assert 'Keep your registers' not in out
+    assert '\nIn the back-to-back rounds, your registers tbl1_toff4_hstrt2_hend3 lost to the ' \
+        'best found, tbl0_toff2_hstrt4_hend4 because of the penalties for clicks, not because ' \
+        'of vibration\n' in out
+
+
+def test_a_gain_that_does_not_hold_in_every_round_is_not_claimed(tmp_path, monkeypatch, capsys):
+    stock, own = tmc.DRIVERS['2209'].default, tmc.Chopper(1, 4, 2, 3)
+    moves = []
+
+    def true_of(combo):
+        if combo != stock:
+            return 1000.0
+        moves.append(combo)
+        return 900.0 if len(moves) in (5, 6) else 1300.0     # the two moves of its third round
+    manifest, final = back_to_back_run(tmp_path, monkeypatch, true_of, drift=0.0,
+                                       baseline=own.fields())
+    out = capsys.readouterr().out
+    assert manifest['kept'] and manifest['improvement'] is None and 'less vibration' not in final
+    assert 'vibration not lower in all 4 rounds, so no gain this run can tell from noise ' \
+        '(1200 -> 1000)' in out
+
+
+def test_a_gain_that_two_decimals_show_as_1_00x_is_not_claimed(tmp_path, monkeypatch, capsys):
+    manifest, final = back_to_back_run(
+        tmp_path, monkeypatch, lambda combo: 1000.0 if combo == STOCK_5160 else 997.0,
+        drift=0.0, driver='5160')
+    out = capsys.readouterr().out
+    assert manifest['winner'] != STOCK_5160.fields() and manifest['improvement'] is None
+    assert 'less vibration' not in out + final
+    assert 'back to back: lower vibration in each of 4 rounds, but by less than 0.5% on average, ' \
+        'so the run claims no gain (1000 -> 997)' in out
+
+
+@pytest.mark.parametrize('defaults, shown, pct', [
+    (1007.0, 1.01, 1),            # the least gain that two decimals show
+    (1046.0, 1.05, 5),            # 4.4% of the exact factor, 5% of the factor as printed
+])
+def test_a_gain_is_claimed_as_two_decimals_show_it(tmp_path, monkeypatch, capsys, defaults,
+                                                   shown, pct):
+    from chopper_autotune.tune import improvement_note
+    manifest, final = back_to_back_run(
+        tmp_path, monkeypatch, lambda combo: defaults if combo == STOCK_5160 else 1000.0,
+        drift=0.0, driver='5160')
+    assert 'back to back: %.2fx less vibration, lower in each of 4 rounds (%.0f -> 1000)' \
+        % (shown, defaults) in capsys.readouterr().out
+    assert manifest['improvement'] == shown and final.endswith(' — %d%% less vibration' % pct)
+    assert improvement_note(manifest) == ' -%d%%' % pct
+
+
+def test_klipper_defaults_that_lose_the_rounds_by_their_whine_alone_give_no_gain(
+        tmp_path, monkeypatch, capsys):
+    # under AUDIBLE_KHZ=40 the 2209 defaults, 39.5 kHz, count 25% more than they vibrate
+    args = make_args(validate=2)
+    args.audible_khz = 40.0
+    stock = tmc.DRIVERS['2209'].default
+    manifest, final = back_to_back_run(
+        tmp_path, monkeypatch, lambda combo: 1000.0 if combo == stock else 1100.0, drift=0.0,
+        args=args)
+    out = capsys.readouterr().out
+    assert manifest['winner'] != stock.fields() and manifest['improvement'] is None
+    assert 'less vibration' not in out + final
+    # the motor runs Klipper defaults here: they are its registers
+    assert '\n\nIn the back-to-back rounds, your registers tbl2_toff3_hstrt5_hend0 lost to the ' \
+        'best found, tbl0_toff2_hstrt4_hend4 because of the penalties for a chopper frequency ' \
+        'below the 40 kHz audible limit, not because of vibration\n\n' \
+        'vs Klipper defaults tbl2_toff3_hstrt5_hend0, back to back: vibration not lower in all 4 ' \
+        'rounds, so no gain this run can tell from noise (1000 -> 1100)\n' in out
+
+
+def test_klipper_defaults_that_lose_the_rounds_by_their_clicks_give_no_gain(
+        tmp_path, monkeypatch, capsys):
+    # with the clicks counted the recommendation wins every round and 1.01x on average:
+    # the claim is vibration alone, and in it the recommendation loses 3 rounds of 4
+    stock = tmc.DRIVERS['2209'].default
+    moves = []
+
+    def true_of(combo):
+        if combo == stock:
+            moves.append(combo)
+            return 1000.0
+        return 660.0 if len(moves) > 6 else 1100.0     # the last round plays defaults first
+    manifest, final = back_to_back_run(tmp_path, monkeypatch, true_of, drift=0.0,
+                                       clicks_of=lambda combo: 1 if combo == stock else 0)
+    out = capsys.readouterr().out
+    assert manifest['winner'] != stock.fields() and manifest['improvement'] is None
+    assert 'less vibration' not in out + final
+    # the motor runs Klipper defaults here: they are its registers
+    assert '\n\nIn the back-to-back rounds, your registers tbl2_toff3_hstrt5_hend0 lost to the ' \
+        'best found, tbl0_toff2_hstrt4_hend4 because of the penalties for clicks, not because ' \
+        'of vibration\n\nvs Klipper defaults tbl2_toff3_hstrt5_hend0, back to back: vibration ' \
+        'not lower in all 4 rounds, so no gain this run can tell from noise (1000 -> 990)\n' in out
+
+
+def test_clicks_that_do_not_decide_the_rounds_are_not_named(tmp_path, monkeypatch, capsys):
+    # clicking, the defaults at 400 count as 800 and win the third round against the own
+    # 1000; by vibration alone they win that round only too
+    stock, own = tmc.DRIVERS['2209'].default, tmc.Chopper(1, 4, 2, 3)
+    moves = []
+
+    def true_of(combo):
+        if combo != stock:
+            return 1000.0
+        moves.append(combo)
+        return 400.0 if len(moves) in (5, 6) else 1300.0
+    manifest, final = back_to_back_run(tmp_path, monkeypatch, true_of, drift=0.0,
+                                       baseline=own.fields(),
+                                       clicks_of=lambda combo: 1 if combo == stock else 0)
+    out = capsys.readouterr().out
+    assert manifest['kept'] and manifest['improvement'] is None
+    assert 'not because of vibration' not in out
+
+
+def test_klipper_defaults_that_vibrate_less_lose_by_clicks_in_two_rounds(tmp_path, monkeypatch,
+                                                                          capsys):
+    # the defaults win rounds 3 and 4 even with the clicks counted, so they do not replace
+    # the own registers; by vibration alone they would
+    stock, own = tmc.DRIVERS['2209'].default, tmc.Chopper(0, 2, 4, 4)
+    moves = []
+
+    def clicks_of(combo):
+        if combo != stock:
+            return 0
+        moves.append(combo)
+        return 1 if len(moves) <= 4 else 0
+    manifest, final = back_to_back_run(
+        tmp_path, monkeypatch, lambda combo: 1000.0 if combo == stock else 1100.0, drift=0.0,
+        baseline=own.fields(), clicks_of=clicks_of)
+    assert manifest['winner'] == own.fields() and manifest['improvement'] is None
+    assert '\n\nIn the back-to-back rounds, Klipper defaults tbl2_toff3_hstrt5_hend0 lost to ' \
+        'your registers tbl0_toff2_hstrt4_hend4 because of the penalties for clicks, not ' \
+        'because of vibration\n\n' in capsys.readouterr().out
+
+
+def test_klipper_defaults_that_whine_and_click_in_one_round_get_both_penalties_named(
+        tmp_path, monkeypatch, capsys):
+    args = make_args(validate=2)
+    args.audible_khz = 40.0
+    stock = tmc.DRIVERS['2209'].default
+    moves = []
+
+    def clicks_of(combo):
+        if combo != stock:
+            return 0
+        moves.append(combo)
+        return 1 if len(moves) > 6 else 0              # its last round only
+    back_to_back_run(tmp_path, monkeypatch, lambda combo: 1000.0 if combo == stock else 1100.0,
+                     drift=0.0, args=args, clicks_of=clicks_of)
+    assert '\nIn the back-to-back rounds, your registers tbl2_toff3_hstrt5_hend0 lost to the ' \
+        'best found, tbl0_toff2_hstrt4_hend4 because of the penalties for clicks and a ' \
+        'chopper frequency below the 40 kHz audible limit, not because of vibration\n' \
+        in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('audible_khz, weight, clicking, penalties', [
+    (60.0, 0.25, 'defaults', 'clicks'),          # the winner, 57.7 kHz, is below 60 kHz too
+    (40.0, 0.0, 'defaults', 'clicks'),           # a weight of 0 makes a whine cost nothing
+    (40.0, 0.25, 'all', 'a chopper frequency below the 40 kHz audible limit'),
+])
+def test_a_penalty_that_costs_the_winner_as_much_is_not_named(tmp_path, monkeypatch, capsys,
+                                                               audible_khz, weight, clicking,
+                                                               penalties):
+    args = make_args(validate=2)
+    args.audible_khz, args.audible_weight = audible_khz, weight
+    stock = tmc.DRIVERS['2209'].default
+    back_to_back_run(tmp_path, monkeypatch, lambda combo: 1000.0 if combo == stock else 1100.0,
+                     drift=0.0, args=args,
+                     clicks_of=lambda combo: 1 if clicking == 'all' or combo == stock else 0)
+    assert '\nIn the back-to-back rounds, your registers tbl2_toff3_hstrt5_hend0 lost to the ' \
+        'best found, tbl0_toff2_hstrt4_hend4 because of the penalties for %s, not because of ' \
+        'vibration\n' % penalties in capsys.readouterr().out
 
 
 def test_the_rounds_are_measured_afresh_every_time(tmp_path, monkeypatch):

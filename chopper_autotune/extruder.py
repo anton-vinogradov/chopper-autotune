@@ -207,10 +207,9 @@ def extruder_show(kl: Klippy, args, driver: tmc.Driver, baseline_regs: dict,
                 print('   magnitude %.0f' % magnitude)
         d = sum(magnitudes['defaults']) / len(magnitudes['defaults'])
         t = sum(magnitudes['tuned']) / len(magnitudes['tuned'])
-        from .demo import write_state
+        from .demo import gain, round_result, write_state
         write_state('extruder', tmc.baseline_chopper(baseline_regs, default=driver.default), d / t)
-        screen.final('Extruder: %.1fx less vibration (%.0f -> %.0f)' % (d / t, d, t),
-                     'E %.1fx less vib' % (d / t))
+        screen.final(round_result('Extruder', d, t), 'E %s' % gain(d, t, short=True))
     finally:
         run_restore(
             # the motor on before any register write (wake_stepper): a stop during the heat-up

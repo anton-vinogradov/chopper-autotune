@@ -15,10 +15,10 @@ AUDIBLE_LIMIT_HZ = 30000.0
 RECORDED_LIMIT_BEFORE_HZ = 20000.0
 AUDIBLE_WEIGHT = 0.25
 # from the audible limit up to this multiple of it the chopper is ultrasonic but with
-# little margin; a config is nudged toward more headroom when nothing else distinguishes it
+# little margin; edge_penalty nudges a config toward more headroom
 CAUTION_RATIO = 1.5
 HYST_CAP = 16                   # datasheet max effective hysteresis
-FREQ_MARGIN_WEIGHT = 0.05       # tie-breaker only: a real vibration win always overrides
+FREQ_MARGIN_WEIGHT = 0.05
 HYST_EDGE_WEIGHT = 0.05
 
 
@@ -302,9 +302,10 @@ def edge_penalty(c: Chopper, driver: Driver, hearing: Hearing) -> float:
     """A small preference — used as a tie-breaker in the score — for configs away from
     two edges: a chopper frequency comfortably above the audible band, and interior
     hysteresis (further from the datasheet cap = less current ripple/heat, no latent
-    clicking if the run current is later raised). Weighted low, so any real vibration
-    difference overrides it; it only decides when the measurement is otherwise flat
-    (e.g. the whole hysteresis ladder is nearly flat at a low run current)."""
+    clicking if the run current is later raised). It decides when the measurement is
+    otherwise flat (e.g. the whole hysteresis ladder is nearly flat at a low run current).
+    Up to 10%, it can outweigh a real vibration difference of a few percent too, so the
+    back-to-back rounds that decide the recommendation leave it out."""
     freq = chopper_freq_hz(c, driver)
     caution = hearing.limit_hz * CAUTION_RATIO
     penalty = 0.0

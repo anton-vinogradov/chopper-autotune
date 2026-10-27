@@ -101,6 +101,24 @@ def test_tune_single_axis_with_explicit_speed(tmp_path, monkeypatch):
     assert tune.run_tune(tune_args(axis='y', speed=52)) == 0
 
 
+def test_the_summary_gives_the_gain_over_klipper_defaults_with_two_decimals(tmp_path, monkeypatch,
+                                                                            capsys):
+    # one decimal printed this gain as 1.0x
+    root = make_dataset(tmp_path, 'y', 5)
+    Dataset.open(root).update_manifest(improvement=1.04)
+    monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<sock>')
+    monkeypatch.setattr(tune.Klippy, 'connect', lambda self, sock=None: self)
+    monkeypatch.setattr(tune.Klippy, 'close', lambda self: None)
+    monkeypatch.setattr(tune, 'Moonraker', lambda url: moonraker({}))
+    monkeypatch.setattr(tune, 'collect', lambda kl, args, popup: (0, root))
+    finals = []
+    monkeypatch.setattr(tune.Screen, 'final', lambda self, text, short=None: finals.append(text))
+    assert tune.run_tune(tune_args(axis='y', speed=52)) == 0
+    assert '\ndriver_HEND: 5\n# 1.04x less vibration than Klipper defaults\n' \
+        in capsys.readouterr().out
+    assert finals[-1].startswith('Tune done: B 0/5/7/5 -4%')
+
+
 def test_tune_save_saves_what_save_with_the_motors_of_the_run_saves(tmp_path, monkeypatch):
     # one way to save a run: SAVE=1 now is CHOPPER_SAVE MOTOR=<its motors> later
     from pathlib import Path
