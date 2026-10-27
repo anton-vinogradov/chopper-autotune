@@ -123,18 +123,24 @@ def dataset_transients(ds: Dataset) -> 'dict[tmc.Chopper, int]':
 CLICK_WEIGHT = 1.0
 
 
-def penalized_score(combo: tmc.Chopper, magnitudes: 'list[float]', driver: tmc.Driver,
-                    hearing: tmc.Hearing, clicks_per_move: float = 0.0) -> float:
+def heard_score(combo: tmc.Chopper, magnitudes: 'list[float]', driver: tmc.Driver,
+                hearing: tmc.Hearing, clicks_per_move: float = 0.0) -> float:
+    """The vibration with the penalties for what the ear catches: an audible chopper and
+    clicks; infinite for a combo the hearing skips."""
     if hearing.skips(combo, driver):
         return float('inf')
     # mean across moves (see analyze.aggregate): direction asymmetry is signal
     magnitude = statistics.mean(magnitudes)
     if hearing.audible(combo, driver):
         magnitude *= 1 + hearing.weight
-    # the edge penalty is a tie-breaker toward safe configs (chopper-frequency margin,
-    # interior hysteresis) — small enough that any real vibration win overrides it, so
-    # it decides only when the field is flat (e.g. the ladder at a low run current)
-    return magnitude * (1 + CLICK_WEIGHT * clicks_per_move) \
+    return magnitude * (1 + CLICK_WEIGHT * clicks_per_move)
+
+
+def penalized_score(combo: tmc.Chopper, magnitudes: 'list[float]', driver: tmc.Driver,
+                    hearing: tmc.Hearing, clicks_per_move: float = 0.0) -> float:
+    """The score of the search and the ranking: heard_score with the tie-breaker toward
+    safe configs, tmc.edge_penalty."""
+    return heard_score(combo, magnitudes, driver, hearing, clicks_per_move) \
         * (1 + tmc.edge_penalty(combo, driver, hearing))
 
 

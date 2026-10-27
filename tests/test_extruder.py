@@ -268,3 +268,25 @@ def test_an_early_stop_enables_the_extruder_before_putting_registers_back(monkey
     # M104 heats the ACTIVE extruder: another hotend on an IDEX or a toolchanger
     assert 'SET_HEATER_TEMPERATURE HEATER=extruder TARGET=0' in sent
     assert not [script for script in sent if script.startswith('M104')]
+
+
+@pytest.mark.parametrize('tuned, said, shown', [
+    (800., 'Extruder, defaults 1000 -> tuned 800: 1.25x less vibration', 'E 1.25x less vib'),
+    # two decimals would make 'E 12.50x less vib', a character past the display
+    (80., 'Extruder, defaults 1000 -> tuned 80: 12.50x less vibration', 'E 12.5x less vib'),
+    (1020., 'Extruder, defaults 1000 -> tuned 1020: 1.02x more vibration', 'E 1.02x more vib')],
+    ids=['less', '12.5x less', 'more'])
+def test_the_show_ends_with_both_vibrations_and_the_gain_as_the_demo_of_a_motor_does(
+        tuned, said, shown, monkeypatch):
+    from types import SimpleNamespace
+    sent = []
+    kl = SimpleNamespace(settings=lambda: {}, gcode=sent.append, gcode_output=lambda script: [],
+                         subscribe_accel=lambda chip: None)
+    monkeypatch.setattr(extruder_mod, 'detect_hardware', lambda kl, axis: SimpleNamespace(
+        accel_chip='adxl345', display=True))
+    played = iter([1000., tuned] * 2)                      # DEFAULTS, then TUNED, two rounds
+    monkeypatch.setattr(extruder_mod, 'measure', lambda hw, speed: (next(played), 0))
+    assert extruder_mod.extruder_show(kl, SimpleNamespace(speed=None), tmc.DRIVERS['2209'],
+                                      {'tbl': 1, 'toff': 4, 'hstrt': 2, 'hend': 3}, None,
+                                      200.0) == 0
+    assert 'M118 ' + said in sent and 'M117 ' + shown in sent

@@ -358,7 +358,13 @@ measured worse than stock here. **[measured]**
   audible band) is suspect. The score carries a small tie-breaker toward interior
   hysteresis and frequency margin, so when the vibration ladder is flat — typically
   at a low run current, where the chopper barely affects vibration — the tuner picks
-  the safe config on its own instead of landing on an edge at random.
+  the safe config on its own instead of landing on an edge at random. The
+  tie-breaker works in the search, in the ranking and in the extruder's pick of
+  its winner. It can make a config's score up to 10% worse. So a config that
+  vibrates a few percent more could beat a quieter one. That is why the 4 rounds
+  at the end of a tune of motor A or B leave it out. In them, the run compares the
+  winner and Klipper defaults with the motor's own registers
+  ([how the rounds go](../README.md#command-reference)).
 - A median-based score needs a transient companion metric; “quiet on average”
   is not “clean”. (Implemented: clicks are counted per move and penalized.)
 - The hysteresis **split** matters, not only the total: hend-heavy splits

@@ -1457,9 +1457,10 @@ def back_to_back(hw: Hardware, ds: Dataset, args, combos: 'list[tmc.Chopper]',
     every other round, so a drift over the run (heat, a re-home) hits each of them alike.
     Every move is fresh: new iterations, past any the dataset holds for these combos, so
     no move the pick saw, or an earlier session took, counts. Returns per combo and round
-    the mean magnitude and its score as the ranking scores it (the audible and the click
-    penalties), or nothing when a move failed; and the counts."""
-    from .search import penalized_score
+    the mean magnitude, the clicks and the score with the audible and the click penalties
+    but without the ranking's tie-breaker (tmc.edge_penalty), or nothing when a move
+    failed; and the counts."""
+    from .search import heard_score
     hearing = tmc.Hearing.of(args)
     taken = [record.get('iteration', 0) for record in ds.records()
              if record.get('kind') == 'move' and tmc.Chopper(
@@ -1486,18 +1487,33 @@ def back_to_back(hw: Hardware, ds: Dataset, args, combos: 'list[tmc.Chopper]',
                 return {}, ok, failed
             magnitudes = [move['score']['median_magnitude'] for move in moves]
             clicks = sum(move['score'].get('clicks', 0) for move in moves)
-            rounds[combo].append({'magnitude': statistics.mean(magnitudes),
-                                  'score': penalized_score(combo, magnitudes, hw.driver, hearing,
-                                                           clicks / len(moves))})
+            rounds[combo].append({'magnitude': statistics.mean(magnitudes), 'clicks': clicks,
+                                  'score': heard_score(combo, magnitudes, hw.driver, hearing,
+                                                       clicks / len(moves))})
     return rounds, ok, failed
 
 
-def quieter_every_round(rounds: dict, combo: tmc.Chopper, rival: tmc.Chopper) -> bool:
-    return all(mine['score'] < theirs['score'] for mine, theirs in zip(rounds[combo], rounds[rival]))
+def quieter_every_round(rounds: dict, combo: tmc.Chopper, rival: tmc.Chopper,
+                        by: str = 'score') -> bool:
+    return all(mine[by] < theirs[by] for mine, theirs in zip(rounds[combo], rounds[rival]))
 
 
 def mean_magnitude(rounds: dict, combo: tmc.Chopper) -> float:
     return statistics.mean(one['magnitude'] for one in rounds[combo])
+
+
+def penalties_of(hw: Hardware, args, rounds: dict, loser: tmc.Chopper,
+                 winner: tmc.Chopper) -> str:
+    """What the rounds penalize the loser for and the winner not as much, in words: clicks, a
+    chopper frequency below the run's audible limit, or both."""
+    hearing = tmc.Hearing.of(args)
+    penalties = ['clicks'] if any(mine['clicks'] > theirs['clicks'] for mine, theirs
+                                  in zip(rounds[loser], rounds[winner])) else []
+    if hearing.weight and hearing.audible(loser, hw.driver) \
+            and not hearing.audible(winner, hw.driver):
+        penalties.append('a chopper frequency below the %g kHz audible limit'
+                         % (hearing.limit_hz / 1000))
+    return ' and '.join(penalties)
 
 
 def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
@@ -1506,8 +1522,10 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
     best checked combo, never a lucky combo measured once), else the rank 1. With
     `rounds` (back_to_back) the motor's own registers stay unless the winner or Klipper
     defaults beat them in every round, and a gain over Klipper defaults is claimed only
-    when the recommendation beats them in every round. Without rounds, no claim."""
+    when the recommendation vibrates less than them in every round, the penalties left
+    out, and the gain is 1.01x or more at two decimals. Without rounds, no claim."""
     from .analyze import aggregate, print_table, rank
+    from .demo import gain, write_state
     ranked = rank(aggregate(ds, False, args.trim), hw.driver, tmc.Hearing.of(args),
                   tmc.Space.of(args, hw.driver))
     if not ranked:
@@ -1517,11 +1535,26 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
     best = next((entry for entry in ranked if entry['chopper'] == winner), ranked[0])['chopper']
     stock = tmc.stock_chopper(hw.driver, getattr(args, 'tpfd', None) is not None)
     current = current_registers(hw, stock)
+
+    def named(combo: tmc.Chopper) -> str:
+        return ('your registers ' if combo == current else 'Klipper defaults '
+                if combo == stock else 'the best found, ') + combo.label()
+
     # the incumbent gives way only to a combo that beats it in every round
     chosen = current if current in rounds else best
     beaten = None
+    by_penalties = []
     for rival in (best, stock):
-        if rival in rounds and rival != chosen and quieter_every_round(rounds, rival, chosen):
+        if rival not in rounds or rival in (chosen, beaten):
+            continue
+        beats = quieter_every_round(rounds, rival, chosen)
+        if beats != quieter_every_round(rounds, rival, chosen, by='magnitude'):
+            loser, other = (chosen, rival) if beats else (rival, chosen)
+            by_penalties.append('In the back-to-back rounds, %s lost to %s because of the '
+                                'penalties for %s, not because of vibration'
+                                % (named(loser), named(other),
+                                   penalties_of(hw, args, rounds, loser, other)))
+        if beats:
             chosen, beaten = rival, chosen
     kept = chosen == current != best
     entry = next(entry for entry in ranked if entry['chopper'] == chosen)
@@ -1538,32 +1571,39 @@ def report_winner(hw: Hardware, ds: Dataset, args, screen: Screen, top: int,
     elif chosen == stock != best:
         print('\nKlipper defaults %s were quieter than %s in each of %d back-to-back rounds: '
               'they are the recommendation (%.0f -> %.0f)'
-              % (stock.label(), ('your registers ' if beaten == current else 'the best found, ')
-                 + beaten.label(), BACK_TO_BACK_ROUNDS, mean_magnitude(rounds, beaten),
-                 mean_magnitude(rounds, stock)))
+              % (stock.label(), named(beaten), BACK_TO_BACK_ROUNDS,
+                 mean_magnitude(rounds, beaten), mean_magnitude(rounds, stock)))
+    if by_penalties:
+        print('\n' + '\n'.join(by_penalties))
     improvement = None
     if stock in rounds and chosen != stock:
         reference, measured = mean_magnitude(rounds, stock), mean_magnitude(rounds, chosen)
-        if quieter_every_round(rounds, chosen, stock):
-            improvement = reference / measured
-            print('\nvs Klipper defaults %s, back to back: %.1fx less vibration, quieter in '
-                  'each of %d rounds (%.0f -> %.0f)'
-                  % (stock.label(), improvement, BACK_TO_BACK_ROUNDS, reference, measured))
+        # the claim is less vibration, so it leaves out the penalties for a whine and clicks
+        lower = quieter_every_round(rounds, chosen, stock, by='magnitude')
+        # two decimals print a gain under 0.5% as 1.00x
+        shown = round(reference / measured, 2)
+        if lower and shown > 1:
+            # the gain as printed, so that the percent, the manifest and the panel show it too
+            improvement = shown
+            print('\nvs Klipper defaults %s, back to back: %s, lower in each of %d rounds '
+                  '(%.0f -> %.0f)' % (stock.label(), gain(reference, measured),
+                                      BACK_TO_BACK_ROUNDS, reference, measured))
             pct = round((1 - 1 / improvement) * 100)
-            if pct >= 1:
-                finale += ' — %d%% less vibration' % pct
-                short += ' -%d%%' % pct
+            finale += ' — %d%% less vibration' % pct
+            short += ' -%d%%' % pct
+        elif lower:
+            print('\nvs Klipper defaults %s, back to back: lower vibration in each of %d rounds, '
+                  'but by less than 0.5%% on average, so the run claims no gain (%.0f -> %.0f)'
+                  % (stock.label(), BACK_TO_BACK_ROUNDS, reference, measured))
         else:
-            print('\nvs Klipper defaults %s, back to back: not quieter in each of %d rounds, '
+            print('\nvs Klipper defaults %s, back to back: vibration not lower in all %d rounds, '
                   'so no gain this run can tell from noise (%.0f -> %.0f)'
                   % (stock.label(), BACK_TO_BACK_ROUNDS, reference, measured))
     # the panel's vibration column: this run's claim, or none (not an older run's)
-    from .demo import write_state
     write_state(hw.stepper.rsplit('_', 1)[-1], shown_registers(hw, chosen), improvement)
     # record the recommendation: save/tune must persist THIS combo, not whatever
     # unvalidated one floats to the top of a later full re-rank
-    ds.update_manifest(winner=chosen.fields(), kept=kept,
-                       improvement=round(improvement, 2) if improvement else None)
+    ds.update_manifest(winner=chosen.fields(), kept=kept, improvement=improvement)
     if hw.autotune is not None:
         # what to do about it the command says once, at its end (what_next, the tune's summary)
         print('\nBest measured (klipper_tmc_autotune manages this motor):\n')

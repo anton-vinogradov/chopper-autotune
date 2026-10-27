@@ -119,7 +119,8 @@ def run(source: str, printer: str, case: str, tmp_path, monkeypatch, capsys) -> 
     process id) as <token>; the run's paths and times as <tmp>, <time> and <stamp>."""
     monkeypatch.setattr(klipper_front, 'CLOCK', [0.])
     with open(os.path.join(REFERENCE, 'printer-%s.cfg' % printer)) as cfg:
-        front = klipper_front.Front(source, cfg.read())
+        printer_cfg = cfg.read()
+    front = klipper_front.Front(source, printer_cfg)
     monkeypatch.setattr(collect, 'time', PrinterClock(front))
     monkeypatch.setattr(collect, 'PARK_INTERVAL_MOVES', PARK_INTERVAL.get(case, 400))
     if case in HOT_AFTER:
@@ -133,6 +134,11 @@ def run(source: str, printer: str, case: str, tmp_path, monkeypatch, capsys) -> 
         monkeypatch.setattr(tune, 'Klippy', lambda path: types.SimpleNamespace(connect=lambda: kl))
         monkeypatch.setattr(tune, 'find_socket', lambda explicit=None: '<front>')
         monkeypatch.setattr(tune, 'scan', lambda kl, args, popup=True: (0, 60, 60))
+        # registers that stay are checked against the config files too (collect.worth_saving):
+        # Moonraker gives the printer's
+        monkeypatch.setattr(tune, 'Moonraker', lambda url: types.SimpleNamespace(
+            list_config_files=lambda: ['printer.cfg'],
+            download_config=lambda name, missing_ok=False: printer_cfg))
         tool(build_parser().parse_args(argv))
     else:
         if tool not in (demo.demo, demo.showcase_together):

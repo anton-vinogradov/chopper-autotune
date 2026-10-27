@@ -183,6 +183,7 @@ def run_tune(args) -> int:
     if args.dry_run or not winners:
         return worst
 
+    from .demo import gain
     print('\n=== Summary ===')
     for manifest, combo in winners:
         steppers = measured_steppers(manifest)
@@ -195,8 +196,7 @@ def run_tune(args) -> int:
         if manifest.get('kept'):
             print('# your registers, kept: no combo was quieter in each back-to-back round')
         if manifest.get('improvement'):
-            print('# %.1fx less vibration than Klipper defaults\n'
-                  % manifest['improvement'])
+            print('# %s than Klipper defaults\n' % gain(manifest['improvement'], 1.0))
         print()
     if args.save:
         from .analyze import run_save_latest
