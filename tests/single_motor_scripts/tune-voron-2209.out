@@ -170,14 +170,16 @@ rank  tbl  toff  hstrt  hend  tpfd  magnitude   spread   n clicks   f_chop
 9       1     4      5     3     -      638.6      0.0   2      0  34.1kHz 
 10      3     4      2     3     -      638.6      0.0   2      0  31.2kHz 
 
-vs Klipper defaults tbl2_toff3_hstrt5_hend0, back to back: 1.2x less vibration, quieter in each of 4 rounds (798 -> 639)
+Keep your registers tbl1_toff4_hstrt2_hend3: the best found, tbl1_toff4_hstrt0_hend3, was not quieter than them in each of 4 back-to-back rounds (639 -> 639)
+
+vs Klipper defaults tbl2_toff3_hstrt5_hend0, back to back: 1.25x less vibration, lower in each of 4 rounds (798 -> 639)
 
 Recommended for printer.cfg:
 
 [tmc2209 stepper_x]
 driver_TBL: 1
 driver_TOFF: 4
-driver_HSTRT: 0
+driver_HSTRT: 2
 driver_HEND: 3
 Restoring baseline registers, homing
 Done in 9m: 334 ok, 0 failed -> <tmp>/chopper-autotune/datasets/<stamp>_x
@@ -332,14 +334,16 @@ rank  tbl  toff  hstrt  hend  tpfd  magnitude   spread   n clicks   f_chop
 9       1     4      6     3     -      638.6      0.0   2      0  34.1kHz 
 10      1     4      7     3     -      638.6      0.0   2      0  34.1kHz 
 
-vs Klipper defaults tbl2_toff3_hstrt5_hend0, back to back: 1.2x less vibration, quieter in each of 4 rounds (798 -> 639)
+Keep your registers tbl1_toff4_hstrt2_hend3: the best found, tbl1_toff4_hstrt0_hend3, was not quieter than them in each of 4 back-to-back rounds (639 -> 639)
+
+vs Klipper defaults tbl2_toff3_hstrt5_hend0, back to back: 1.25x less vibration, lower in each of 4 rounds (798 -> 639)
 
 Recommended for printer.cfg:
 
 [tmc2209 stepper_y]
 driver_TBL: 1
 driver_TOFF: 4
-driver_HSTRT: 0
+driver_HSTRT: 2
 driver_HEND: 3
 Restoring baseline registers, homing
 Done in 7m: 290 ok, 0 failed -> <tmp>/chopper-autotune/datasets/<stamp>_y
@@ -348,17 +352,18 @@ Done in 7m: 290 ok, 0 failed -> <tmp>/chopper-autotune/datasets/<stamp>_y
 [tmc2209 stepper_x]
 driver_TBL: 1
 driver_TOFF: 4
-driver_HSTRT: 0
+driver_HSTRT: 2
 driver_HEND: 3
-# 1.2x less vibration than Klipper defaults
+# your registers, kept: no combo was quieter in each back-to-back round
+# 1.25x less vibration than Klipper defaults
 
 
 [tmc2209 stepper_y]
 driver_TBL: 1
 driver_TOFF: 4
-driver_HSTRT: 0
+driver_HSTRT: 2
 driver_HEND: 3
-# 1.2x less vibration than Klipper defaults
+# your registers, kept: no combo was quieter in each back-to-back round
+# 1.25x less vibration than Klipper defaults
 
 
-To save: CHOPPER_SAVE MOTOR=AB
