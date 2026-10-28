@@ -284,9 +284,30 @@ def test_the_show_ends_with_both_vibrations_and_the_gain_as_the_demo_of_a_motor_
                          subscribe_accel=lambda chip: None)
     monkeypatch.setattr(extruder_mod, 'detect_hardware', lambda kl, axis: SimpleNamespace(
         accel_chip='adxl345', display=True))
-    played = iter([1000., tuned] * 2)                      # DEFAULTS, then TUNED, two rounds
+    played = iter([1000., tuned, tuned, 1000.])            # DEFAULTS first, then TUNED first
     monkeypatch.setattr(extruder_mod, 'measure', lambda hw, speed: (next(played), 0))
-    assert extruder_mod.extruder_show(kl, SimpleNamespace(speed=None), tmc.DRIVERS['2209'],
+    assert extruder_mod.extruder_show(kl, 5.0, tmc.DRIVERS['2209'],
                                       {'tbl': 1, 'toff': 4, 'hstrt': 2, 'hend': 3}, None,
                                       200.0) == 0
     assert 'M118 ' + said in sent and 'M117 ' + shown in sent
+
+
+@pytest.mark.parametrize('argv, said', [([], 5.0), (['--speed', '7.5'], 7.5)], ids=['default', 'SPEED='])
+def test_the_demo_says_the_filament_speed_it_plays_at(argv, said, monkeypatch, capsys):
+    from types import SimpleNamespace
+
+    from chopper_autotune.cli import build_parser
+    kl = SimpleNamespace(settings=lambda: {'tmc2209 extruder': {'driver_toff': 4}, 'extruder': {}},
+                         gcode=lambda script: None, gcode_output=lambda script: [],
+                         subscribe_accel=lambda chip: None)
+    monkeypatch.setattr(extruder_mod, 'detect_hardware', lambda kl, axis: SimpleNamespace(
+        accel_chip='adxl345', display=True))
+    monkeypatch.setattr(extruder_mod, 'refuse_if_printing', lambda kl: None)
+    monkeypatch.setattr(extruder_mod, 'Screen', lambda kl, display: SimpleNamespace(
+        update=lambda *a, **k: None, final=lambda *a: None))
+    played = []
+    monkeypatch.setattr(extruder_mod, 'measure', lambda hw, speed: (played.append(speed), (1000., 0))[1])
+    args = build_parser().parse_args(['extruder', '--demo', '--yes'] + argv)
+    assert extruder_mod.extruder_tune(kl, args) == 0
+    assert 'saved registers at %g mm/s of filament.' % said in capsys.readouterr().out
+    assert played == [said] * 4

@@ -18,8 +18,8 @@ import statistics
 from . import tmc
 from .collect import (Screen, autotune_advice, autotune_goal, autotune_stealth, autotune_tag,
                       capture_stream, confirmed, detect_hardware, live_chopper, live_stealth,
-                      refuse_autotune_save, refuse_if_printing, refuse_nothing_to_try, run_restore,
-                      unexpected_stealth, wake_stepper)
+                      refuse_autotune_save, refuse_if_printing, refuse_nothing_to_try, round_order,
+                      run_restore, unexpected_stealth, wake_stepper)
 from .dataset import load_json, save_json
 from .klippy import Klippy, find_socket
 from .metrics import transients, vibration_score
@@ -28,6 +28,7 @@ from .search import descent_budget, multi_start_descent, penalized_score
 AMP_CAP = 3.0               # max half-stroke, mm of filament (a retraction-scale swing)
 CRUISE_SEC = 2.4            # oscillation time per measurement
 VALIDATE_TOP = 3            # re-measure the best candidates before recommending
+DEMO_SPEED = 5.0            # mm/s of filament without SPEED=: the reference rig's E resonance
 STATE = os.path.expanduser('~/printer_data/config/chopper-autotune/extruder.json')
 
 
@@ -163,11 +164,13 @@ def descent(hw, kl, driver, speed: float, hearing: tmc.Hearing, screen: Screen, 
     return winner, cache
 
 
-def extruder_show(kl: Klippy, args, driver: tmc.Driver, baseline_regs: dict,
+def extruder_show(kl: Klippy, speed: float, driver: tmc.Driver, baseline_regs: dict,
                   stealth: 'tuple | None', temp: float) -> int:
-    """Audible before/after for the E motor: alternate Klipper defaults and the saved
-    registers at the resonance speed so the change can be heard — the E analogue of
-    CHOPPER_DEMO. Requires a tuned extruder; heats like the tune does."""
+    """Audible before/after for the E motor, the E analogue of CHOPPER_DEMO: 2 rounds, each
+    measuring once on Klipper defaults and once on the extruder's registers (its config's,
+    or those klipper_tmc_autotune runs, read live), in round_order, at `speed` mm/s of
+    filament. Refuses an extruder whose config gives Klipper defaults; heats like the tune
+    does."""
     if not baseline_regs or \
             tmc.baseline_chopper(baseline_regs, default=driver.default) == driver.default:
         raise SystemExit('the extruder is untuned (registers are Klipper defaults) — '
@@ -175,7 +178,6 @@ def extruder_show(kl: Klippy, args, driver: tmc.Driver, baseline_regs: dict,
     hw = detect_hardware(kl, 'x')
     kl.subscribe_accel(hw.accel_chip)
     screen = Screen(kl, hw.display)
-    speed = args.speed or 5.0
     magnitudes = {'defaults': [], 'tuned': []}
     # see collect.untouched_autotune: nothing is put back on autotune's extruder before
     # its registers are read
@@ -195,9 +197,9 @@ def extruder_show(kl: Klippy, args, driver: tmc.Driver, baseline_regs: dict,
             # chopper registers only act in spreadCycle: without the force, both phases
             # would measure stealthChop vs stealthChop and report a fake 1.0x
             kl.gcode(tmc.set_fields_script('extruder', {stealth[0]: stealth[1]}))
+        sets = [('defaults', tmc.stock_chopper(driver, False).fields()), ('tuned', baseline_regs)]
         for round_no in (1, 2):
-            for label, fields in (('defaults', tmc.stock_chopper(driver, False).fields()),
-                                  ('tuned', baseline_regs)):
+            for label, fields in round_order(sets, round_no - 1):
                 kl.gcode(tmc.set_fields_script('extruder', fields))
                 screen.update('E %d/2: %s' % (round_no, label.upper()), force=True,
                               short='E %d/2 %s' % (round_no, label.upper()))
@@ -245,15 +247,16 @@ def extruder_tune(kl: Klippy, args) -> int:
         raise SystemExit('TEMP=%.0f is below min_extrude_temp (%.0f) — the filament could '
                          'not move; raise TEMP or unload the filament' % (temp, min_temp))
     if args.demo:
+        speed = args.speed or DEMO_SPEED
         # the demo heats and force-moves exactly like the tune: same guards apply
-        print('Extruder demo: Klipper defaults vs the saved registers at the E resonance; '
-              'the hotend will HEAT to %.0fC (filament stays in)' % temp)
+        print('Extruder demo: Klipper defaults vs the saved registers at %g mm/s of filament. '
+              'The hotend will HEAT to %.0fC (filament stays in)' % (speed, temp))
         if args.dry_run:
             return 0
         if not confirmed(args):
             return 1
         refuse_if_printing(kl)
-        return extruder_show(kl, args, driver, baseline_regs, stealth, temp)
+        return extruder_show(kl, speed, driver, baseline_regs, stealth, temp)
     speeds = [float(v) for v in range(args.min_speed, args.max_speed + 1)]
     hearing = tmc.Hearing.of(args)
     space = tmc.Space.of(args)

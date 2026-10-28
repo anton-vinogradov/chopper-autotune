@@ -44,7 +44,7 @@ def tuned_cfg(cfg: str, driver: str, axes: str = 'xy') -> str:
 
 
 def played_sets(driver: str) -> dict:
-    """What each rail plays: Klipper defaults, then its tuned set (tuned_cfg)."""
+    """What each rail plays: Klipper defaults and its tuned set (tuned_cfg)."""
     stock = tmc.DRIVERS[driver].default
     return {axis: {'default': stock.fields(), 'tuned': replace(stock, **TUNED[axis]).fields()}
             for axis in 'xy'}
@@ -204,7 +204,7 @@ def test_the_show_runs_each_rail_on_its_own_set_and_puts_the_printer_back(source
         assert in_spreadcycle(front, move, driver)
         assert move['cruise_ratio'] == 0
         assert bed_center(move, base)
-    assert rounds == ['default'] * 2 + ['tuned'] * 2 + ['default'] * 2 + ['tuned'] * 2
+    assert rounds == ['default'] * 2 + ['tuned'] * 4 + ['default'] * 2     # TUNED first in round 2
     off_the_edges(front, base)
     assert front.moves == []
     assert not [line for script in front.scripts for line in script.split('\n')
@@ -791,7 +791,7 @@ def test_a_demo_of_a_rail_on_the_defaults_names_where_they_come_from(source, dry
                          ids=['motor B', 'show'])
 def test_a_default_equal_to_the_saved_set_asks_for_another_default(source, dry_run, argv, motors,
                                                                     monkeypatch):
-    # both motors tuned and saved to motor B's set: DEFAULT= that set plays it in both rounds
+    # both motors tuned and saved to motor B's set: DEFAULT= that set plays it as DEFAULTS and TUNED
     require(source)
     monkeypatch.setitem(TUNED, 'x', TUNED['y'])
     front = klipper_front.Front(source, tuned_cfg(awd_cfg('meijjaa'), '5160'))
@@ -810,7 +810,7 @@ def test_a_default_equal_to_the_saved_set_asks_for_another_default(source, dry_r
 
 @pytest.mark.parametrize('source', SOURCES)
 def test_the_show_with_a_default_equal_to_one_saved_set_names_it(source, monkeypatch, capsys):
-    # motor A changes; motor B plays its saved set, the one DEFAULT= gives, in both rounds
+    # motor A changes; motor B plays its saved set, the one DEFAULT= gives, as DEFAULTS and TUNED
     require(source)
     front = klipper_front.Front(source, tuned_cfg(awd_cfg('meijjaa'), '5160'))
     assert run_demo(front, monkeypatch, ['--speed', '60', '--default', '2,5,5,2', '--dry-run']) == 0

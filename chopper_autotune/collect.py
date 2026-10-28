@@ -1450,11 +1450,18 @@ def block_rivals(hw: Hardware, args) -> 'tuple[list[tmc.Chopper], str]':
         why.get(current, '')
 
 
+def round_order(sets: list, index: int) -> list:
+    """The sets in the order round `index`, counted from 0, plays them: as given, and
+    reversed every other round. Each pair of rounds plays every set at mirrored places, so
+    all the sets get the same mean place, and a drift that grows at a steady rate over the
+    run (heat) adds the same to each."""
+    return sets if index % 2 == 0 else sets[::-1]
+
+
 def back_to_back(hw: Hardware, ds: Dataset, args, combos: 'list[tmc.Chopper]',
                  speeds: 'list[int]', travel: float, accel: float, done: set,
                  motion) -> 'tuple[dict, int, int]':
-    """Measure the combos in turns, speed by speed, a round at a time, the order reversed
-    every other round, so a drift over the run (heat, a re-home) hits each of them alike.
+    """Measure the combos in turns, speed by speed, a round at a time, in round_order.
     Every move is fresh: new iterations, past any the dataset holds for these combos, so
     no move the pick saw, or an earlier session took, counts. Returns per combo and round
     the mean magnitude, the clicks and the score with the audible and the click penalties
@@ -1470,7 +1477,7 @@ def back_to_back(hw: Hardware, ds: Dataset, args, combos: 'list[tmc.Chopper]',
     ok = failed = 0
     for index in range(BACK_TO_BACK_ROUNDS):
         for speed in speeds:
-            for combo in combos if index % 2 == 0 else combos[::-1]:
+            for combo in round_order(combos, index):
                 combo_ok, combo_failed, _, _ = measure_combo(
                     hw, ds, args, combo, [speed], 1, first + index, travel, accel, done,
                     motion)
