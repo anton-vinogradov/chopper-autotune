@@ -510,7 +510,7 @@ def test_a_demo_on_the_defaults_names_where_they_come_from(source, dry_run, argv
                          ids=['motor B', 'show'])
 def test_a_default_equal_to_the_saved_set_asks_for_another_default(source, dry_run, argv, motors,
                                                                     monkeypatch):
-    # both motors tuned and saved to motor B's set: DEFAULT= that set plays it in both rounds
+    # both motors tuned and saved to motor B's set: DEFAULT= that set plays it as DEFAULTS and TUNED
     require(source)
     front = klipper_front.Front(source, tuned(printer_cfg(), stepper_x=TUNED['y'],
                                               stepper_y=TUNED['y']))
@@ -528,7 +528,7 @@ def test_a_default_equal_to_the_saved_set_asks_for_another_default(source, dry_r
 
 @pytest.mark.parametrize('source', SOURCES)
 def test_the_show_with_a_default_equal_to_one_saved_set_names_it(source, monkeypatch, capsys):
-    # motor A changes; motor B plays its saved set, the one DEFAULT= gives, in both rounds
+    # motor A changes; motor B plays its saved set, the one DEFAULT= gives, as DEFAULTS and TUNED
     require(source)
     front = klipper_front.Front(source, tuned(printer_cfg(), stepper_x=TUNED['x'],
                                               stepper_y=TUNED['y']))

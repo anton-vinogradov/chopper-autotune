@@ -1,13 +1,17 @@
 import argparse
+import re
 import types
 
 import pytest
 
 import chopper_autotune.demo as demo_module
-from chopper_autotune import tmc
-from chopper_autotune.cli import _chopper
+import klipper_front
+from chopper_autotune import collect, extruder, tmc
+from chopper_autotune.cli import _chopper, build_parser
 from chopper_autotune.collect import Hardware
 from chopper_autotune.demo import bar, demo
+from test_apply_demo import run_demo, tuned
+from test_klipper_front import HOTEND, SOURCES, assert_clean, printer_cfg, require
 
 # objects/query of the live limits (live_limits)
 LIVE = {'status': {'toolhead': {'max_velocity': 500.0, 'max_accel': 3000.0,
@@ -35,11 +39,10 @@ def make_hw(baseline, stepper='stepper_x'):
 
 
 def demo_args(**over):
-    base = dict(axis='x', speed=None, default=None, iterations=3, measure_time=1.0,
-                accel=None, trim=None, socket=None, dry_run=True,
-                report=False, rounds=3, repeats=4)
-    base.update(over)
-    return argparse.Namespace(**base)
+    """CHOPPER_DEMO MOTOR=A as the parser gives it, a dry run, with `over` on top."""
+    args = build_parser().parse_args(['demo', '--motor', 'a', '--dry-run'])
+    vars(args).update(over)
+    return args
 
 
 def test_demo_rejects_when_not_yet_tuned(monkeypatch):
@@ -230,8 +233,8 @@ def test_a_demo_of_both_motors_with_a_speed_names_the_motor_that_has_none(monkey
 
 def show_of_both(monkeypatch, tmp_path, sweeps: list, b: dict = TUNED):
     """A printer with a display for showcase_together, whose motor A runs TUNED and motor B
-    `b`, and whose sweeps measure `sweeps` in turn, the defaults of a round first; and the
-    scripts it is sent."""
+    `b`, and whose sweeps measure `sweeps` in turn, in the order the show plays the sets
+    (DEFAULTS first in round 1, TUNED in round 2); and the scripts it is sent."""
     from dataclasses import replace
     monkeypatch.setattr('chopper_autotune.dataset.RESULTS_HOME', tmp_path)
     monkeypatch.setattr(demo_module, 'detect_hardware', lambda kl, axis: replace(
@@ -254,7 +257,7 @@ def test_each_round_of_the_show_prints_its_own_vibrations_and_gain_with_two_deci
     # with one decimal, a gain under 5% reads 1.0x, as if tuning gave nothing; in round 2
     # and overall TUNED vibrates more, which "less vibration" would hide
     from chopper_autotune.collect import LCD_WIDTH
-    kl, sent = show_of_both(monkeypatch, tmp_path, [[1040.0], [1000.0], [1000.0], [1100.0]])
+    kl, sent = show_of_both(monkeypatch, tmp_path, [[1040.0], [1000.0], [1100.0], [1000.0]])
     assert demo_module.showcase_together(kl, demo_args(dry_run=False, rounds=2)) == 0
     out = capsys.readouterr().out
     rounds = ['both motors, defaults 1040 -> tuned 1000: 1.04x less vibration',
@@ -405,6 +408,167 @@ def test_showcase_alternates_and_announces(monkeypatch, capsys):
 
 def statistics_mean(xs):
     return sum(xs) / len(xs)
+
+
+# the sets the shows below play: Klipper defaults, and a tuned set of its own on motor A,
+# motor B and the extruder
+STOCK = tmc.DRIVERS['2209'].default
+PLAYED = {'stepper_x': tmc.Chopper(2, 4, 5, 3), 'stepper_y': tmc.Chopper(2, 5, 5, 2),
+          'extruder': tmc.Chopper(1, 4, 5, 2)}
+SHOWS = {
+    # (the command line, its parameter of the number of rounds, the drivers it plays on)
+    'one motor': (['demo', '--motor', 'a', '--speed', '60'], '--rounds', ('stepper_x',)),
+    # --speed: the speed of each motor's last tune (run_demo)
+    'both motors': (['demo', '--speed', '60'], '--rounds', ('stepper_x', 'stepper_y')),
+    'report': (['demo', '--motor', 'a', '--speed', '60', '--report'], '--iterations',
+               ('stepper_x',)),
+    # 2 rounds, always
+    'extruder': (['extruder', '--demo', '--speed', '5', '--yes'], None, ('extruder',)),
+}
+CHOPPER_FIELDS = ('tbl', 'toff', 'hstrt', 'hend')
+
+
+def four_rounds(show: str) -> 'list[str]':
+    """The arguments of 4 rounds, one back-and-forth of each set in a round; the extruder
+    plays its own 2 rounds."""
+    return {'--rounds': ['--rounds', '4', '--repeats', '1'],
+            '--iterations': ['--iterations', '4']}.get(SHOWS[show][1], [])
+
+
+def run_show(source, monkeypatch, show: str, argv: 'list[str]' = (), cfg: 'str | None' = None):
+    """The show on a printer built from a release's own modules (tests/klipper_front.py)
+    whose config gives each driver its PLAYED set; argv after the show's command line."""
+    require(source)
+    monkeypatch.setattr(collect, 'time', klipper_front.Clock())
+    front = klipper_front.Front(source, cfg or tuned(printer_cfg(extra=HOTEND), **PLAYED))
+    argv = SHOWS[show][0] + list(argv)
+    if argv[0] == 'extruder':
+        assert extruder.extruder_tune(front.connect(), build_parser().parse_args(argv)) == 0
+    else:
+        assert run_demo(front, monkeypatch, argv[1:]) == 0
+    assert_clean(front)
+    return front
+
+
+def turns(front, steppers: 'tuple[str, ...]') -> 'list[dict]':
+    """The turns of a show up to its last move, in the order they played: the set written
+    into the drivers of `steppers` ('D' Klipper defaults, 'T' the PLAYED set), the set the
+    display and the console named after it and before the turn's first move, and the moves
+    the turn made."""
+    moving = [index for index, script in enumerate(front.scripts)
+              if re.search(r'^(FORCE_MOVE|G1) ', script, re.M)]
+    played = []
+    for script in front.scripts[:moving[-1] + 1]:
+        written = {}
+        for stepper, field, value in re.findall(r'^SET_TMC_FIELD STEPPER=(\S+) FIELD=(\w+) '
+                                                r'VALUE=(\d+)$', script, re.M):
+            written.setdefault(stepper, {})[field] = int(value)
+        for stepper in steppers:
+            fields = written.get(stepper, {})
+            if not set(CHOPPER_FIELDS) <= set(fields):
+                continue
+            regs = tmc.Chopper(*(fields[name] for name in CHOPPER_FIELDS))
+            name = {STOCK: 'D', PLAYED[stepper]: 'T'}[regs]
+            if stepper == steppers[0]:
+                played.append({'set': name, 'display': None, 'console': None, 'moves': 0})
+            else:
+                assert played[-1]['set'] == name        # every motor in the same turn
+        if not played:
+            continue
+        shown = re.fullmatch(r'M117 (?:E )?\d/\d (DEFAULT|TUNED)S?', script)
+        told = re.fullmatch(r'RESPOND PREFIX="Chopper:" MSG="(?:E )?\d/\d:? +(?:>> )?'
+                            r'(DEFAULTS|TUNED)"', script)
+        for channel, said in (('display', shown), ('console', told)):
+            if said and not played[-1]['moves']:
+                played[-1][channel] = said.group(1)[0]
+        played[-1]['moves'] += len(re.findall(r'^(?:FORCE_MOVE|G1) ', script, re.M))
+    return played
+
+
+def listened(out: str) -> 'list[str]':
+    """The sets ('D' or 'T') as the show's console lines name them when each starts."""
+    return [name[0].upper() for name in re.findall(
+        r'^(?:>> round \d/\d  >> | round \d: )(DEFAULTS|TUNED|defaults|tuned)\b', out, re.M)]
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('show', SHOWS)
+def test_each_show_writes_the_two_sets_in_turns_tuned_first_every_other_round(source, show,
+                                                                             monkeypatch):
+    # with the defaults always first, a vibration that rises over the show always lands
+    # more on the tuned set
+    front = run_show(source, monkeypatch, show, four_rounds(show))
+    assert ''.join(turn['set'] for turn in turns(front, SHOWS[show][2])) == \
+        ('DTTD' if show == 'extruder' else 'DTTDDTTD')
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('show', [show for show in SHOWS if show != 'report'])
+def test_the_display_and_the_console_name_each_set_as_it_starts_to_play(source, show,
+                                                                       monkeypatch, capsys):
+    # the listener hears the sets in turns: each is named on its turn, before its moves
+    played = turns(run_show(source, monkeypatch, show, four_rounds(show)), SHOWS[show][2])
+    assert len(played) == (4 if show == 'extruder' else 8)
+    for turn in played:
+        assert turn['moves'] and turn['display'] == turn['console'] == turn['set'], turn
+    assert listened(capsys.readouterr().out) == [turn['set'] for turn in played]
+
+
+@pytest.mark.parametrize('show, rounds', [(show, rounds) for show in SHOWS
+                                          for rounds in ((None, '2', '6') if SHOWS[show][1]
+                                                         else (None,))],
+                         ids=lambda value: value or 'default')
+def test_a_steady_drift_over_the_show_leaves_two_like_sets_at_1_00x(show, rounds, monkeypatch):
+    # both sets shake the head alike, more each second: with each set first in half the
+    # rounds, the drift hits both alike
+    def level(front, move):
+        return 1000. + 10. * move['window'][0]         # mg, 10 mg more each second
+    monkeypatch.setattr(klipper_front.Front, 'vibration', level)
+    monkeypatch.setattr(klipper_front.Front, 'head_vibration', level)
+    gains = []
+    write_state, verdict = demo_module.write_state, demo_module._verdict
+
+    def own_gain(axis, tuned, quieter):
+        gains.append(quieter)
+        write_state(axis, tuned, quieter)
+
+    def gain_of_both(kl, args, results, *rest):
+        gains.append(statistics_mean(results['default']) / statistics_mean(results['tuned']))
+        return verdict(kl, args, results, *rest)
+    monkeypatch.setattr(demo_module, 'write_state', own_gain)
+    monkeypatch.setattr(demo_module, '_verdict', gain_of_both)
+    front = run_show(SOURCES[-1], monkeypatch, show,
+                     [SHOWS[show][1], rounds] if rounds else [])
+    moves = front.moves or front.head_moves
+    assert level(front, moves[-1]) > 1.05 * level(front, moves[0])    # a drift that shows
+    assert gains == [pytest.approx(1.0, abs=0.001)]
+
+
+@pytest.mark.parametrize('source', SOURCES)
+@pytest.mark.parametrize('show', ['one motor', 'report'])
+def test_the_noise_floor_of_one_motor_runs_with_every_xy_driver_off_so_no_mode_reaches_it(
+        source, show, monkeypatch, capsys):
+    # the config asks for stealthChop, the moves run in spreadCycle: a driver that is off
+    # runs in neither, so the floor the gain is counted above is the same in both
+    cfg = tuned(printer_cfg(extra=HOTEND), **PLAYED).replace(
+        '[tmc2209 stepper_x]\n', '[tmc2209 stepper_x]\nstealthchop_threshold: 999999\n')
+    on, capture = [], collect.capture_stream
+
+    def captured(hw, script, duration, check=None):
+        if re.fullmatch(r'G4 P\d+', script):                  # the noise floor's dwell
+            on.append(sorted(name for name, enabled in hw.kl.stepper_states().items()
+                             if enabled and name != 'stepper_z'))
+        return capture(hw, script, duration, check)
+    monkeypatch.setattr(collect, 'capture_stream', captured)
+    argv = ['--iterations', '1'] if show == 'report' else ['--rounds', '1', '--repeats', '1']
+    front = run_show(source, monkeypatch, show, argv, cfg)
+    assert on == [[]]
+    field, spread, _ = tmc.DRIVERS['2209'].spreadcycle_switch
+    assert front.moves and all(front.chopper(move, 'stepper_x')[field] == spread
+                               for move in front.moves)
+    assert front.chips['tmc2209 stepper_x'].field(field) != spread      # stealthChop back
+    assert re.search(r'\n  \d\.\d\dx (less|more) vibration above the \d+ noise floor\n',
+                     capsys.readouterr().out)
 
 
 def test_write_state_merges_per_motor(tmp_path, monkeypatch):
@@ -592,7 +756,7 @@ def test_the_defaults_round_takes_the_driver_stock_tpfd_and_its_limits():
     from chopper_autotune.collect import RunStopped
     assert demo_module.before_registers(Namespace(default=None), tmc.DRIVERS['2240']) \
         == tmc.DRIVERS['2240'].default
-    # a Chopper without tpfd would leave the tuned tpfd in the chip for the 'defaults' round
+    # a Chopper without tpfd would leave the tuned tpfd in the chip for the DEFAULTS set
     assert demo_module.before_registers(Namespace(default=tmc.Chopper(2, 3, 5, 2)),
                                         tmc.DRIVERS['5160']) == tmc.Chopper(2, 3, 5, 2, 4)
     assert demo_module.before_registers(Namespace(default=tmc.Chopper(2, 3, 5, 0)),

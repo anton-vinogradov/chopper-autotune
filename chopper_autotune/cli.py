@@ -396,8 +396,16 @@ def build_parser() -> argparse.ArgumentParser:
                    help='the "before" config as tbl,toff,hstrt,hend (default: the driver\'s Klipper stock registers)')
     d.add_argument('--report', action='store_true',
                    help='measured numbers (defaults vs tuned, Nx quieter) instead of the audible showcase')
-    d.add_argument('--iterations', type=int, default=3, help='--report: repeats per config, default 3')
-    d.add_argument('--rounds', type=int, default=3, help='showcase: alternations of defaults/tuned, default 3')
+    d.add_argument('--iterations', type=int, default=4,
+                   help='--report: rounds, default 4. Each round measures the defaults and the '
+                        'tuned registers. Use an even count. If the vibration rises during the '
+                        'run, an odd count makes the tuned registers look worse than they are '
+                        '(see README)')
+    d.add_argument('--rounds', type=int, default=4,
+                   help='showcase: rounds, default 4; each round plays the defaults and the '
+                        'tuned registers. Use an even count. With an odd count, vibration that '
+                        'rises during the run makes the tuned registers look worse than they '
+                        'are (see README)')
     d.add_argument('--repeats', type=int, default=4, help='showcase: moves per config per round, default 4')
     d.add_argument('--measure-time', type=float, default=1.0,
                    help='target cruise time per move in seconds, default 1.0; shrinks at high '
@@ -514,8 +522,8 @@ def build_parser() -> argparse.ArgumentParser:
     e.add_argument('--save-last', action='store_true',
                    help='save the previously tuned winner without re-tuning, as save --motor e does')
     e.add_argument('--demo', action='store_true',
-                   help='audible before/after: alternate Klipper defaults and the saved '
-                        'registers at the E resonance (heats the hotend)')
+                   help='audible before/after: Klipper defaults and the saved registers in '
+                        'turn, at --speed mm/s of filament, default 5 (heats the hotend)')
     e.add_argument('--socket', default=None)
     e.add_argument('--url', default='http://127.0.0.1:7125')
     e.add_argument('--dry-run', action='store_true')

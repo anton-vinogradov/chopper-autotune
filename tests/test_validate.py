@@ -286,6 +286,19 @@ def test_the_own_registers_stay_unless_the_winner_beats_them_every_round(tmp_pat
     assert 1.4 < manifest['improvement'] < 1.6 and final.startswith('Chopper: keep tbl1_toff4')
 
 
+def test_three_like_sets_under_drift_keep_the_own_registers(tmp_path, monkeypatch, capsys):
+    # the winner, Klipper defaults and the motor's own registers play back to back: a set
+    # that played earlier than the others on average would beat them on the drift alone
+    own = tmc.Chopper(1, 4, 2, 3)
+    manifest, final = back_to_back_run(tmp_path, monkeypatch, lambda combo: 1000.0, drift=0.01,
+                                       baseline=own.fields())
+    out = capsys.readouterr().out
+    assert 'Measuring tbl0_toff2_hstrt4_hend4 / tbl2_toff3_hstrt5_hend0 / ' \
+           'tbl1_toff4_hstrt2_hend3 back to back' in out
+    assert manifest['kept'] and manifest['winner'] == own.fields()
+    assert manifest['improvement'] is None and final.startswith('Chopper: keep tbl1_toff4')
+
+
 def test_a_winner_that_ties_with_defaults_replaces_louder_registers_with_no_gain_claimed(
         tmp_path, monkeypatch, capsys):
     stock, own = tmc.DRIVERS['2209'].default, tmc.Chopper(1, 4, 2, 3)

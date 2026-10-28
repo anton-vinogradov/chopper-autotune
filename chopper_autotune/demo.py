@@ -1,8 +1,11 @@
 """Demo: measure the driver defaults against the tuned registers, side by side.
 
-Alternates the two configs move by move at the resonance speed so thermal and
-timing drift hit both equally, then reports how much less the tuned one vibrates
-(measured at the toolhead, not perceived loudness — see the README caveat).
+Plays the two sets in rounds, the same moves at the same speed on each, then reports how
+much less the tuned one vibrates (measured at the toolhead, not perceived loudness — see
+the README caveat). Each round plays one set, then the other, and every other round the
+tuned set goes first (round_order): over an even number of rounds each set plays first in
+half of them, so a drift of the vibration that grows at a steady rate (heat) adds the same
+to both.
 """
 from __future__ import annotations
 
@@ -17,8 +20,8 @@ from .collect import (MOVE_MARGIN, Hardware, RunStopped, Screen, ThermalGuard, c
                       enter_spreadcycle, exit_spreadcycle, fit_measure_time, home_xy,
                       measure_baseline, motor_label, now, rail_of, rail_twins, refuse_after_shutdown,
                       refuse_blind_z_hop, refuse_if_printing, refuse_multi_motor, refused,
-                      rehome_unless_hot, restore_chopper, run_measurement, run_restore,
-                      set_rail_fields, tell_next, travel_for, untouched_autotune)
+                      rehome_unless_hot, restore_chopper, round_order, run_measurement,
+                      run_restore, set_rail_fields, tell_next, travel_for, untouched_autotune)
 from .current import live_limits, velocity_caps
 from .dataset import Dataset
 from .klippy import Klippy, KlippyError, find_socket
@@ -89,7 +92,7 @@ MOTORS = ('x', 'y')
 
 
 def before_registers(args, driver: tmc.Driver) -> tmc.Chopper:
-    """The 'defaults' round: the driver's stock registers, or DEFAULT= checked for this
+    """The DEFAULTS set: the driver's stock registers, or DEFAULT= checked for this
     driver (TMC2660 caps hstrt + hend), with the stock tpfd where it has one: a Chopper
     without tpfd leaves the tuned value in the chip."""
     if args.default is None:
@@ -129,7 +132,7 @@ def rail_registers(hw: Hardware) -> tmc.Chopper:
 
 def plays_same(hw: Hardware, default: tmc.Chopper) -> bool:
     """Whether the config Klipper loaded gives the motor, every driver of its rail, the
-    registers of its defaults round, so both rounds play the same (rail_registers).
+    registers of its DEFAULTS set, so DEFAULTS and TUNED play the same (rail_registers).
     klipper_tmc_autotune's motor runs its own registers, not its config lines: judged once
     read live."""
     return hw.autotune is None and rail_registers(hw) == default
@@ -164,7 +167,7 @@ def refuse_one_speed(kl: Klippy, args):
 
 def on_defaults(hw: Hardware, default: tmc.Chopper) -> str:
     """'the Klipper defaults tbl2_… to stepper_y and stepper_y1': what the config Klipper loaded
-    gives the drivers of a motor whose demo plays the same registers in both rounds."""
+    gives the drivers of a motor whose demo plays the same registers in DEFAULTS and TUNED."""
     steppers = ' and '.join(drive.stepper for drive in hw.rail)
     if default == hw.driver.default:
         return 'the Klipper defaults %s to %s' % (default.label(), steppers)
@@ -173,7 +176,7 @@ def on_defaults(hw: Hardware, default: tmc.Chopper) -> str:
 
 def refuse_on_defaults(motors: 'list[tuple[Hardware, tmc.Chopper]]'):
     """The refusal of a demo where the config gives each motor (hw, the registers of its
-    defaults round) those very registers, once its drivers are known to run them
+    DEFAULTS set) those very registers, once its drivers are known to run them
     (refuse_set_live): tune and save, or, where DEFAULT= is the saved set, pass another."""
     gives = ', and '.join(on_defaults(hw, default) for hw, default in motors)
     # the action first: the display shows its first characters (failure_display)
@@ -310,7 +313,8 @@ def _show_rails(kl, hw, args, speed, tuned, default, same_rounds: 'list[str]') -
     runs each belt at its own speed (head_velocity), every rail moved as the runs on a rail
     move it (RailMove), along the head's course in head mm. It sweeps the whole zone
     between the kept edges, as the show on one motor per axis does. same_rounds: the lines
-    on the motors that play one set in both rounds, for the console before the first."""
+    on the motors that play the same registers in DEFAULTS and TUNED, for the console
+    before the first."""
     board = hw['x']
     vx, vy = head_velocity(board.kinematics, speed['x'], speed['y'])
     feed = math.hypot(vx, vy)
@@ -346,7 +350,7 @@ def _show_rails(kl, hw, args, speed, tuned, default, same_rounds: 'list[str]') -
 
 def _play(kl, hw, args, tuned, default, screen, sweep) -> dict:
     """Every driver in spreadCycle, then each round the defaults and the tuned registers on
-    both motors, a sweep on each: the vibration each set played."""
+    both motors, a sweep on each, in round_order: the vibration each set played."""
     for axis in MOTORS:
         for drive in hw[axis].rail:
             enter_spreadcycle(kl, drive)
@@ -360,7 +364,7 @@ def _play(kl, hw, args, tuned, default, screen, sweep) -> dict:
     results = {name: [] for name, _ in configs}
     for r in range(1, args.rounds + 1):
         round_avg = {}
-        for name, regs in configs:
+        for name, regs in round_order(configs, r - 1):
             for axis in MOTORS:
                 set_rail_fields(kl, hw[axis], regs[axis].fields())
             screen.update('%d/%d  %s' % (r, args.rounds, playing[name]), force=True,
@@ -387,7 +391,8 @@ def _verdict(kl, args, results, screen, tuned, default) -> int:
     if not results['default'] or not results['tuned']:
         raise SystemExit('show failed to collect measurements')
     d, t = statistics.mean(results['default']), statistics.mean(results['tuned'])
-    # a motor that played one set in both rounds: its own demo has nothing to play (demo)
+    # a motor that played the same registers in DEFAULTS and TUNED: its own demo has nothing
+    # to play (demo)
     same = [axis for axis in MOTORS if tuned[axis] == default[axis]]
     note = ''.join('; motor %s played the same registers in DEFAULTS and TUNED'
                    % motor_label(axis) for axis in same)
@@ -542,7 +547,7 @@ def demo(kl: Klippy, args) -> int:
                                 motion, screen)
         else:
             for iteration in range(args.iterations):
-                for name, combo in configs:
+                for name, combo in round_order(configs, iteration):
                     set_rail_fields(kl, hw, combo.fields())
                     for direction in (1, -1):
                         record = run_measurement(hw, ds, args, combo, speed, iteration, direction,
@@ -591,14 +596,15 @@ def write_state(axis: str, tuned: tmc.Chopper, quieter: 'float | None'):
 
 
 def _showcase(kl, hw, args, ds, configs, speed, travel, accel, motion, screen):
-    """Play defaults and tuned alternately, announcing on the display/console which is
-    playing and the running difference, so a listener hears and sees it change."""
+    """Each round plays the defaults and the tuned registers, REPEATS back-and-forths each,
+    in round_order. The display and the console name each set as it starts and, after the
+    round, the vibration of each and the gain, so a listener hears and sees the change."""
     playing = {'default': '>> DEFAULTS', 'tuned': '>> TUNED'}
     results = {name: [] for name, _ in configs}
     it = 0
     for r in range(1, args.rounds + 1):
         round_avg = {}
-        for name, combo in configs:
+        for name, combo in round_order(configs, r - 1):
             set_rail_fields(kl, hw, combo.fields())
             screen.update('%d/%d  %s' % (r, args.rounds, playing[name]), force=True,
                           short='%d/%d %s' % (r, args.rounds, name.upper()))
