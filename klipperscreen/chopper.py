@@ -109,7 +109,7 @@ class Panel(ScreenPanel):
              if self.two_motors("stepper_x", "stepper_y") else
              _("Steps 2 AND 4 — tune both gantry motors' choppers at their resonances (~20 minutes of movement), SAVE the winners and restart Klipper. First pass: continue with 3 Current; after Current, come back here for the second pass — the chopper optimum depends on the current. Restore undoes.")),
             ("settings", _("3 Current"), "color3", "CHOPPER_CURRENT SAVE=1",
-             _("Step 3 — find the minimal safe run current (worst-case stress + endstop referee) and WRITE it into the config. Afterwards step 4 = Tune again: the chopper optimum depends on the current.")),
+             _("Step 3 — estimate run current from free-air stress at 100–200 mm/s belt speed and WRITE it into the config. Nozzle contact and higher speeds are not tested. Afterwards step 4 = Tune again, then verify with representative prints. If steps are lost, restore the previous working run_current and tune again.")),
             ("extrude", _("5 Extruder"), "color4", "CHOPPER_EXTRUDER SAVE=1",
              _("Step 5 — tune the extruder chopper, SAVE the winner and restart Klipper. The hotend will HEAT to 200C (filament stays in), ~10 minutes; the heater turns off when done. Restore undoes.")),
             # row 2 — the optional check + supporting actions
