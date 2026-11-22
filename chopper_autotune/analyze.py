@@ -920,7 +920,7 @@ def restore_whole_files(mk) -> int:
 
 def run_restore_config(args) -> int:
     """The panel's undo: DEFAULTS=1 writes the stock chopper registers into every
-    tuned TMC section (run_current stays — it is a measured safety setting);
+    tuned TMC section (run_current stays);
     BACKUP=1 puts back the lines the last save wrote, currents included."""
     mk = Moonraker(args.url)
     if args.defaults == args.backup:

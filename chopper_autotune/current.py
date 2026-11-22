@@ -1,4 +1,4 @@
-"""Run-current tuning: find the minimal current that survives a worst-case stress
+"""Run-current tuning: find the minimal current that survives a free-air stress
 pattern, with an endstop referee catching the skipped steps.
 
 The referee is the judge, not the accelerometer: a stall can be nearly silent
@@ -368,10 +368,14 @@ def current_tune(kl: Klippy, args) -> int:
                              % (stroke_accel(top, span, vec), accels[m], motor_label(m),
                                 stroke_peak(span, vec, accels[m]), top))
 
-    print('Current tuning on motor(s) %s: worst-case pattern (single-motor load, belts %s mm/s, '
+    print('Current tuning on motor(s) %s: free-air pattern (single-motor load, belts %s mm/s, '
           '±%.0f mm), endstop referee, margin %.1fx over the measured skip threshold'
           % ('+'.join(motor_label(m) for m in motors), '/'.join(map(str, BELT_SPEEDS)), span,
              args.margin))
+    print('MARGIN multiplies the measured current threshold; this test does not measure '
+          'torque reserve against nozzle contact or motion above its belt speeds. '
+          'After saving and re-tuning, verify with representative prints. '
+          'If steps are lost, restore the previous working run_current and re-tune.')
     for m in motors:
         capped = (' (what the per-axis limits give it of max_accel %g)' % board.max_accel
                   if not args.accel and accels[m] < board.max_accel else '')
@@ -418,7 +422,7 @@ def current_tune(kl: Klippy, args) -> int:
 
             print('\n=== Motor %s ===' % label)
             if not holds(configured[m]):
-                raise SystemExit('motor %s skips at its CONFIGURED current on the worst-case '
+                raise SystemExit('motor %s skips at its CONFIGURED current on the free-air '
                                  'pattern — fix that before tuning current' % label)
             if holds(args.min_current):
                 threshold = args.min_current
@@ -459,7 +463,7 @@ def current_tune(kl: Klippy, args) -> int:
             else ' \u2014 to measure again and save: ' + remeasure)
     screen.final('Current: ' + ' \u00b7 '.join(
         '%s skip %.2fA -> run %.2fA' % (motor_label(m), thresholds[m], recommended[m])
-        for m in motors) + tail,
+        for m in motors) + ' (free-air test only; verify in prints)' + tail,
         ' '.join('%s %.2fA' % (motor_label(m), recommended[m]) for m in motors))
     print('\n=== Summary ===')
     for m in motors:

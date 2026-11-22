@@ -484,16 +484,17 @@ def build_parser() -> argparse.ArgumentParser:
                          'after that save')
     rs.add_argument('--url', default='http://127.0.0.1:7125')
 
-    cur = sub.add_parser('current', help='find the minimal safe run current per motor '
-                                         '(worst-case stress, endstop referee)')
+    cur = sub.add_parser('current', help='estimate run current per motor from free-air stress '
+                                         '(belt speeds 100–200 mm/s, endstop referee)')
     add_motor(cur, True, 'motor a/b/ab (a=stepper_x, b=stepper_y); default ab')
     cur.add_argument('--margin', type=float, default=2.0,
-                     help='recommended current = skip threshold x this margin, default 2.0')
+                     help='recommended current = free-air skip threshold x this factor, '
+                          'default 2.0; verify in prints')
     cur.add_argument('--per-motor', action='store_true',
                      help='keep the measured per-motor recommendations; by default coupled-XY '
                           'motors both get the max of the two (same part, drag drifts)')
     cur.add_argument('--min-current', type=float, default=0.3,
-                     help='search floor in amps, default 0.3')
+                     help='search floor in amps, before applying the margin, default 0.3')
     cur.add_argument('--resolution', type=float, default=0.05,
                      help='threshold resolution in amps, default 0.05')
     cur.add_argument('--accel', type=float, default=None,

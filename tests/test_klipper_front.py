@@ -630,7 +630,8 @@ def test_the_command_to_run_next_reaches_the_console_whole(source, monkeypatch, 
     assert run_tool(front, current_tune, ['current', '--motor', 'a', '--yes']) == 0
     assert_clean(front)
     assert 'Chopper: To tune motor A at its resonance speed: CHOPPER_TUNE MOTOR=A SPEED=60' in front.console
-    assert front.console[-1] == ('echo: Current: A skip 0.30A -> run 0.60A — to measure again '
+    assert front.console[-1] == ('echo: Current: A skip 0.30A -> run 0.60A '
+                                 '(free-air test only; verify in prints) — to measure again '
                                  'and save: CHOPPER_CURRENT MOTOR=A SAVE=1')
 
 
